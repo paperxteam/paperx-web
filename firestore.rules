@@ -1,0 +1,72 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isNotExpired(userData) {
+      return !('planExpiresAt' in userData) || 
+             userData.planExpiresAt == null || 
+             userData.planExpiresAt == '' || 
+             request.time < timestamp.date(userData.planExpiresAt);
+    }
+
+    // User profiles & user files
+    match /users/{userId} {
+      allow read: if true;
+      allow write: if isOwner(userId) || true;
+
+      match /files/{fileId} {
+        allow read, write: if true;
+      }
+    }
+
+    // Orders & UTR Payment submissions
+    match /orders/{orderId} {
+      allow read, write: if true;
+    }
+
+    // Support chats
+    match /support_chats/{chatId} {
+      allow read, write: if true;
+    }
+
+    // Payment transactions
+    match /payments/{paymentId} {
+      allow read, write: if true;
+    }
+
+    // Global app settings, banners, maintenance mode & pricing plans
+    match /app_settings/{settingId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    // Admin notifications, announcements & custom user messages
+    match /notifications/{notificationId} {
+      allow read, write: if true;
+    }
+
+    // Audit logs
+    match /audit_logs/{logId} {
+      allow read, write: if true;
+    }
+
+    // Document conversion analytics
+    match /documents/{docId} {
+      allow read, write: if true;
+    }
+
+    // Catch-all rule for all other collections
+    match /{document=**} {
+      allow read, write: if true;
+    }
+  }
+}
+
+

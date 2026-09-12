@@ -1,0 +1,105 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile and subscription metadata",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "User UID" },
+        "uid": { "type": "string", "description": "Firebase Auth UID" },
+        "name": { "type": "string", "description": "Display name" },
+        "email": { "type": "string", "description": "Email address" },
+        "avatarUrl": { "type": "string", "description": "Avatar image URL" },
+        "plan": { "type": "string", "description": "Subscription plan (Basic Plan, Plus Plan, Max Plan)" },
+        "planExpiresAt": { "type": "string", "description": "Subscription expiration timestamp (ISO)" },
+        "billingCycle": { "type": "string", "description": "Billing cycle (half-month, month, half-year, year)" },
+        "subscriptionStatus": { "type": "string", "description": "Subscription status (active, expired, free, pending)" },
+        "previousPlan": { "type": "string", "description": "Previous subscription plan before expiry" },
+        "isPro": { "type": "boolean", "description": "Active paid subscriber flag" },
+        "memberSince": { "type": "string", "description": "Member registration date" },
+        "projectsUsed": { "type": "number", "description": "Projects used count" },
+        "maxProjects": { "type": "number", "description": "Max allowed projects" },
+        "status": { "type": "string", "description": "Account status (ACTIVE, DISABLED)" },
+        "role": { "type": "string", "description": "User role (User, Admin, SuperAdmin)" },
+        "createdAt": { "type": "string", "description": "Creation timestamp" },
+        "updatedAt": { "type": "string", "description": "Last updated timestamp" }
+      },
+      "required": ["uid", "email"]
+    },
+    "Order": {
+      "title": "Order",
+      "description": "Subscription orders and UTR payment submissions",
+      "type": "object",
+      "properties": {
+        "orderId": { "type": "string" },
+        "uid": { "type": "string" },
+        "userEmail": { "type": "string" },
+        "userName": { "type": "string" },
+        "plan": { "type": "string" },
+        "billingCycle": { "type": "string" },
+        "durationDays": { "type": "number" },
+        "planExpiresAt": { "type": "string" },
+        "amount": { "type": "number" },
+        "utr": { "type": "string" },
+        "status": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "verifiedAt": { "type": "string" }
+      },
+      "required": ["orderId", "uid", "utr", "status"]
+    },
+    "AppSetting": {
+      "title": "AppSetting",
+      "description": "Global app control settings, feature flags, banners, maintenance mode",
+      "type": "object",
+      "properties": {
+        "maintenanceMode": { "type": "boolean" },
+        "bannerActive": { "type": "boolean" },
+        "bannerText": { "type": "string" },
+        "themePreset": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      }
+    },
+    "Notification": {
+      "title": "Notification",
+      "description": "Admin broadcasts, custom messages, and targeted user alerts",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "body": { "type": "string" },
+        "recipient": { "type": "string" },
+        "recipientEmail": { "type": "string" },
+        "priority": { "type": "string" },
+        "type": { "type": "string" },
+        "createdAt": { "type": "number" },
+        "sender": { "type": "string" },
+        "isUrgentPopup": { "type": "boolean" }
+      },
+      "required": ["title", "body", "recipient"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profiles"
+    },
+    "/orders/{orderId}": {
+      "schema": "Order",
+      "description": "UTR payment submissions & subscription orders"
+    },
+    "/app_settings/{settingId}": {
+      "schema": "AppSetting",
+      "description": "Global app control settings & feature flags"
+    },
+    "/notifications/{notificationId}": {
+      "schema": "Notification",
+      "description": "Admin broadcast messages, custom user notices & alerts"
+    },
+    "/audit_logs/{logId}": {
+      "description": "Admin action audit logs"
+    },
+    "/documents/{docId}": {
+      "description": "Document conversion records"
+    }
+  }
+}

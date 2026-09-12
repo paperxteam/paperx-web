@@ -1,0 +1,26 @@
+{
+  "notif_order_test1234_verified": {
+    "id": "notif_order_test1234_verified",
+    "title": "Payment Approved! 🎉",
+    "body": "Your payment for Plus Plan has been verified. Your account has been upgraded!",
+    "recipient": "testuid",
+    "recipientUserId": "testuid",
+    "recipientEmail": "paperx.team@gmail.com",
+    "priority": "HIGH",
+    "type": "PAYMENT_VERIFIED",
+    "createdAt": 1788878257957,
+    "timestamp": 1788878257957
+  },
+  "notif_order_ORD-1788879629809_verified": {
+    "id": "notif_order_ORD-1788879629809_verified",
+    "title": "Payment Approved! 🎉",
+    "body": "Your payment for Plus Plan has been verified. Your account has been upgraded!",
+    "recipient": "user_live_test",
+    "recipientUserId": "user_live_test",
+    "recipientEmail": "paperx.team@gmail.com",
+    "priority": "HIGH",
+    "type": "PAYMENT_VERIFIED",
+    "createdAt": 1788879630466,
+    "timestamp": 1788879630466
+  }
+}

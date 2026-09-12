@@ -1,0 +1,40 @@
+--- components/PaymentHistoryView.tsx
++++ components/PaymentHistoryView.tsx
+@@ -10,6 +10,7 @@
+ import domtoimage from 'dom-to-image';
+ import { jsPDF } from 'jspdf';
+ import { Eye, EyeOff } from 'lucide-react';
++import html2canvas from 'html2canvas';
+ 
+ export interface PaymentHistoryViewProps {
+   user: User | null;
+@@ -121,17 +122,12 @@
+       }
+ 
+-      const scale = 2; // Optimal crisp quality without canvas memory freeze
+-      const imgData = await domtoimage.toPng(receiptElement, {
+-        bgcolor: '#ffffff',
+-        quality: 0.95,
+-        height: receiptElement.offsetHeight * scale,
+-        width: receiptElement.offsetWidth * scale,
+-        style: {
+-          transform: `scale(${scale})`,
+-          transformOrigin: 'top left',
+-          width: `${receiptElement.offsetWidth}px`,
+-          height: `${receiptElement.offsetHeight}px`
+-        }
++      const canvas = await html2canvas(receiptElement, {
++        scale: 2,
++        backgroundColor: '#ffffff',
++        useCORS: true,
++        logging: false
+       });
++      
++      const imgData = canvas.toDataURL('image/png', 0.95);
+ 
+       const pdf = new jsPDF({
+@@ -143,3 +139,3 @@
+       const pdfWidth = pageWidth - (margin * 2);
+-      const pdfHeight = (receiptElement.offsetHeight * pdfWidth) / receiptElement.offsetWidth;
++      const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
+ 

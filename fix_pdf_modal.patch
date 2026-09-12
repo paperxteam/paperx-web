@@ -1,0 +1,30 @@
+--- components/PaymentModal.tsx
++++ components/PaymentModal.tsx
+@@ -191,15 +191,10 @@
+       receiptElement.style.opacity = '1';
+       
+-      const scale = 2; // Optimal crisp quality without canvas memory freeze
+-      const imgData = await domtoimage.toPng(receiptElement, {
+-        bgcolor: '#ffffff',
+-        quality: 0.95,
+-        height: receiptElement.offsetHeight * scale,
+-        width: receiptElement.offsetWidth * scale,
+-        style: {
+-          transform: `scale(${scale})`,
+-          transformOrigin: 'top left',
+-          width: `${receiptElement.offsetWidth}px`,
+-          height: `${receiptElement.offsetHeight}px`
+-        }
++      const canvas = await html2canvas(receiptElement, {
++        scale: 2,
++        backgroundColor: '#ffffff',
++        useCORS: true,
++        logging: false
+       });
++      const imgData = canvas.toDataURL('image/png', 0.95);
+       
+@@ -211,3 +206,3 @@
+       const pdfWidth = pageWidth - (margin * 2);
+-      const pdfHeight = (receiptElement.offsetHeight * pdfWidth) / receiptElement.offsetWidth;
++      const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
+       

@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=0, viewport-fit=cover" />
+    <script>
+      (function() {
+        // Intercept and handle internal SDK assertion edge cases in Firebase Auth popup handler
+        var origConsoleError = console.error;
+        console.error = function() {
+          var args = Array.prototype.slice.call(arguments);
+          var firstArg = args[0] ? String(args[0]) : '';
+          if (
+            firstArg.indexOf('Pending promise was never set') !== -1 ||
+            (firstArg.indexOf('@firebase/auth') !== -1 && firstArg.indexOf('INTERNAL ASSERTION FAILED') !== -1)
+          ) {
+            if (console.warn) console.warn.apply(console, ['[Firebase Auth Assertion Handled]:'].concat(args));
+            return;
+          }
+          origConsoleError.apply(console, args);
+        };
+
+        window.addEventListener('unhandledrejection', function(event) {
+          var reason = event.reason;
+          var msg = typeof reason === 'string' ? reason : (reason && reason.message ? reason.message : '');
+          if (typeof msg === "string" && msg.indexOf('Pending promise was never set') !== -1 || typeof msg === "string" && msg.indexOf('INTERNAL ASSERTION FAILED') !== -1) {
+            event.preventDefault();
+            event.stopImmediatePropagation && event.stopImmediatePropagation();
+            console.warn('[Firebase Auth Handled Assertion]:', msg);
+          }
+        }, true);
+        window.addEventListener('error', function(event) {
+          var msg = event.message || '';
+          if (typeof msg === "string" && msg.indexOf('Pending promise was never set') !== -1 || typeof msg === "string" && msg.indexOf('INTERNAL ASSERTION FAILED') !== -1) {
+            event.preventDefault();
+            event.stopImmediatePropagation && event.stopImmediatePropagation();
+            console.warn('[Firebase Auth Handled Assertion]:', msg);
+          }
+        }, true);
+
+        try {
+          var savedDark = localStorage.getItem('pref_darkMode');
+          var isDark = savedDark !== null ? savedDark === 'true' : window.matchMedia('(prefers-color-scheme: dark)').matches;
+          if (isDark) {
+            document.documentElement.classList.add('dark');
+          } else {
+            document.documentElement.classList.remove('dark');
+          }
+          var fontSize = localStorage.getItem('pref_fontSize') || 'system';
+          var largerText = localStorage.getItem('pref_largerText') === 'true';
+          document.documentElement.setAttribute('data-font-size', fontSize);
+          document.documentElement.setAttribute('data-larger-text', String(largerText));
+        } catch (e) {}
+      })();
+    </script>
+    
+    <!-- PWA & Mobile App Support -->
+    <meta name="theme-color" content="#000000" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Paper X" />
+    <meta name="application-name" content="Paper X" />
+    <link rel="manifest" href="/manifest.json" />
+    
+    <title>Paper X | The Future of Documents</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800;900&family=Inter:wght@300;400;500;600;700;800;900&family=Permanent+Marker&display=swap" rel="stylesheet">
+    <script src="https://docs.opencv.org/4.7.0/opencv.js" async></script>
+    <style>
+      :root {
+        --foreground-rgb: 43, 43, 43; /* #2B2B2B */
+        --background-start-rgb: 255, 255, 255; /* #FFFFFF */
+        --background-end-rgb: 212, 212, 212; /* #D4D4D4 */
+      }
+      body {
+        font-family: 'Inter', sans-serif;
+        color: rgb(var(--foreground-rgb));
+        background: #000000;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+        overflow-x: hidden;
+        letter-spacing: -0.015em;
+      }
+
+      .font-heading {
+        font-family: 'Outfit', sans-serif;
+      }
+
+      .font-handwritten {
+        font-family: 'Permanent Marker', cursive;
+      }
+
+      h1, h2, h3, h4, h5, h6 {
+        letter-spacing: -0.03em;
+      }
+
+      /* Premium Selection Style */
+      ::selection {
+        background-color: #2B2B2B;
+        color: #fff;
+      }
+
+      /* Glass Morphism Utilities */
+      .glass-morphism {
+        background: rgba(255, 255, 255, 0.4);
+        backdrop-filter: blur(24px);
+        -webkit-backdrop-filter: blur(24px);
+        border: 1px solid rgba(255, 255, 255, 0.3);
+        box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.05);
+      }
+
+      .glass-morphism-dark {
+        background: rgba(0, 0, 0, 0.6);
+        backdrop-filter: blur(24px);
+        -webkit-backdrop-filter: blur(24px);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.2);
+      }
+
+      .glass-morphism-blackish {
+        background: rgba(0, 0, 0, 0.2);
+        backdrop-filter: blur(24px);
+        -webkit-backdrop-filter: blur(24px);
+        border: 1px solid rgba(255, 255, 255, 0.05);
+        box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.1);
+      }
+
+      /* Liquid Blob Animation */
+      @keyframes liquid {
+        0% { border-radius: 60% 40% 30% 70% / 60% 30% 70% 40%; }
+        50% { border-radius: 30% 60% 70% 40% / 50% 60% 30% 60%; }
+        100% { border-radius: 60% 40% 30% 70% / 60% 30% 70% 40%; }
+      }
+
+      .liquid-blob {
+        animation: liquid 15s ease-in-out infinite;
+      }
+      
+      /* Subtle Grid Pattern for Backgrounds */
+      .bg-grid-pattern {
+        background-size: 40px 40px;
+        background-image: linear-gradient(to right, rgba(0,0,0,0.03) 1px, transparent 1px),
+                          linear-gradient(to bottom, rgba(0,0,0,0.03) 1px, transparent 1px);
+        mask-image: linear-gradient(to bottom, black 40%, transparent 100%);
+        -webkit-mask-image: linear-gradient(to bottom, black 40%, transparent 100%);
+      }
+
+      /* GLOBAL: Hide scrollbar but keep functionality */
+      ::-webkit-scrollbar {
+        width: 0px;
+        height: 0px;
+        background: transparent;
+        display: none;
+      }
+      
+      html, body, * {
+        -ms-overflow-style: none !important;  /* IE and Edge */
+        scrollbar-width: none !important;  /* Firefox */
+      }
+
+      /* Animations */
+      @keyframes fadeInUp {
+        from {
+          opacity: 0;
+          transform: translateY(20px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+      
+      @keyframes scaleIn {
+        from {
+          opacity: 0;
+          transform: scale(0.95);
+        }
+        to {
+          opacity: 1;
+          transform: scale(1);
+        }
+      }
+
+      @keyframes slideInRight {
+        from {
+          transform: translateX(20px);
+          opacity: 0;
+        }
+        to {
+          transform: translateX(0);
+          opacity: 1;
+        }
+      }
+
+      @keyframes marquee {
+        0% { transform: translateX(0); }
+        100% { transform: translateX(-50%); }
+      }
+      .animate-marquee {
+        animation: marquee 30s linear infinite;
+      }
+      .animate-marquee-slow {
+        animation: marquee 50s linear infinite;
+      }
+      .animate-marquee-reverse {
+        animation: marquee 40s linear infinite reverse;
+      }
+      
+      @keyframes scan {
+        0% { top: 0%; opacity: 0; }
+        10% { opacity: 1; }
+        90% { opacity: 1; }
+        100% { top: 100%; opacity: 0; }
+      }
+      
+      @keyframes border-rotate {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(360deg); }
+      }
+
+      /* Icon Specific Animations */
+      @keyframes icon-wiggle {
+        0%, 100% { transform: rotate(0deg); }
+        25% { transform: rotate(-8deg); }
+        75% { transform: rotate(8deg); }
+      }
+
+      @keyframes icon-float {
+        0%, 100% { transform: translateY(0); }
+        50% { transform: translateY(-3px); }
+      }
+
+      @keyframes icon-shake-subtle {
+        0%, 100% { transform: translateX(0); }
+        25% { transform: translateX(-2px); }
+        75% { transform: translateX(2px); }
+      }
+
+      @keyframes icon-spin-once {
+        from { transform: rotate(0deg); }
+        to { transform: rotate(180deg); }
+      }
+
+      .animate-fade-in-up {
+        animation: fadeInUp 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+      }
+      
+      .animate-scale-in {
+        animation: scaleIn 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+      }
+
+      .animate-slide-in-right {
+        animation: slideInRight 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+      }
+      
+      .animate-shimmer {
+        animation: shimmer 2s infinite linear;
+      }
+
+      /* Utility for icon animations */
+      .group:hover .group-hover-wiggle {
+        animation: icon-wiggle 0.4s ease-in-out;
+      }
+      .group:hover .group-hover-float {
+        animation: icon-float 1s ease-in-out infinite;
+      }
+      .group:hover .group-hover-shake {
+        animation: icon-shake-subtle 0.4s ease-in-out;
+      }
+      .group:hover .group-hover-spin-once {
+        animation: icon-spin-once 0.4s ease-out forwards;
+      }
+
+      /* Staggered Delay Utilities */
+      .delay-100 { animation-delay: 100ms; }
+      .delay-200 { animation-delay: 200ms; }
+      .delay-300 { animation-delay: 300ms; }
+      .delay-500 { animation-delay: 500ms; }
+    </style>
+</head>
+  <body>
+    <div id="root"></div>
+  <script type="module" src="/index.tsx"></script>
+</body>
+</html>

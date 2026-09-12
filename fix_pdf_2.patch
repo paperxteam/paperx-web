@@ -1,0 +1,5 @@
+--- components/PaymentHistoryView.tsx
++++ components/PaymentHistoryView.tsx
+@@ -128,2 +128,1 @@
+       const imgData = canvas.toDataURL("image/png", 0.95);
+-      });

@@ -1,0 +1,11 @@
+{
+  "name": "Paper X",
+  "description": "The most premium, fastest, and most professional document and PDF tools ecosystem ever designed.",
+  "requestFramePermissions": [
+    "microphone",
+    "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
