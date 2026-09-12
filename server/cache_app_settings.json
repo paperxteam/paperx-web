@@ -1,8 +1,8 @@
 {
   "global": {
-    "maintenanceActive": false,
     "updatedAt": 1788936604916,
     "maintenanceMode": false,
+    "maintenanceActive": false,
     "id": "global"
   }
 }
