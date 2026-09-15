@@ -373,13 +373,24 @@ export async function downloadReceiptPdf(
       sanitizeElementColors(receiptElement);
 
       try {
+        const scale = 3; // 3x scaling for ultra-crisp high-definition (HD) text and borders
+        const width = receiptElement.offsetWidth * scale;
+        const height = receiptElement.offsetHeight * scale;
+
         const dataUrl = await domtoimage.toPng(receiptElement, {
-          quality: 0.98,
+          width: width,
+          height: height,
+          quality: 1.0,
           bgcolor: '#ffffff',
           style: {
+            transform: `scale(${scale})`,
+            transformOrigin: 'top left',
+            width: `${receiptElement.offsetWidth}px`,
+            height: `${receiptElement.offsetHeight}px`,
             opacity: '1',
             visibility: 'visible',
-            transform: 'none',
+            backgroundColor: '#ffffff',
+            color: '#111827'
           },
         });
 
@@ -400,7 +411,7 @@ export async function downloadReceiptPdf(
         const pdfWidth = pageWidth - margin * 2;
         const pdfHeight = (img.height * pdfWidth) / img.width;
 
-        pdf.addImage(dataUrl, 'PNG', margin, margin, pdfWidth, Math.min(pdfHeight, 270));
+        pdf.addImage(dataUrl, 'PNG', margin, margin, pdfWidth, Math.min(pdfHeight, 270), undefined, 'FAST');
         pdf.save(fileName);
         return;
       } catch (domImgErr) {

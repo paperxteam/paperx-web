@@ -106,7 +106,7 @@ export const UpgradeView: React.FC<UpgradeViewProps> = ({
         <div className="max-w-6xl mx-auto animate-fade-in-up pb-12">
             <div className="text-center mb-8">
                 {/* Billing Cycle Duration Selector Tabs */}
-                <div className="inline-flex p-1.5 bg-gray-100 dark:bg-gray-800/90 rounded-2xl border border-gray-200 dark:border-gray-700/80 shadow-xs flex-wrap justify-center gap-1">
+                <div className="inline-flex p-1.5 rounded-full flex-wrap justify-center gap-1 ios-water-pill-container relative z-10">
                     {(['month', 'half-year', 'year'] as const).map((cycleKey) => {
                         const item = cycleDetails[cycleKey];
                         const isActive = selectedCycle === cycleKey;
@@ -116,9 +116,9 @@ export const UpgradeView: React.FC<UpgradeViewProps> = ({
                                 key={cycleKey}
                                 type="button"
                                 onClick={() => setSelectedCycle(cycleKey)}
-                                className={`px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                                className={`px-4 py-2 rounded-full text-xs sm:text-sm font-bold transition-all flex items-center gap-1.5 cursor-pointer relative ${
                                     isActive
-                                        ? 'bg-white dark:bg-gray-700 text-stone-900 dark:text-white shadow-sm'
+                                        ? 'ios-water-pill-active'
                                         : 'text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200'
                                 }`}
                             >

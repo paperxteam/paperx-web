@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import QRCode from 'qrcode';
 import { 
   X, Check, Copy, Clock, ShieldCheck, ShieldAlert,
   Loader2, CheckCircle2, AlertCircle, AlertTriangle, KeyRound, Sparkles, Crown, Zap, QrCode,
@@ -327,6 +328,41 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
   // Live Auto-Set UPI URI matching exact active amount & duration
   const activeUpiUri = `upi://pay?pa=${encodeURIComponent(vpa)}&pn=${encodeURIComponent('PaperX Cloud')}&am=${formattedAmount}&cu=INR&tr=${encodeURIComponent(orderId)}&tn=${encodeURIComponent(`PaperX ${currentPlan} ${activePricing.cycleShort} ${orderId}`)}`;
   const qrApiUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&margin=8&data=${encodeURIComponent(activeUpiUri)}`;
+
+  // Generate high-resolution, instant client-side QR Code without network latency
+  const [localQrUrl, setLocalQrUrl] = useState<string>('');
+  const [isQrLoading, setIsQrLoading] = useState<boolean>(true);
+
+  useEffect(() => {
+    let isCurrent = true;
+    setIsQrLoading(true);
+    QRCode.toDataURL(activeUpiUri, {
+      width: 320,
+      margin: 1,
+      errorCorrectionLevel: 'M',
+      color: {
+        dark: '#000000',
+        light: '#ffffff',
+      }
+    })
+    .then((url: string) => {
+      if (isCurrent) {
+        setLocalQrUrl(url);
+        setIsQrLoading(false);
+      }
+    })
+    .catch((err: any) => {
+      console.warn('Local QR generation notice:', err);
+      if (isCurrent) {
+        setLocalQrUrl(qrApiUrl);
+        setIsQrLoading(false);
+      }
+    });
+
+    return () => {
+      isCurrent = false;
+    };
+  }, [activeUpiUri, qrApiUrl]);
 
   // Initialize and persist order session whenever opened or changed
   const syncOrderToBackend = async (freshId: string, planName: 'Plus Plan' | 'Max Plan', cycle: BillingCycle, cost: number) => {
@@ -861,14 +897,23 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
                       <motion.div 
                         whileHover={{ scale: 1.04 }}
                         transition={{ type: "spring", stiffness: 320, damping: 22 }}
-                        className="bg-white p-1.5 rounded-xl shadow-md border border-stone-200/90 mb-1.5 relative group"
+                        className="bg-white p-1.5 rounded-xl shadow-md border border-stone-200/90 mb-1.5 relative group min-w-[100px] min-h-[100px] flex items-center justify-center overflow-hidden"
                       >
-                        <img 
-                          src={qrApiUrl} 
-                          alt={`UPI Payment QR Code for ₹${activeAmountNumber}`}
-                          className="w-24 h-24 sm:w-28 sm:h-28 md:w-32 md:h-32 object-contain rounded-lg"
-                          referrerPolicy="no-referrer"
-                        />
+                        {isQrLoading && !localQrUrl ? (
+                          <div className="w-24 h-24 sm:w-28 sm:h-28 md:w-32 md:h-32 flex flex-col items-center justify-center bg-stone-50 rounded-lg text-stone-400">
+                            <Loader2 size={22} className="animate-spin text-amber-500 mb-1" />
+                            <span className="text-[9px] font-medium text-stone-400">Generating QR...</span>
+                          </div>
+                        ) : (
+                          <img 
+                            src={localQrUrl || qrApiUrl} 
+                            alt={`UPI Payment QR Code for ₹${activeAmountNumber}`}
+                            className="w-24 h-24 sm:w-28 sm:h-28 md:w-32 md:h-32 object-contain rounded-lg transition-opacity duration-150"
+                            loading="eager"
+                            decoding="sync"
+                            referrerPolicy="no-referrer"
+                          />
+                        )}
                       </motion.div>
 
                       {/* UPI VPA Pill with 1-Click Copy */}
@@ -1745,11 +1790,11 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
               {/* Authorized Signatory */}
               <div className="flex justify-end pt-4 pb-2">
                 <div className="text-center">
-                  <div className="w-32 h-32 flex items-center justify-center -my-6 mx-auto overflow-visible">
+                  <div className="w-32 h-16 flex items-center justify-center mx-auto overflow-visible">
                     <img 
                       src="/signature.png" 
                       alt="CEO Signature" 
-                      className="w-full h-full object-contain mix-blend-multiply dark:invert contrast-150 grayscale -rotate-90"
+                      className="h-14 w-auto object-contain mix-blend-multiply dark:invert contrast-150 grayscale"
                       onError={(e) => {
                         (e.target as HTMLImageElement).style.display = 'none';
                         const fallback = document.getElementById('signature-fallback-modal');

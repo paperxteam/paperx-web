@@ -55,6 +55,7 @@ export interface User {
   forceLogout?: boolean;
   forceReLogin?: boolean;
   isBlocked?: boolean;
+  blockReason?: string;
   isRestricted?: boolean;
   restrictedPermanently?: boolean;
   twoFactorEnabled?: boolean;
@@ -75,6 +76,7 @@ export interface User {
   ocrLanguage?: string;
   autoCopyText?: boolean;
   pdfAutoCompress?: boolean;
+  theme?: 'light' | 'dark';
   lastLogoutAllAt?: string;
   status?: string;
   createdAt?: string;
@@ -93,6 +95,7 @@ export interface UserSession {
   lastActive: string;
   loginTime?: string;
   isCurrentSession?: boolean;
+  revoked?: boolean;
 }
 
 export interface FileData {

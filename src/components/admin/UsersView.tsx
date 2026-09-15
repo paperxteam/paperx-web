@@ -69,8 +69,14 @@ export const UsersView: React.FC<UsersViewProps> = ({ usersList, showFeedback })
   };
 
   const handleToggleUserStatus = async (user: any) => {
-    const newStatus = (user.status || 'ACTIVE') === 'ACTIVE' ? 'DISABLED' : 'ACTIVE';
-    await callUserUpdateApi(user.id, { status: newStatus });
+    const isActive = (user.status || 'ACTIVE') === 'ACTIVE';
+    if (isActive) {
+      const reason = window.prompt("Enter reason for disabling this user:");
+      if (reason === null) return; // Cancelled
+      await callUserUpdateApi(user.id, { status: 'DISABLED', blockReason: reason || "Your user account has been disabled by the PaperX Administrator." });
+    } else {
+      await callUserUpdateApi(user.id, { status: 'ACTIVE', blockReason: '' });
+    }
   };
 
   const handleDeleteUser = async (userId: string, userEmail: string) => {

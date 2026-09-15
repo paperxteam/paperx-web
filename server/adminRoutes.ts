@@ -3,6 +3,7 @@ import { activeOrders } from "./paymentRoutes";
 import { getServerDoc, getServerDocs, setServerDoc, saveSupportChatDoc } from "./serverDb";
 import { sendTelegramSupportNotification, sendTelegramPaymentTicketNotification } from "./telegramBot";
 import { generateSupportAnswer, generateAdminSuggestedAnswer } from "./supportAgent";
+import { generateReceiptForOrder } from "./receiptGenerator";
 
 const router = express.Router();
 let ioInstance: any = null;
@@ -297,6 +298,20 @@ router.post("/ticket/action", async (req, res) => {
       
       // Auto-downgrade the user if the refund was completed to Basic 5-day Plan
       if ((status === 'COMPLETED' || status === 'REFUNDED') && ticket.uid) {
+         // Generate immutable server-side REFUND SUCCESSFUL receipt
+         try {
+           const orders = await getServerDocs('orders');
+           const order = orders.find((o: any) => o.orderId === ticket.orderId || o.id === ticket.orderId);
+           if (order) {
+             const receipts = await getServerDocs('receipts');
+             const originalReceipt = receipts.find((r: any) => r.orderId === ticket.orderId && r.type === 'PAYMENT_SUCCESSFUL');
+             await generateReceiptForOrder(order, 'REFUND_SUCCESSFUL', originalReceipt);
+             console.log(`[Receipt System] Automatically generated refund receipt for ticket order: ${ticket.orderId}`);
+           }
+         } catch (err) {
+           console.error("[Receipt System] Error generating refund receipt:", err);
+         }
+
          const fiveDaysMs = 5 * 24 * 60 * 60 * 1000;
          const fiveDaysExpiresAt = new Date(Date.now() + fiveDaysMs).toISOString();
          await setServerDoc('users', ticket.uid, {
@@ -475,6 +490,11 @@ router.post("/order/action", async (req, res) => {
         body: `Order ${orderId} has been verified.`
       });
     }
+
+    // Generate the real, immutable PAYMENT SUCCESSFUL receipt securely on the server
+    await generateReceiptForOrder(order, 'PAYMENT_SUCCESSFUL').catch((err) => {
+      console.error("[Receipt System] Error generating receipt during approval:", err);
+    });
 
     return res.json({ success: true, message: `Order ${orderId} approved successfully.` });
   } else if (action === 'REJECT') {

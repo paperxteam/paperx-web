@@ -76,6 +76,58 @@
         "isUrgentPopup": { "type": "boolean" }
       },
       "required": ["title", "body", "recipient"]
+    },
+    "StoredDocument": {
+      "title": "StoredDocument",
+      "description": "User processed and saved document with 5-year cloud retention and real-time synchronization",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "date": { "type": "string" },
+        "timestamp": { "type": "number" },
+        "size": { "type": "string" },
+        "type": { "type": "string" },
+        "action": { "type": "string" },
+        "dataUrl": { "type": "string" },
+        "tags": { "type": "array" },
+        "createdAt": { "type": "string" },
+        "expiresAt": { "type": "string" },
+        "retentionYears": { "type": "number" }
+      },
+      "required": ["id", "name", "timestamp"]
+    },
+    "Receipt": {
+      "title": "Receipt",
+      "description": "Secure, immutable, backend-generated payment and refund receipts",
+      "type": "object",
+      "properties": {
+        "receiptId": { "type": "string", "description": "Unique cryptographically secure receipt ID" },
+        "invoiceId": { "type": "string", "description": "Unique cryptographically secure invoice ID" },
+        "orderId": { "type": "string", "description": "Linked order reference ID" },
+        "transactionId": { "type": "string", "description": "Unique payment/transaction ID" },
+        "refundId": { "type": "string", "description": "Unique refund ID when applicable" },
+        "uid": { "type": "string", "description": "Paying User UID" },
+        "userName": { "type": "string", "description": "Masked or full customer name" },
+        "userEmail": { "type": "string", "description": "Masked or full customer email" },
+        "plan": { "type": "string", "description": "Selected plan name" },
+        "billingCycle": { "type": "string", "description": "Selected billing cycle" },
+        "durationDays": { "type": "number", "description": "Subscription duration in days" },
+        "amount": { "type": "number", "description": "Payment or refund amount" },
+        "currency": { "type": "string", "description": "Payment currency (e.g., INR)" },
+        "paymentMethod": { "type": "string", "description": "Payment channel (e.g., UPI)" },
+        "utr": { "type": "string", "description": "12-digit UPI reference number" },
+        "paymentDate": { "type": "string", "description": "Exact transaction timestamp" },
+        "refundDate": { "type": "string", "description": "Exact refund timestamp" },
+        "subscriptionStart": { "type": "string", "description": "Active subscription start date" },
+        "subscriptionExpiry": { "type": "string", "description": "Active subscription expiry date" },
+        "status": { "type": "string", "description": "Verification status (VALID, REFUNDED, CANCELLED, INVALID)" },
+        "verifiedAt": { "type": "string", "description": "Audit verification timestamp" },
+        "createdAt": { "type": "string", "description": "Receipt creation timestamp" },
+        "verificationId": { "type": "string", "description": "Secure cryptographic verification ID/Token" },
+        "type": { "type": "string", "description": "Receipt type (PAYMENT_SUCCESSFUL, REFUND_SUCCESSFUL)" }
+      },
+      "required": ["receiptId", "uid", "amount", "status", "verificationId", "type"]
     }
   },
   "firestore": {
@@ -83,9 +135,17 @@
       "schema": "User",
       "description": "User profiles"
     },
+    "/users/{userId}/documents/{docId}": {
+      "schema": "StoredDocument",
+      "description": "5-year archived documents for user with real-time synchronization"
+    },
     "/orders/{orderId}": {
       "schema": "Order",
       "description": "UTR payment submissions & subscription orders"
+    },
+    "/receipts/{receiptId}": {
+      "schema": "Receipt",
+      "description": "Backend-generated secure immutable receipts and refunds"
     },
     "/app_settings/{settingId}": {
       "schema": "AppSetting",

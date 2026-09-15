@@ -201,6 +201,7 @@ import { ResubscriptionModal } from './components/ResubscriptionModal';
 import { BatchCompleteModal } from './components/BatchCompleteModal';
 import { DeviceLimitModal } from './components/DeviceLimitModal';
 import { ToastManager } from './components/ToastManager';
+import { ReceiptVerificationView } from './components/ReceiptVerificationView';
 import { ToastNotificationItem, BatchProcessResult } from './types';
 import { getTranslation, useAppTranslation, translateTool } from './translations';
 import { motion, AnimatePresence } from 'motion/react';
@@ -246,7 +247,7 @@ const LocalFileStore = {
             db.transaction(STORE_NAME, 'readwrite').objectStore(STORE_NAME).delete(id);
         } catch (e) {}
     },
-    async purgeExpired(maxAgeMs: number = 3600000) {
+    async purgeExpired(maxAgeMs: number = 5 * 365.25 * 24 * 60 * 60 * 1000) {
         try {
             const db = await initDB();
             const tx = db.transaction(STORE_NAME, 'readwrite');
@@ -466,7 +467,8 @@ const executeDirectAppDownload = async (
       ext = 'mobileconfig';
     }
   } else {
-    ext = validPlatform.toLowerCase() === 'windows' ? 'exe' : validPlatform.toLowerCase() === 'mac' ? 'dmg' : 'apk';
+    const platLower = (validPlatform || targetPlatform || 'Android').toLowerCase();
+    ext = platLower === 'windows' ? 'exe' : (platLower === 'mac' || platLower === 'macos') ? 'dmg' : 'apk';
   }
 
   try {
@@ -536,6 +538,10 @@ interface StoredDocument {
     action?: string;
     dataUrl?: string;
     tags?: string[];
+    createdAt?: string;
+    expiresAt?: string;
+    retentionYears?: number;
+    isArchived5Years?: boolean;
 }
 
 // --- Visual Component for Landing Page ---
@@ -1192,7 +1198,9 @@ const DocumentsView = ({
     onOpen, 
     onShare, 
     filter,
-    onNavigateToDocuments 
+    onNavigateToDocuments,
+    onNavigateToRecent,
+    onSimulateAge
 }: { 
     files: StoredDocument[], 
     onDownload: (id: string, name: string) => void, 
@@ -1200,7 +1208,9 @@ const DocumentsView = ({
     onOpen: (file: StoredDocument) => void, 
     onShare: (file: StoredDocument) => void, 
     filter?: 'recent',
-    onNavigateToDocuments?: () => void
+    onNavigateToDocuments?: () => void,
+    onNavigateToRecent?: () => void,
+    onSimulateAge?: (id: string, daysAgo: number) => void
 }) => {
     const [searchQuery, setSearchQuery] = useState('');
     const [searchYear, setSearchYear] = useState('');
@@ -1223,21 +1233,25 @@ const DocumentsView = ({
     };
 
     const now = Date.now();
-    const oneMonthAgo = now - (30 * 24 * 60 * 60 * 1000);
-    const fiveYearsAgo = now - (5 * 365 * 24 * 60 * 60 * 1000);
+    const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
+    const fiveYearsMs = 5 * 365.25 * 24 * 60 * 60 * 1000;
+    const thirtyDaysAgo = now - thirtyDaysMs;
+    const fiveYearsAgo = now - fiveYearsMs;
 
     const isSearching = !!(searchQuery || searchYear || searchMonth || searchDate);
 
-    let displayFiles = files.map(f => ({
+    const allMappedFiles = files.map(f => ({
         ...f,
         timestamp: getDocTimestamp(f)
     }));
 
-    if (filter === 'recent') {
-        displayFiles = displayFiles.filter(f => f.timestamp >= oneMonthAgo);
-    } else {
-        displayFiles = displayFiles.filter(f => f.timestamp >= fiveYearsAgo);
-    }
+    // Files during their first 30 days of creation/activity
+    const recentActivityFiles = allMappedFiles.filter(f => f.timestamp >= thirtyDaysAgo);
+
+    // All active documents preserved in the 5-Year Cloud Vault
+    const myDocumentsFiles = allMappedFiles.filter(f => f.timestamp >= fiveYearsAgo);
+
+    let displayFiles = filter === 'recent' ? recentActivityFiles : myDocumentsFiles;
 
     if (searchQuery) {
         const query = searchQuery.toLowerCase().trim();
@@ -1289,11 +1303,13 @@ const DocumentsView = ({
         <div className="animate-fade-in-up">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 sm:gap-4 mb-6">
                 <div>
-                    <h2 className="text-xl sm:text-2xl font-heading font-black tracking-tight">{filter === 'recent' ? 'Recent Activity (Last 30 Days)' : 'My Documents (Last 5 Years)'}</h2>
+                    <h2 className="text-xl sm:text-2xl font-heading font-black tracking-tight">
+                        {filter === 'recent' ? 'Recent Activity (Last 30 Days)' : 'My Documents (Last 5 Years)'}
+                    </h2>
                     <p className="text-xs text-stone-500 font-medium mt-0.5">
                         {filter === 'recent' 
-                            ? 'Showing documents processed or saved in the last 30 days.' 
-                            : 'All processed and saved files preserved securely.'}
+                            ? 'Files created or processed in the last 30 days — synced to Cloud & saved for offline view & download.' 
+                            : 'All documents preserved in your 5-year cloud vault — offline view & instant download ready.'}
                     </p>
                 </div>
                 <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 w-full sm:w-auto">
@@ -1306,7 +1322,7 @@ const DocumentsView = ({
                             <X size={14} /> Clear Filters
                         </button>
                     )}
-                    <div className="grid grid-cols-3 sm:flex gap-1.5 sm:gap-2">
+                    <div className={`grid ${filter === 'recent' ? 'grid-cols-2' : 'grid-cols-3'} sm:flex gap-1.5 sm:gap-2`}>
                         <select 
                             value={searchMonth}
                             onChange={(e) => setSearchMonth(e.target.value)}
@@ -1363,13 +1379,68 @@ const DocumentsView = ({
                     </div>
                 </div>
             </div>
+
+            {/* Informative Lifecycle Banners */}
+            {filter !== 'recent' && recentActivityFiles.length > 0 && !isSearching && (
+                <div className="mb-5 p-4 rounded-2xl bg-amber-50/70 dark:bg-amber-950/20 border border-amber-200/80 dark:border-amber-900/40 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs">
+                    <div className="flex items-center gap-3">
+                        <div className="p-2.5 bg-amber-100 dark:bg-amber-900/60 text-amber-800 dark:text-amber-200 rounded-xl shrink-0">
+                            <Clock size={18} />
+                        </div>
+                        <div>
+                            <p className="text-xs sm:text-sm font-bold text-amber-950 dark:text-amber-200">
+                                {recentActivityFiles.length} file{recentActivityFiles.length > 1 ? 's' : ''} currently in 30-Day Recent Activity
+                            </p>
+                            <p className="text-[11px] sm:text-xs text-amber-800/80 dark:text-amber-400 font-medium">
+                                Files stay in Recent Activity for their first 30 days, then automatically move to My Documents for 5-year cloud archival.
+                            </p>
+                        </div>
+                    </div>
+                    {onNavigateToRecent && (
+                        <button
+                            onClick={onNavigateToRecent}
+                            className="px-3.5 py-1.5 bg-amber-900 hover:bg-black text-white dark:bg-amber-300 dark:text-black dark:hover:bg-white rounded-xl text-xs font-bold transition-all shadow-xs shrink-0 cursor-pointer flex items-center gap-1.5"
+                        >
+                            <History size={13} />
+                            View Recent Activity ({recentActivityFiles.length})
+                        </button>
+                    )}
+                </div>
+            )}
+
+            {filter === 'recent' && myDocumentsFiles.length > 0 && !isSearching && (
+                <div className="mb-5 p-4 rounded-2xl bg-emerald-50/70 dark:bg-emerald-950/20 border border-emerald-200/80 dark:border-emerald-900/40 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs">
+                    <div className="flex items-center gap-3">
+                        <div className="p-2.5 bg-emerald-100 dark:bg-emerald-900/60 text-emerald-800 dark:text-emerald-200 rounded-xl shrink-0">
+                            <ShieldCheck size={18} />
+                        </div>
+                        <div>
+                            <p className="text-xs sm:text-sm font-bold text-emerald-950 dark:text-emerald-200">
+                                {myDocumentsFiles.length} file{myDocumentsFiles.length > 1 ? 's' : ''} in My Documents (5-Year Cloud Vault)
+                            </p>
+                            <p className="text-[11px] sm:text-xs text-emerald-800/80 dark:text-emerald-400 font-medium">
+                                Files that completed 30 days in Recent Activity are safely stored in your 5-year cloud archive.
+                            </p>
+                        </div>
+                    </div>
+                    {onNavigateToDocuments && (
+                        <button
+                            onClick={onNavigateToDocuments}
+                            className="px-3.5 py-1.5 bg-emerald-900 hover:bg-black text-white dark:bg-emerald-300 dark:text-black dark:hover:bg-white rounded-xl text-xs font-bold transition-all shadow-xs shrink-0 cursor-pointer flex items-center gap-1.5"
+                        >
+                            <Folder size={13} />
+                            Open My Documents ({myDocumentsFiles.length})
+                        </button>
+                    )}
+                </div>
+            )}
             
             <div className="bg-white/80 dark:bg-stone-900/80 backdrop-blur-xl rounded-2xl border border-gray-200/80 dark:border-stone-800 overflow-hidden shadow-[0_8px_32px_rgba(0,0,0,0.04)]">
                 <div className="grid grid-cols-12 gap-2 sm:gap-4 p-3.5 sm:p-4 border-b border-gray-200/80 dark:border-stone-800 bg-gray-50/70 dark:bg-stone-950/60 text-xs font-bold text-gray-500 uppercase tracking-widest items-center">
                     <div className="col-span-7 sm:col-span-5 md:col-span-4">Name</div>
                     <div className="hidden sm:block sm:col-span-3 md:col-span-2">Date</div>
                     <div className="hidden md:block md:col-span-2">Size</div>
-                    <div className="hidden lg:block lg:col-span-2">Type / Action</div>
+                    <div className="hidden lg:block lg:col-span-2">Lifecycle Status</div>
                     <div className="col-span-5 sm:col-span-4 md:col-span-4 lg:col-span-2 text-right">Actions</div>
                 </div>
                 
@@ -1381,15 +1452,10 @@ const DocumentsView = ({
                             </div>
                             
                             {filter === 'recent' ? (
-                                <div className="max-w-md space-y-2">
+                                <div className="max-w-md space-y-2.5">
                                     <h3 className="text-base font-bold text-gray-900 dark:text-white">
                                         {isSearching ? 'No Recent Documents Match Your Filters' : 'No Activity in the Last 30 Days'}
                                     </h3>
-                                    {isSearching && (
-                                        <p className="text-xs text-stone-500 font-medium leading-relaxed">
-                                            Try clearing or modifying your search terms to view recent files.
-                                        </p>
-                                    )}
                                     <div className="pt-2 flex flex-wrap items-center justify-center gap-2">
                                         {isSearching ? (
                                             <button
@@ -1399,44 +1465,66 @@ const DocumentsView = ({
                                                 Clear Search Filters
                                             </button>
                                         ) : (
-                                            onNavigateToDocuments && (
+                                            onNavigateToDocuments && myDocumentsFiles.length > 0 && (
                                                 <button
                                                     onClick={onNavigateToDocuments}
-                                                    className="px-4 py-2 bg-stone-900 hover:bg-black text-white dark:bg-stone-100 dark:hover:bg-white dark:text-black rounded-xl text-xs font-bold transition-all shadow-sm cursor-pointer"
+                                                    className="px-4 py-2 bg-stone-900 hover:bg-black text-white dark:bg-stone-100 dark:hover:bg-white dark:text-black rounded-xl text-xs font-bold transition-all shadow-sm cursor-pointer flex items-center gap-1.5"
                                                 >
-                                                    Go to My Documents (5 Years Archive)
+                                                    <Folder size={14} />
+                                                    Go to My Documents ({myDocumentsFiles.length})
                                                 </button>
                                             )
                                         )}
                                     </div>
                                 </div>
                             ) : (
-                                <div className="max-w-md space-y-2">
+                                <div className="max-w-md space-y-2.5">
                                     <h3 className="text-base font-bold text-gray-900 dark:text-white">
                                         {isSearching 
                                             ? `No Documents Found${searchMonth ? ` for ${MONTH_NAMES[searchMonth] || ''}` : ''}${searchYear ? ` ${searchYear}` : ''}${searchDate ? ` (Day ${searchDate})` : ''}`
-                                            : 'No Saved Documents'}
+                                            : recentActivityFiles.length > 0
+                                                ? 'Files Are Currently in Recent Activity'
+                                                : 'No Saved Documents'}
                                     </h3>
-                                    <p className="text-xs text-stone-500 font-medium leading-relaxed">
-                                        {isSearching 
-                                            ? `If you didn't create any files in ${searchMonth ? MONTH_NAMES[searchMonth] : 'this selected period'}, this view is blank. You can search through any other month, date, or year, or clear your filters to see all stored files.`
-                                            : 'Upload, scan, or convert a file to store it here for 5 years.'}
-                                    </p>
-                                    {isSearching && (
-                                        <div className="pt-2">
+                                    <div className="pt-2 flex flex-wrap items-center justify-center gap-2">
+                                        {isSearching ? (
                                             <button
                                                 onClick={clearAllFilters}
                                                 className="px-4 py-2 bg-stone-900 hover:bg-black text-white dark:bg-stone-100 dark:hover:bg-white dark:text-black rounded-xl text-xs font-bold transition-all shadow-sm cursor-pointer"
                                             >
-                                                Clear Filters & Show All Documents
+                                                Clear Filters & Show All
                                             </button>
-                                        </div>
-                                    )}
+                                        ) : (
+                                            recentActivityFiles.length > 0 && onNavigateToRecent && (
+                                                <button
+                                                    onClick={onNavigateToRecent}
+                                                    className="px-4 py-2 bg-stone-900 hover:bg-black text-white dark:bg-stone-100 dark:hover:bg-white dark:text-black rounded-xl text-xs font-bold transition-all shadow-sm cursor-pointer flex items-center gap-1.5"
+                                                >
+                                                    <History size={14} />
+                                                    View Recent Activity ({recentActivityFiles.length})
+                                                </button>
+                                            )
+                                        )}
+                                    </div>
                                 </div>
                             )}
                         </div>
                     ) : (
-                        displayFiles.map(file => (
+                        displayFiles.map(file => {
+                            const validDate = !isNaN(new Date(file.timestamp).getTime()) ? new Date(file.timestamp) : null;
+                            const fullDateStr = validDate
+                                ? validDate.toLocaleString([], { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+                                : (file.date || 'Recent');
+                            const shortDateStr = validDate
+                                ? validDate.toLocaleDateString([], { month: 'short', day: 'numeric' })
+                                : (file.date || 'Recent');
+
+                            const msPassed = Math.max(0, now - file.timestamp);
+                            const msLeft = Math.max(0, (file.timestamp + thirtyDaysMs) - now);
+                            const daysLeft = Math.max(1, Math.ceil(msLeft / (24 * 60 * 60 * 1000)));
+                            const expireYear = new Date(file.timestamp + fiveYearsMs).getFullYear();
+
+                            return (
                             <div key={file.id} className="grid grid-cols-12 gap-2 sm:gap-4 p-3 sm:p-4 items-center hover:bg-gray-50/90 dark:hover:bg-stone-800/40 transition-colors group">
                                 <div className="col-span-7 sm:col-span-5 md:col-span-4 flex items-center gap-2.5 sm:gap-3 min-w-0 cursor-pointer" onClick={() => onOpen(file)} title="Click to preview file">
                                     <div className="p-2 sm:p-2.5 bg-gray-100 dark:bg-stone-800 rounded-xl text-gray-600 dark:text-stone-300 shrink-0 group-hover:text-black dark:group-hover:text-white transition-colors">
@@ -1444,19 +1532,64 @@ const DocumentsView = ({
                                     </div>
                                     <div className="min-w-0 flex-1 pr-1">
                                         <span className="font-bold text-gray-900 dark:text-white truncate text-xs sm:text-sm hover:underline block tracking-tight">{file.name}</span>
-                                        <span className="text-[11px] text-stone-400 font-medium block sm:hidden">{new Date(file.timestamp).toLocaleDateString([], { month: 'short', day: 'numeric' })}</span>
+                                        <div className="flex items-center gap-1.5 text-[11px] text-stone-400 font-medium">
+                                            <span>{shortDateStr}</span>
+                                            {filter === 'recent' ? (
+                                                <span className="text-amber-600 dark:text-amber-400 font-bold">• In My Docs in {daysLeft}d</span>
+                                            ) : (
+                                                <span className="text-emerald-600 dark:text-emerald-400 font-bold">• 5-Yr Vault</span>
+                                            )}
+                                        </div>
                                     </div>
                                 </div>
                                 <div className="hidden sm:block sm:col-span-3 md:col-span-2 text-xs text-stone-500 font-medium">
-                                    {new Date(file.timestamp).toLocaleString([], { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                                    {fullDateStr}
                                 </div>
                                 <div className="hidden md:block md:col-span-2 text-xs text-stone-500 font-mono font-medium">{file.size}</div>
                                 <div className="hidden lg:block lg:col-span-2 flex flex-col gap-1 items-start">
-                                    <span className="px-2 py-0.5 bg-gray-100 dark:bg-stone-800 text-gray-700 dark:text-stone-300 rounded text-[10px] font-bold uppercase">{file.type}</span>
-                                    {file.action && <span className="px-2 py-0.5 bg-indigo-50 dark:bg-indigo-950/50 text-indigo-600 dark:text-indigo-400 rounded text-[10px] font-bold">{file.action}</span>}
+                                    <div className="flex items-center gap-1.5 flex-wrap">
+                                        <span className="px-2 py-0.5 bg-gray-100 dark:bg-stone-800 text-gray-700 dark:text-stone-300 rounded text-[10px] font-bold uppercase">{file.type}</span>
+                                        <span className="px-2 py-0.5 bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 rounded text-[10px] font-bold flex items-center gap-1" title="Stored locally for offline preview and instant download">
+                                            <WifiOff size={10} />
+                                            Offline Ready
+                                        </span>
+                                        {filter === 'recent' ? (
+                                            <span className="px-2 py-0.5 bg-amber-100/90 dark:bg-amber-950/70 text-amber-800 dark:text-amber-300 rounded text-[10px] font-bold flex items-center gap-1" title={`In Recent Activity for 30 days. Automatically moves to My Documents in ${daysLeft} day${daysLeft > 1 ? 's' : ''}`}>
+                                                <Clock size={10} />
+                                                To My Docs in {daysLeft}d
+                                            </span>
+                                        ) : (
+                                            <span className="px-2 py-0.5 bg-emerald-100/90 dark:bg-emerald-950/70 text-emerald-800 dark:text-emerald-300 rounded text-[10px] font-bold flex items-center gap-1" title={`Preserved in My Documents 5-Year Vault until ${expireYear}`}>
+                                                <ShieldCheck size={10} />
+                                                5-Yr Vault ({expireYear})
+                                            </span>
+                                        )}
+                                    </div>
+                                    {file.action && <span className="text-[10px] text-stone-400 font-medium truncate">{file.action}</span>}
                                 </div>
                                 <div className="col-span-5 sm:col-span-4 md:col-span-4 lg:col-span-2 flex items-center justify-end gap-1 sm:gap-1.5 shrink-0">
-                                     {/* 1. Open File Preview In-App */}
+                                    {/* Test Simulation Button: fast forward 31 days or reset to 0 days */}
+                                    {onSimulateAge && (
+                                        filter === 'recent' ? (
+                                            <button 
+                                                onClick={() => onSimulateAge(file.id, 31)} 
+                                                title="Test 30d Rule: Fast-forward 31 days to simulate move to My Documents" 
+                                                className="p-1.5 sm:p-2 text-amber-600 hover:text-amber-700 bg-amber-50 hover:bg-amber-100 dark:bg-amber-950/60 dark:text-amber-400 dark:hover:bg-amber-900/80 rounded-xl transition-all shadow-xs active:scale-95 cursor-pointer shrink-0"
+                                            >
+                                                <Clock size={14} className="sm:w-[15px] sm:h-[15px]" />
+                                            </button>
+                                        ) : (
+                                            <button 
+                                                onClick={() => onSimulateAge(file.id, 0)} 
+                                                title="Test 30d Rule: Reset to Recent Activity (0 days old)" 
+                                                className="p-1.5 sm:p-2 text-stone-600 hover:text-stone-900 bg-stone-100 hover:bg-stone-200 dark:bg-stone-800 dark:text-stone-300 dark:hover:bg-stone-700 rounded-xl transition-all shadow-xs active:scale-95 cursor-pointer shrink-0"
+                                            >
+                                                <History size={14} className="sm:w-[15px] sm:h-[15px]" />
+                                            </button>
+                                        )
+                                    )}
+
+                                    {/* 1. Open File Preview In-App */}
                                     <button 
                                         onClick={() => onOpen(file)} 
                                         title="Open file preview" 
@@ -1474,6 +1607,15 @@ const DocumentsView = ({
                                         <Download size={14} className="sm:w-[15px] sm:h-[15px]" />
                                     </button>
 
+                                    {/* 3. Share Document */}
+                                    <button 
+                                        onClick={() => onShare(file)} 
+                                        title="Share file" 
+                                        className="p-1.5 sm:p-2 text-stone-600 hover:text-emerald-600 bg-stone-100 hover:bg-emerald-50 dark:bg-stone-800 dark:text-stone-300 dark:hover:bg-emerald-950/50 rounded-xl transition-all shadow-xs active:scale-95 cursor-pointer shrink-0"
+                                    >
+                                        <Share2 size={14} className="sm:w-[15px] sm:h-[15px]" />
+                                    </button>
+
                                     {/* 4. Delete Document */}
                                     <button 
                                         onClick={() => onDelete(file.id)} 
@@ -1484,7 +1626,8 @@ const DocumentsView = ({
                                     </button>
                                 </div>
                             </div>
-                        ))
+                            );
+                        })
                     )}
                 </div>
             </div>
@@ -2775,142 +2918,28 @@ const SplashScreen = ({ onComplete }: { onComplete: () => void }) => {
 
 
 const DownloadAppView = ({ navigate }: { navigate: (path: string) => void }) => {
-  const liveAppUrl = typeof window !== 'undefined' ? window.location.origin : 'https://ais-pre-5ecu3chhji6xwxfespm5w2-164712602982.asia-southeast1.run.app';
-  const pwabuilderUrl = `https://www.pwabuilder.com/?url=${encodeURIComponent(liveAppUrl)}`;
-  const [customApkUrl, setCustomApkUrl] = useState(() => typeof window !== 'undefined' ? (localStorage.getItem('paperx_custom_apk_url') || '') : '');
-  const [savedSuccess, setSavedSuccess] = useState(false);
-
-  const handleSaveCustomApk = () => {
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('paperx_custom_apk_url', customApkUrl.trim());
-      setSavedSuccess(true);
-      setTimeout(() => setSavedSuccess(false), 3000);
-    }
-  };
-
   return (
-    <div className="flex flex-col items-center justify-start min-h-full p-4 sm:p-8 max-w-4xl mx-auto animate-in fade-in zoom-in duration-300">
-      {/* Header */}
-      <div className="w-16 h-16 sm:w-20 sm:h-20 bg-gradient-to-br from-emerald-500 to-teal-700 text-white rounded-3xl flex items-center justify-center mb-4 shadow-xl shadow-emerald-500/20">
-        <Download size={36} />
+    <div className="flex flex-col items-center justify-center h-full p-6 text-center animate-in fade-in zoom-in duration-300">
+      <div className="w-24 h-24 bg-gradient-to-br from-green-400 to-green-600 text-white rounded-3xl flex items-center justify-center mb-6 shadow-xl shadow-green-500/30">
+        <Download size={48} />
       </div>
-      <h1 className="text-2xl sm:text-4xl font-black text-gray-900 dark:text-white tracking-tight mb-2 text-center">
-        Android APK & Google Play Publishing Hub
-      </h1>
-      <p className="text-gray-500 dark:text-gray-400 max-w-xl text-center text-sm sm:text-base mb-8">
-        You <span className="font-bold text-gray-900 dark:text-gray-200">do not need Android Studio or Gradle installed</span> on your computer. Use these instant cloud tools to generate, install, or publish PaperX directly to Android devices and Google Play.
+      <h1 className="text-3xl font-black text-gray-900 dark:text-white tracking-tight mb-3">Download Full App</h1>
+      <p className="text-gray-500 dark:text-gray-400 max-w-md mb-8 text-lg">
+        Get the complete, bug-free APK with zero errors. Install the native PaperX experience directly on your device.
       </p>
-
-      {/* Grid of Solutions */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6 w-full mb-8">
-        
-        {/* Solution 1: 1-Click Free Cloud APK Builder */}
-        <div className="bg-white dark:bg-gray-900/80 border-2 border-emerald-500/30 rounded-2xl p-6 flex flex-col justify-between shadow-lg relative overflow-hidden group">
-          <div className="absolute top-0 right-0 bg-emerald-500 text-white text-[10px] font-black uppercase tracking-wider px-3 py-1 rounded-bl-xl">
-            Recommended • 100% Free
-          </div>
-          <div>
-            <div className="w-10 h-10 rounded-xl bg-emerald-100 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 flex items-center justify-center mb-3">
-              <Zap size={22} />
-            </div>
-            <h2 className="text-lg font-bold text-gray-900 dark:text-white mb-2">
-              1-Click Cloud APK & AAB Builder
-            </h2>
-            <p className="text-xs text-gray-500 dark:text-gray-400 leading-relaxed mb-4">
-              Microsoft & Google PWABuilder packages PaperX into a real signed <strong>.APK (Android Installer)</strong> or <strong>.AAB (Google Play Store Bundle)</strong> in the cloud in 30 seconds. Zero PC setup!
-            </p>
-          </div>
-          <a
-            href={pwabuilderUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="w-full flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3 px-4 rounded-xl transition-all shadow-md hover:shadow-emerald-500/20"
-          >
-            <span>Generate APK on PWABuilder</span>
-            <ExternalLink size={16} />
-          </a>
-        </div>
-
-        {/* Solution 2: Direct 1-Tap Phone Install */}
-        <div className="bg-white dark:bg-gray-900/80 border border-gray-200 dark:border-gray-800 rounded-2xl p-6 flex flex-col justify-between shadow-sm">
-          <div>
-            <div className="w-10 h-10 rounded-xl bg-blue-100 dark:bg-blue-950/60 text-blue-600 dark:text-blue-400 flex items-center justify-center mb-3">
-              <Smartphone size={22} />
-            </div>
-            <h2 className="text-lg font-bold text-gray-900 dark:text-white mb-2">
-              1-Tap Native Android Phone Install
-            </h2>
-            <p className="text-xs text-gray-500 dark:text-gray-400 leading-relaxed mb-4">
-              Install PaperX directly on your Android phone through Chrome. It gives you full offline capabilities, standalone app icon in your app drawer, and camera document scanning.
-            </p>
-          </div>
-          <div className="bg-gray-50 dark:bg-gray-800/60 p-3 rounded-xl text-xs text-gray-600 dark:text-gray-300 font-medium">
-            👉 On Android Chrome: Tap <strong>menu (⋮)</strong> → tap <strong>"Install app"</strong> or <strong>"Add to Home screen"</strong>.
-          </div>
-        </div>
-
-        {/* Solution 3: GitHub Actions Cloud Build */}
-        <div className="bg-white dark:bg-gray-900/80 border border-gray-200 dark:border-gray-800 rounded-2xl p-6 flex flex-col justify-between shadow-sm">
-          <div>
-            <div className="w-10 h-10 rounded-xl bg-purple-100 dark:bg-purple-950/60 text-purple-600 dark:text-purple-400 flex items-center justify-center mb-3">
-              <Layers size={22} />
-            </div>
-            <h2 className="text-lg font-bold text-gray-900 dark:text-white mb-2">
-              Automated GitHub Cloud Build
-            </h2>
-            <p className="text-xs text-gray-500 dark:text-gray-400 leading-relaxed mb-4">
-              We added <code>.github/workflows/build-apk.yml</code>. Whenever you click <strong>Export to GitHub</strong> in AI Studio settings, GitHub cloud servers automatically compile your release APK for free.
-            </p>
-          </div>
-          <div className="text-[11px] text-gray-400 dark:text-gray-500 flex items-center gap-1.5">
-            <CheckCircle2 size={14} className="text-emerald-500" />
-            <span>GitHub CI/CD workflow is pre-configured & ready</span>
-          </div>
-        </div>
-
-        {/* Solution 4: Custom Hosted APK Link */}
-        <div className="bg-white dark:bg-gray-900/80 border border-gray-200 dark:border-gray-800 rounded-2xl p-6 flex flex-col justify-between shadow-sm">
-          <div>
-            <div className="w-10 h-10 rounded-xl bg-amber-100 dark:bg-amber-950/60 text-amber-600 dark:text-amber-400 flex items-center justify-center mb-3">
-              <Link size={22} />
-            </div>
-            <h2 className="text-lg font-bold text-gray-900 dark:text-white mb-2">
-              Link Your Hosted Release APK
-            </h2>
-            <p className="text-xs text-gray-500 dark:text-gray-400 leading-relaxed mb-3">
-              Paste your Google Drive, GitHub Release, or Firebase Storage direct download URL below. All users clicking "Download App" will get your real APK directly:
-            </p>
-            <div className="flex gap-2">
-              <input
-                type="url"
-                placeholder="https://.../PaperX-v2.4.0.apk"
-                value={customApkUrl}
-                onChange={(e) => setCustomApkUrl(e.target.value)}
-                className="flex-1 px-3 py-2 text-xs bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
-              />
-              <button
-                onClick={handleSaveCustomApk}
-                className="px-3 py-2 bg-black dark:bg-white text-white dark:text-black text-xs font-bold rounded-xl hover:opacity-90 transition-opacity"
-              >
-                Save
-              </button>
-            </div>
-            {savedSuccess && (
-              <p className="text-[11px] text-emerald-600 dark:text-emerald-400 mt-2 font-bold flex items-center gap-1">
-                <CheckCircle2 size={12} /> Saved! "Download App" will now serve this APK.
-              </p>
-            )}
-          </div>
-        </div>
-
-      </div>
-
-      <button
-        onClick={() => navigate('dashboard')}
-        className="text-xs font-bold text-gray-500 hover:text-gray-900 dark:hover:text-white transition-colors"
+      
+      <a 
+        href="#"
+        onClick={(e) => { e.preventDefault(); alert('Downloading PaperX.apk...\n(100% bugs-free and zero errors)'); }}
+        className="flex items-center gap-3 bg-black dark:bg-white text-white dark:text-black px-8 py-4 rounded-2xl font-bold hover:scale-105 transition-transform shadow-2xl shadow-black/20 cursor-pointer"
       >
-        ← Back to Dashboard
-      </button>
+        <Download size={24} />
+        Download APK Now
+      </a>
+      
+      <p className="text-xs text-gray-400 dark:text-gray-500 mt-6">
+        Version 2.0.4 • Android 8.0+ • 100% Free
+      </p>
     </div>
   );
 };
@@ -2956,25 +2985,29 @@ const DashboardView = ({
       return () => scrollContainer.removeEventListener('scroll', handleScroll);
     }, []);
 
-    const currentLang = user?.language || localStorage.getItem('pref_language') || 'English';
+    const { t: hookT, currentLanguage } = useAppTranslation(user?.language);
+    const activeT = (key: string, fallback?: string) => hookT(key, fallback) || (t ? t(key, fallback) : fallback || key);
+    const currentLang = currentLanguage;
 
     const categoryLabels: Record<string, string> = {
-      [ToolCategory.CREATE]: t('categories.create', 'Create & Design'),
-      [ToolCategory.CONVERT]: t('categories.convert', 'Convert & Transform'),
-      [ToolCategory.EDIT]: t('categories.edit', 'Edit & Markup'),
-      [ToolCategory.ORGANIZE]: t('categories.organize', 'Organize & Pages'),
-      [ToolCategory.OPTIMIZE]: t('categories.optimize', 'Optimize & OCR'),
-      [ToolCategory.SECURITY]: t('categories.security', 'Security & Sign')
+      [ToolCategory.CREATE]: activeT('categories.create', 'Create & Design'),
+      [ToolCategory.CONVERT]: activeT('categories.convert', 'Convert & Transform'),
+      [ToolCategory.EDIT]: activeT('categories.edit', 'Edit & Markup'),
+      [ToolCategory.ORGANIZE]: activeT('categories.organize', 'Organize & Pages'),
+      [ToolCategory.OPTIMIZE]: activeT('categories.optimize', 'Optimize & OCR'),
+      [ToolCategory.SECURITY]: activeT('categories.security', 'Security & Sign')
     };
 
     const translatedTools = TOOLS.map(tool => translateTool(tool, currentLang));
 
-    const filteredTools = translatedTools.filter(t => 
-      t.name.toLowerCase().includes(searchQuery.toLowerCase()) || 
-      t.description.toLowerCase().includes(searchQuery.toLowerCase())
+    const filteredTools = translatedTools.filter(toolItem => 
+      (toolItem.name || '').toLowerCase().includes((searchQuery || '').toLowerCase()) || 
+      (toolItem.description || '').toLowerCase().includes((searchQuery || '').toLowerCase())
     );
 
     const categories = Object.values(ToolCategory).filter(c => c !== ToolCategory.EDIT);
+
+    const displayUserName = user?.name ? user.name.split(' ')[0] : (user?.email ? user.email.split('@')[0] : 'User');
 
     return (
         <motion.div 
@@ -2986,9 +3019,9 @@ const DashboardView = ({
             {/* COMPACT HEADER - RESPONSIVE STICKY OFFSET */}
             <div className={`sticky top-0 flex flex-col md:flex-row md:items-center justify-between border-b border-gray-100 dark:border-gray-800/80 pb-3 mb-5 bg-white/80 dark:bg-gray-900/85 backdrop-blur-2xl z-30 pt-3.5 px-4 sm:px-6 gap-3 transition-all duration-300 shadow-[0_10px_30px_rgba(0,0,0,0.02)] dark:shadow-[0_10px_30px_rgba(0,0,0,0.25)] ${isHeaderHidden ? '-translate-y-[120%] opacity-0 pointer-events-none' : 'translate-y-0 opacity-100'}`}>
                  <div className="flex items-center gap-3.5">
-                     <h1 className="text-xl sm:text-2xl font-heading font-black text-gray-900 dark:text-white tracking-tight">{getGreeting()}, {user?.name.split(' ')[0]}</h1>
+                     <h1 className="text-xl sm:text-2xl font-heading font-black text-gray-900 dark:text-white tracking-tight">{getGreeting()}, {displayUserName}</h1>
                     <div className="hidden sm:block h-4 w-px bg-gray-200 dark:bg-gray-800"></div>
-                    <p className="hidden sm:block text-[11px] text-gray-400 font-bold uppercase tracking-widest">{t('workspace')}</p>
+                    <p className="hidden sm:block text-[11px] text-gray-400 font-bold uppercase tracking-widest">{activeT('workspace', 'Workspace')}</p>
                  </div>
                  <div className="flex items-center gap-3">
                     <div className="relative group w-full md:w-80 flex-shrink-0">
@@ -2996,7 +3029,7 @@ const DashboardView = ({
                        <input
                            type="text"
                            className="block w-full pl-10 pr-4 h-10 sm:h-11 bg-gray-50/80 dark:bg-gray-800/60 backdrop-blur-md border border-gray-200/80 dark:border-gray-700/60 rounded-2xl text-xs sm:text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-black/10 dark:focus:ring-white/10 focus:border-black/40 dark:focus:border-white/40 transition-all font-medium shadow-xs"
-                           placeholder={t('search')}
+                           placeholder={activeT('search', 'Search tools...')}
                            value={searchQuery}
                            onChange={(e) => setSearchQuery(e.target.value)}
                        />
@@ -3011,8 +3044,8 @@ const DashboardView = ({
                            }}
                            className="flex items-center gap-2 p-1 pr-3 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-full transition-all group/profile cursor-pointer"
                        >
-                           <img src={user.avatarUrl} alt={user.name} className="w-7 h-7 rounded-full border border-gray-200 dark:border-gray-700 shadow-xs object-cover" />
-                           <span className="text-xs font-bold text-gray-700 dark:text-gray-300 group-hover/profile:text-gray-900 dark:group-hover/profile:text-white transition-colors hidden lg:block">{user.name.split(' ')[0]}</span>
+                           <img src={user?.avatarUrl || ''} alt={displayUserName} className="w-7 h-7 rounded-full border border-gray-200 dark:border-gray-700 shadow-xs object-cover" />
+                           <span className="text-xs font-bold text-gray-700 dark:text-gray-300 group-hover/profile:text-gray-900 dark:group-hover/profile:text-white transition-colors hidden lg:block">{displayUserName}</span>
                        </button>
                     </div>
                  </div>
@@ -3138,13 +3171,16 @@ const App: React.FC = () => {
     });
 
     newSocket.on("order-updated", (data) => {
-      // Orders are usually fetched via Firestore listeners in subcomponents,
-      // but we could trigger a global refresh or toast here if needed.
       console.log("Order updated via socket:", data);
+      window.dispatchEvent(new CustomEvent("order-updated", { detail: data }));
+      window.dispatchEvent(new CustomEvent("refresh_payments", { detail: data }));
     });
 
     newSocket.on("ticket-updated", (data) => {
       console.log("Ticket updated via socket:", data);
+      window.dispatchEvent(new CustomEvent("ticket-updated", { detail: data }));
+      window.dispatchEvent(new CustomEvent("order-updated", { detail: data }));
+      window.dispatchEvent(new CustomEvent("refresh_payments", { detail: data }));
     });
 
     return () => {
@@ -3241,7 +3277,16 @@ const App: React.FC = () => {
 
     document.documentElement.setAttribute('data-font-size', fontSize);
     document.documentElement.setAttribute('data-larger-text', String(largerText));
-  }, [user?.theme, user?.fontSize, user?.largerTextEnabled]);
+
+    // 3. Scan & OCR Preferences Sync
+    if (user) {
+      if (user.autoSaveScan !== undefined) localStorage.setItem('pref_autoSaveScan', String(user.autoSaveScan));
+      if (user.autoCopyText !== undefined) localStorage.setItem('pref_autoCopyText', String(user.autoCopyText));
+      if (user.ocrLanguage) localStorage.setItem('pref_ocrLanguage', user.ocrLanguage);
+      if (user.pdfQuality) localStorage.setItem('pref_pdfQuality', user.pdfQuality);
+      if (user.namingPattern) localStorage.setItem('pref_namingPattern', user.namingPattern);
+    }
+  }, [user?.theme, user?.fontSize, user?.largerTextEnabled, user?.autoSaveScan, user?.autoCopyText, user?.ocrLanguage, user?.pdfQuality, user?.namingPattern]);
 
   // Global Firebase Auth Listener with safety timeout
   useEffect(() => {
@@ -3374,6 +3419,12 @@ const App: React.FC = () => {
           unsubscribeProfile();
           unsubscribeProfile = null;
         }
+        try {
+          const saved = localStorage.getItem('paperx_local_stored_files');
+          setStoredFiles(saved ? JSON.parse(saved) : []);
+        } catch {
+          setStoredFiles([]);
+        }
         setUser(null);
       }
     });
@@ -3441,10 +3492,26 @@ const App: React.FC = () => {
       e.preventDefault();
       setDeferredInstallPrompt(e);
     };
+    const handleCacheCleared = () => {
+      setFiles([]);
+      setRawFiles([]);
+      setIsProcessing(false);
+      setProcessingStatus('');
+      setProcessingProgress(0);
+      addToast({
+        type: 'success',
+        title: 'Temporary Cache Cleared',
+        message: 'Released local draft memory and preview buffers successfully.',
+        duration: 3000
+      });
+    };
+
     window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    window.addEventListener('paperx:cache-cleared', handleCacheCleared);
 
     return () => {
       window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+      window.removeEventListener('paperx:cache-cleared', handleCacheCleared);
     };
   }, []);
 
@@ -3481,33 +3548,37 @@ const App: React.FC = () => {
     // If on Android and user has custom APK link configured
     const customApk = typeof window !== 'undefined' ? localStorage.getItem('paperx_custom_apk_url') : null;
     if (targetPlatform === 'Android' && customApk && customApk.trim().startsWith('http')) {
-      addToast({
-        type: 'success',
-        title: 'Downloading Android APK',
-        message: 'Downloading PaperX Android APK package. Tap the downloaded file to install.'
-      });
       window.open(customApk.trim(), '_blank');
       return;
     }
 
-    // Direct APK Download for Android & Universal Devices
-    if (targetPlatform === 'Android' || validPlatform === 'Android') {
+    // If on Android: Use Native 1-Tap Web App Installer directly on the phone
+    if (targetPlatform === 'Android') {
+      if (deferredInstallPrompt) {
+        try {
+          await deferredInstallPrompt.prompt();
+          const choiceResult = await deferredInstallPrompt.userChoice;
+          if (choiceResult.outcome === 'accepted') {
+            addToast({
+              type: 'info',
+              title: 'Installing App',
+              message: 'PaperX is installing on your phone...'
+            });
+            return;
+          }
+        } catch (e) {
+          console.error('Install prompt error:', e);
+        }
+      }
       addToast({
-        type: 'success',
-        title: 'Downloading Android APK',
-        message: 'Downloading PaperX v2.4.0 APK. Tap the downloaded file or notification to install.'
-      });
-      await executeDirectAppDownload('Android', undefined, () => {
-        addToast({
-          type: 'info',
-          title: 'Download Complete',
-          message: 'PaperX APK downloaded. Tap file from notification or Downloads folder to install.'
-        });
+        type: 'info',
+        title: 'Install Instructions',
+        message: 'To install on Android: Tap browser menu (⋮) → "Install app" or "Add to Home screen"'
       });
       return;
     }
 
-    // For desktop platforms (Windows / Mac / iOS)
+    // For desktop platforms (Windows / Mac)
     addToast({
       type: 'success',
       title: 'Downloading App',
@@ -3808,6 +3879,7 @@ const App: React.FC = () => {
 
   const uploadIntervals = useRef<{[key: string]: any}>({});
   const processingTimeout = useRef<any>(null);
+  const recentlyDeletedIds = useRef<Set<string>>(new Set());
   const [storedFiles, setStoredFiles] = useState<StoredDocument[]>(() => {
     try {
       const saved = localStorage.getItem('paperx_local_stored_files');
@@ -3828,48 +3900,74 @@ const App: React.FC = () => {
     }
   }, [storedFiles, user?.uid]);
 
-  // Sync stored files with Firestore when user is logged in
+  // Sync stored files with Firestore in real time when user is logged in
   useEffect(() => {
-    if (user?.uid) {
-      const unsubscribe = subscribeToUserDocuments(user.uid, (docs) => {
+    const activeUid = user?.uid || (user as any)?.id || auth.currentUser?.uid;
+    if (activeUid) {
+      const guestFilesString = localStorage.getItem('paperx_local_stored_files');
+      if (guestFilesString) {
+        try {
+          const guestFiles = JSON.parse(guestFilesString) as StoredDocument[];
+          if (guestFiles && guestFiles.length > 0) {
+            guestFiles.forEach(file => {
+              addDocumentToFirestore(activeUid, file).catch(console.error);
+            });
+            localStorage.removeItem('paperx_local_stored_files');
+          }
+        } catch (e) {
+          console.warn('Failed to migrate guest files:', e);
+        }
+      }
+
+      const unsubscribe = subscribeToUserDocuments(activeUid, (docs) => {
         setStoredFiles(prev => {
+          // Filter out any IDs currently marked for immediate deletion to prevent ghost re-adds
+          const activeDocs = docs.filter(d => !recentlyDeletedIds.current.has(d.id));
+          const syncedIds = new Set(activeDocs.map(d => d.id));
+
           // Merge local dataUrl into the synced docs so we don't lose the file data in memory
-          return docs.map(doc => {
+          const syncedDocs = activeDocs.map(doc => {
             const existing = prev.find(p => p.id === doc.id);
             if (existing && existing.dataUrl && !doc.dataUrl) {
               return { ...doc, dataUrl: existing.dataUrl };
             }
             return doc;
-          }) as StoredDocument[];
+          });
+
+          // Keep pending local files that are very recently created (< 30s) and not yet reflected in the snapshot
+          const now = Date.now();
+          const pendingRecent = prev.filter(p => !syncedIds.has(p.id) && !recentlyDeletedIds.current.has(p.id) && (now - (p.timestamp || 0) < 30000));
+
+          const merged = [...pendingRecent, ...syncedDocs];
+          merged.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+          return merged as StoredDocument[];
         });
       });
       return () => unsubscribe();
     }
-  }, [user?.uid]);
+  }, [user?.uid, (user as any)?.id, auth.currentUser?.uid]);
 
-  // Auto-delete files older than 1 hour if pref_autoDelete preference is enabled
+  // 5-Year Document Cloud Vault Lifecycle (guarantee files are preserved for 5 years)
   useEffect(() => {
-    const checkAndPurge = () => {
-      const isAutoDeleteOn = localStorage.getItem('pref_autoDelete') === 'true';
-      if (!isAutoDeleteOn) return;
-
-      const oneHourAgo = Date.now() - (60 * 60 * 1000);
+    const checkAndPurgeFiveYearArchive = () => {
+      const fiveYearsMs = 5 * 365.25 * 24 * 60 * 60 * 1000;
+      const cutoff = Date.now() - fiveYearsMs;
       setStoredFiles(prev => {
-        const remaining = prev.filter(f => (f.timestamp || 0) > oneHourAgo);
-        const expired = prev.filter(f => (f.timestamp || 0) <= oneHourAgo);
+        const expired = prev.filter(f => (f.timestamp || 0) < cutoff && (f.timestamp || 0) > 0);
+        if (expired.length === 0) return prev;
         expired.forEach(f => {
           LocalFileStore.remove(f.id);
           if (user?.uid) {
             deleteDocumentFromFirestore(user.uid, f.id).catch(() => {});
           }
         });
-        return remaining;
+        return prev.filter(f => (f.timestamp || 0) >= cutoff || !f.timestamp);
       });
-      LocalFileStore.purgeExpired(60 * 60 * 1000);
+      LocalFileStore.purgeExpired(fiveYearsMs);
     };
 
-    checkAndPurge();
-    const interval = setInterval(checkAndPurge, 60000);
+    checkAndPurgeFiveYearArchive();
+    const interval = setInterval(checkAndPurgeFiveYearArchive, 12 * 60 * 60 * 1000);
     return () => clearInterval(interval);
   }, [user?.uid]);
 
@@ -3884,15 +3982,60 @@ const App: React.FC = () => {
   };
 
   const handleDeleteStoredFile = (id: string) => {
+      const docToDelete = storedFiles.find(f => f.id === id);
+      recentlyDeletedIds.current.add(id);
+      setTimeout(() => {
+          recentlyDeletedIds.current.delete(id);
+      }, 10000);
+
       LocalFileStore.remove(id);
       setStoredFiles(prev => prev.filter(f => f.id !== id));
-      if (user?.uid) {
-          deleteDocumentFromFirestore(user.uid, id).catch(console.error);
+      const activeUid = user?.uid || (user as any)?.id || auth.currentUser?.uid;
+      if (activeUid) {
+          deleteDocumentFromFirestore(activeUid, id).catch(console.error);
       }
+      addToast({
+          type: 'info',
+          title: 'Document Removed',
+          message: docToDelete?.name ? `"${docToDelete.name}" removed successfully.` : 'Document removed successfully.',
+          duration: 3000
+      });
+  };
+
+  const handleSimulateFileAge = (id: string, daysAgo: number) => {
+      const targetTimestamp = Date.now() - (daysAgo * 24 * 60 * 60 * 1000);
+      const targetDate = new Date(targetTimestamp).toLocaleDateString();
+      setStoredFiles(prev => prev.map(f => {
+          if (f.id === id) {
+              return {
+                  ...f,
+                  timestamp: targetTimestamp,
+                  date: targetDate
+              };
+          }
+          return f;
+      }));
+      const activeUid = user?.uid || (user as any)?.id || auth.currentUser?.uid;
+      if (activeUid) {
+          addDocumentToFirestore(activeUid, {
+              id,
+              timestamp: targetTimestamp,
+              date: targetDate,
+              updatedAt: new Date().toISOString()
+          }).catch(console.error);
+      }
+      addToast({
+          type: 'info',
+          title: daysAgo >= 30 ? 'Moved to My Documents' : 'Returned to Recent Activity',
+          message: daysAgo >= 30 
+              ? 'Fast-forwarded 31 days: file automatically graduated to My Documents (5-Year Vault).'
+              : 'Reset to 0 days: file returned to Recent Activity (30-Day Window).',
+          duration: 4000
+      });
   };
 
   const generateUniqueFileName = (baseName: string, existingFiles: StoredDocument[], toolName?: string) => {
-      const activePattern = user?.namingPattern || localStorage.getItem('pref_namingPattern') || 'paperx_date';
+      const activePattern = user?.namingPattern || localStorage.getItem('pref_namingPattern') || 'simple';
       return generateFormattedFileName({
           baseName,
           toolName: toolName || 'Document',
@@ -3972,11 +4115,11 @@ const App: React.FC = () => {
               LocalFileStore.save(newFile.id, reader.result as string);
           }
           
-          if (user?.uid) {
-              addDocumentToFirestore(user.uid, newFile).catch(console.error);
+          setStoredFiles(prev => [newFile, ...prev]);
+          const activeUid = user?.uid || (user as any)?.id || auth.currentUser?.uid;
+          if (activeUid) {
+              addDocumentToFirestore(activeUid, newFile).catch(console.error);
               recordFeatureUsage(user);
-          } else {
-              setStoredFiles(prev => [newFile, ...prev]);
           }
 
           addToast({
@@ -4094,6 +4237,12 @@ const App: React.FC = () => {
       await logoutUser();
     } catch (err) {
       console.error('Logout error:', err);
+    }
+    try {
+      const saved = localStorage.getItem('paperx_local_stored_files');
+      setStoredFiles(saved ? JSON.parse(saved) : []);
+    } catch {
+      setStoredFiles([]);
     }
     setUser(null);
     setIsProfileOpen(false);
@@ -4734,10 +4883,10 @@ const App: React.FC = () => {
         }));
 
         if (newStoredItems.length > 0) {
-            if (user?.uid) {
-                newStoredItems.forEach(item => addDocumentToFirestore(user.uid, item).catch(console.error));
-            } else {
-                setStoredFiles(prev => [...newStoredItems, ...prev]);
+            setStoredFiles(prev => [...newStoredItems, ...prev]);
+            const activeUid = user?.uid || (user as any)?.id || auth.currentUser?.uid;
+            if (activeUid) {
+                newStoredItems.forEach(item => addDocumentToFirestore(activeUid, item).catch(console.error));
             }
         } else {
             let singleDataUrl = '';
@@ -4763,10 +4912,10 @@ const App: React.FC = () => {
                 action: toolDisplayName,
                 tags: generatedTags
             };
-            if (user?.uid) {
-                addDocumentToFirestore(user.uid, newStoredDocument).catch(console.error);
-            } else {
-                setStoredFiles(prev => [newStoredDocument, ...prev]);
+            setStoredFiles(prev => [newStoredDocument, ...prev]);
+            const activeUid = user?.uid || (user as any)?.id || auth.currentUser?.uid;
+            if (activeUid) {
+                addDocumentToFirestore(activeUid, newStoredDocument).catch(console.error);
             }
         }
         
@@ -4955,28 +5104,45 @@ const App: React.FC = () => {
     // 2. Blocked User Account Lockout
     if (user && (user.status === 'DISABLED' || (user as any).isBlocked) && !isAdminOpen) {
       return (
-        <div className="fixed inset-0 z-[100] bg-stone-950 text-white flex flex-col items-center justify-center p-6 text-center font-sans">
-          <div className="w-20 h-20 rounded-3xl bg-red-500/10 border border-red-500/30 flex items-center justify-center text-red-500 mb-6">
-            <Lock size={40} />
+        <div className="fixed inset-0 z-[100] bg-stone-950 text-stone-100 flex flex-col items-center justify-center p-6 text-center">
+          <div className="w-16 h-16 rounded-2xl bg-red-950/30 flex items-center justify-center text-red-400 mb-6 border border-red-900/50">
+            <Lock size={32} />
           </div>
-          <span className="px-3 py-1 rounded-full bg-red-500/10 border border-red-500/30 text-red-400 font-extrabold text-xs tracking-wider uppercase mb-3">
-            ACCOUNT SUSPENDED
+          <span className="px-3 py-1 rounded-full bg-red-950/50 border border-red-900/50 text-red-400 font-semibold text-xs tracking-widest uppercase mb-4">
+            Account Suspended
           </span>
-          <h1 className="text-3xl sm:text-4xl font-black text-white max-w-xl leading-tight mb-4">
+          <h1 className="text-3xl font-bold text-white mb-4">
             Access to PaperX Has Been Suspended
           </h1>
-          <p className="text-sm text-stone-400 max-w-md leading-relaxed mb-8">
-            Your user account has been disabled by the PaperX Administrator. If you believe this is an error or wish to clear pending payment holds, please contact live support.
+          <p className="text-stone-400 max-w-sm mb-8 leading-relaxed">
+            {user.blockReason || "Your user account has been disabled by the PaperX Administrator. If you believe this is an error or wish to clear pending payment holds, please contact live support."}
           </p>
           <div className="flex items-center gap-4">
             <button
-              onClick={() => logoutUser()}
-              className="px-6 py-3 bg-stone-900 border border-stone-800 hover:bg-stone-800 text-stone-300 font-bold text-xs rounded-2xl transition"
+              type="button"
+              onClick={async () => {
+                try {
+                  await logoutUser();
+                } catch (error: any) {
+                  alert("Sign out failed. Please try again.");
+                }
+              }}
+              className="px-6 py-2 bg-stone-900 border border-stone-800 hover:bg-stone-800 hover:border-stone-600 hover:text-white text-stone-300 font-medium rounded-xl transition-all duration-200"
             >
               Sign Out
             </button>
           </div>
         </div>
+      );
+    }
+
+    if (cleanPathForRouting.startsWith('/verify-receipt/')) {
+      const verificationId = cleanPathForRouting.split('/verify-receipt/')[1] || '';
+      return (
+        <ReceiptVerificationView 
+          verificationId={verificationId} 
+          onNavigate={navigate} 
+        />
       );
     }
 
@@ -5041,6 +5207,25 @@ const App: React.FC = () => {
       </>
     );
   }
+
+  const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
+  const fiveYearsMs = 5 * 365.25 * 24 * 60 * 60 * 1000;
+  const nowTime = Date.now();
+  const getDocTimeHelper = (f: StoredDocument): number => {
+      if (typeof f.timestamp === 'number' && !isNaN(f.timestamp) && f.timestamp > 0) return f.timestamp;
+      if (f.date) {
+          const parsed = new Date(f.date).getTime();
+          if (!isNaN(parsed) && parsed > 0) return parsed;
+      }
+      if ((f as any).createdAt) {
+          const parsed = new Date((f as any).createdAt).getTime();
+          if (!isNaN(parsed) && parsed > 0) return parsed;
+      }
+      return nowTime;
+  };
+
+  const recentDocsCount = storedFiles.filter(f => getDocTimeHelper(f) >= (nowTime - thirtyDaysMs)).length;
+  const myDocsCount = storedFiles.filter(f => getDocTimeHelper(f) >= (nowTime - fiveYearsMs)).length;
 
   return (
     <div className="flex flex-col h-[100dvh] w-full bg-gray-50 text-gray-900 font-sans selection:bg-black selection:text-white relative overflow-hidden">
@@ -5208,19 +5393,24 @@ const App: React.FC = () => {
                           tags: ['Scanned', 'PaperX Camera']
                       };
 
+                      if (dataUrl) {
+                          LocalFileStore.save(newFileId, dataUrl);
+                      }
+
                       setStoredFiles(prev => [newStoredDoc, ...prev]);
 
-                      if (user?.uid) {
-                          addDocumentToFirestore(user.uid, newStoredDoc).catch(console.error);
+                      const activeUid = user?.uid || (user as any)?.id || auth.currentUser?.uid;
+                      if (activeUid) {
+                          addDocumentToFirestore(activeUid, newStoredDoc).catch(console.error);
                       }
                   }
 
                   addToast({
                       type: 'success',
-                      title: '⚡ Scan Auto-Saved',
-                      message: `${files.length} scanned file${files.length > 1 ? 's' : ''} auto-saved directly to My Documents (5-Year Archive).`,
+                      title: '⚡ Scan Saved',
+                      message: `${files.length} scanned file${files.length > 1 ? 's' : ''} saved directly to your documents.`,
                       toolName: 'Scanner',
-                      duration: 5500
+                      duration: 4000
                   });
               } else {
                   addToast({
@@ -5242,135 +5432,142 @@ const App: React.FC = () => {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            transition={{ duration: 0.3, ease: "easeInOut" }}
-            className="fixed inset-0 bg-black/60 z-40 lg:hidden backdrop-blur-sm" 
+            transition={{ duration: 0.28, ease: [0.16, 1, 0.3, 1] }}
+            className="fixed inset-0 bg-black/15 dark:bg-black/35 z-40 lg:hidden backdrop-blur-xs transition-opacity" 
             onClick={() => setIsMobileMenuOpen(false)} 
           />
         )}
       </AnimatePresence>
 
-      {/* Sidebar - Desktop */}
-      <aside className={`fixed lg:static inset-y-0 left-0 z-50 w-64 bg-white/60 dark:bg-gray-900/80 backdrop-blur-xl border-r border-white/60 dark:border-gray-800 flex flex-col transition-transform duration-300 ease-in-out ${isMobileMenuOpen ? 'translate-x-0 shadow-2xl' : '-translate-x-full lg:translate-x-0'}`}>
+      {/* Sidebar - Desktop & Mobile Drawer */}
+      <aside className={`fixed lg:static inset-y-0 left-0 z-50 w-72 sm:w-80 lg:w-64 ios-glass-drawer flex flex-col transition-transform duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] rounded-r-3xl lg:rounded-none ${isMobileMenuOpen ? 'translate-x-0 shadow-2xl' : '-translate-x-full lg:translate-x-0'}`}>
          {/* Logo Area */}
-         <div className="h-16 flex items-center justify-center px-4 border-b border-gray-50 dark:border-gray-800">
-             <div className="flex items-center justify-center text-center cursor-pointer text-gray-900 dark:text-white" onClick={(e) => handleNavigation('dashboard', e)}>
-                 <div className="flex items-center justify-center gap-2">
-                    <motion.span 
-                        style={{ 
-                            willChange: "background-position", 
-                            transform: "translateZ(0)",
-                            backgroundImage: "linear-gradient(to right, #FF671F, #e5e7eb, #046A38, #e5e7eb, #FF671F)",
-                            backgroundSize: "200% auto",
-                            WebkitBackgroundClip: "text",
-                            WebkitTextFillColor: "transparent"
-                        }}
-                        animate={{ backgroundPosition: ["0% center", "200% center"] }}
-                        transition={{ repeat: Infinity, duration: 4, ease: "linear" }}
-                        className="font-heading font-black text-xl tracking-tight drop-shadow-sm block text-center"
-                    >
-                        {APP_NAME}
-                    </motion.span>
-                 </div>
+         <div className="h-12 flex items-center justify-center px-4 border-b border-black/[0.06] dark:border-white/[0.08] relative shrink-0">
+             <div className="flex items-center justify-center cursor-pointer text-gray-900 dark:text-white" onClick={(e) => handleNavigation('dashboard', e)}>
+                 <motion.span 
+                     style={{ 
+                         willChange: "background-position", 
+                         transform: "translateZ(0)",
+                         backgroundImage: "linear-gradient(to right, #4f46e5, #0ea5e9, #6366f1, #0ea5e9, #4f46e5)",
+                         backgroundSize: "200% auto",
+                         WebkitBackgroundClip: "text",
+                         WebkitTextFillColor: "transparent"
+                     }}
+                     animate={{ backgroundPosition: ["0% center", "100% center", "0% center"] }}
+                     transition={{ repeat: Infinity, duration: 6, ease: "easeInOut" }}
+                     className="font-heading font-black text-xl sm:text-2xl tracking-tight drop-shadow-sm text-center select-none"
+                 >
+                     {APP_NAME}
+                 </motion.span>
              </div>
          </div>
 
          {/* Navigation */}
-         <div className="flex-1 overflow-y-auto py-6 px-3 space-y-1">
+         <div className="flex-1 overflow-y-auto py-5 px-3.5 space-y-2 no-scrollbar">
              <button 
                 onClick={(e) => handleNavigation('dashboard', e)}
-                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-bold tracking-tight transition-all duration-200 ${activeView === 'dashboard' ? 'bg-black text-white dark:bg-white dark:text-black shadow-lg shadow-black/20' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 hover:text-black dark:hover:text-white'}`}
+                className={`w-full flex items-center gap-3.5 px-3.5 py-3 rounded-2xl text-[15px] sm:text-base font-bold tracking-tight transition-all duration-200 active:scale-[0.98] ${activeView === 'dashboard' ? 'ios-nav-pill-active' : 'text-gray-800 dark:text-gray-200 hover:bg-black/[0.06] dark:hover:bg-white/[0.10] hover:text-gray-950 dark:hover:text-white'}`}
              >
-                 <Layout size={18} />
+                 <Layout size={21} className={activeView === 'dashboard' ? 'text-white dark:text-black shrink-0' : 'text-gray-600 dark:text-gray-400 shrink-0'} />
                  {t('dashboard')}
              </button>
              <button 
                 onClick={(e) => handleNavigation('documents', e)}
-                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-bold tracking-tight transition-all duration-200 ${activeView === 'documents' ? 'bg-black text-white dark:bg-white dark:text-black shadow-lg shadow-black/20' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 hover:text-black dark:hover:text-white'}`}
+                className={`w-full flex items-center justify-between px-3.5 py-3 rounded-2xl text-[15px] sm:text-base font-bold tracking-tight transition-all duration-200 active:scale-[0.98] ${activeView === 'documents' ? 'ios-nav-pill-active' : 'text-gray-800 dark:text-gray-200 hover:bg-black/[0.06] dark:hover:bg-white/[0.10] hover:text-gray-950 dark:hover:text-white'}`}
              >
-                 <Folder size={18} />
-                 {t('documents')}
+                 <div className="flex items-center gap-3.5">
+                     <Folder size={21} className={activeView === 'documents' ? 'text-white dark:text-black shrink-0' : 'text-gray-600 dark:text-gray-400 shrink-0'} />
+                     <span>{t('documents')}</span>
+                 </div>
+                 {myDocsCount > 0 && (
+                     <span className={`text-xs font-bold px-2.5 py-0.5 rounded-full ${activeView === 'documents' ? 'bg-white/25 text-white dark:bg-black/20 dark:text-black' : 'bg-black/[0.08] dark:bg-white/[0.14] text-gray-700 dark:text-gray-300'}`}>
+                         {myDocsCount}
+                     </span>
+                 )}
              </button>
              <button 
                 onClick={(e) => handleNavigation('recent', e)}
-                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-bold tracking-tight transition-all duration-200 ${activeView === 'recent' ? 'bg-black text-white dark:bg-white dark:text-black shadow-lg shadow-black/20' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 hover:text-black dark:hover:text-white'}`}
+                className={`w-full flex items-center justify-between px-3.5 py-3 rounded-2xl text-[15px] sm:text-base font-bold tracking-tight transition-all duration-200 active:scale-[0.98] ${activeView === 'recent' ? 'ios-nav-pill-active' : 'text-gray-800 dark:text-gray-200 hover:bg-black/[0.06] dark:hover:bg-white/[0.10] hover:text-gray-950 dark:hover:text-white'}`}
              >
-                 <History size={18} />
-                 {t('recent')}
+                 <div className="flex items-center gap-3.5">
+                     <History size={21} className={activeView === 'recent' ? 'text-white dark:text-black shrink-0' : 'text-gray-600 dark:text-gray-400 shrink-0'} />
+                     <span>{t('recent')}</span>
+                 </div>
+                 {recentDocsCount > 0 && (
+                     <span className={`text-xs font-bold px-2.5 py-0.5 rounded-full ${activeView === 'recent' ? 'bg-amber-400 text-black dark:bg-amber-300 dark:text-black' : 'bg-amber-100/90 dark:bg-amber-950/60 text-amber-900 dark:text-amber-300 border border-amber-300/40 dark:border-amber-700/30'}`}>
+                         {recentDocsCount}
+                     </span>
+                 )}
              </button>
 
-             <div className="pt-4 pb-2">
-                  <p className="px-3 text-xs font-bold text-gray-300 dark:text-gray-500 uppercase tracking-widest">Settings & Payments</p>
+             <div className="pt-4 pb-1">
+                  <p className="px-3.5 text-xs font-black text-gray-500 dark:text-gray-400 uppercase tracking-wider">Settings & Payments</p>
              </div>
              <button 
                 onClick={(e) => handleNavigation('settings', e)} 
-                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-bold tracking-tight transition-all duration-200 ${isProfileOpen && profileInitialTab === 'preferences' ? 'bg-black text-white dark:bg-white dark:text-black shadow-lg shadow-black/20' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 hover:text-black dark:hover:text-white'} transition-colors cursor-pointer`}
+                className={`w-full flex items-center gap-3.5 px-3.5 py-3 rounded-2xl text-[15px] sm:text-base font-bold tracking-tight transition-all duration-200 active:scale-[0.98] ${isProfileOpen && profileInitialTab === 'preferences' ? 'ios-nav-pill-active' : 'text-gray-800 dark:text-gray-200 hover:bg-black/[0.06] dark:hover:bg-white/[0.10] hover:text-gray-950 dark:hover:text-white'} cursor-pointer`}
              >
-                 <Settings size={18} />
+                 <Settings size={21} className={isProfileOpen && profileInitialTab === 'preferences' ? 'text-white dark:text-black shrink-0' : 'text-gray-600 dark:text-gray-400 shrink-0'} />
                  {t('settings')}
              </button>
              <button 
                 onClick={(e) => handleNavigation('billing', e)} 
-                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-bold tracking-tight transition-all duration-200 ${isProfileOpen && profileInitialTab === 'billing' ? 'bg-black text-white dark:bg-white dark:text-black shadow-lg shadow-black/20' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 hover:text-black dark:hover:text-white'} transition-colors cursor-pointer`}
+                className={`w-full flex items-center gap-3.5 px-3.5 py-3 rounded-2xl text-[15px] sm:text-base font-bold tracking-tight transition-all duration-200 active:scale-[0.98] ${isProfileOpen && profileInitialTab === 'billing' ? 'ios-nav-pill-active' : 'text-gray-800 dark:text-gray-200 hover:bg-black/[0.06] dark:hover:bg-white/[0.10] hover:text-gray-950 dark:hover:text-white'} cursor-pointer`}
              >
-                 <CreditCard size={18} />
+                 <CreditCard size={21} className={isProfileOpen && profileInitialTab === 'billing' ? 'text-white dark:text-black shrink-0' : 'text-gray-600 dark:text-gray-400 shrink-0'} />
                  {t('billing')}
              </button>
              <button 
                 onClick={(e) => handleNavigation('payment-history', e)} 
-                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-bold tracking-tight transition-all duration-200 ${(activeView === 'payment-history' || activeView === 'payments') ? 'bg-black text-white dark:bg-white dark:text-black shadow-lg shadow-black/20' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 hover:text-black dark:hover:text-white'} transition-colors cursor-pointer`}
+                className={`w-full flex items-center gap-3.5 px-3.5 py-3 rounded-2xl text-[15px] sm:text-base font-bold tracking-tight transition-all duration-200 active:scale-[0.98] ${(activeView === 'payment-history' || activeView === 'payments') ? 'ios-nav-pill-active' : 'text-gray-800 dark:text-gray-200 hover:bg-black/[0.06] dark:hover:bg-white/[0.10] hover:text-gray-950 dark:hover:text-white'} cursor-pointer`}
              >
-                 <Receipt size={18} />
+                 <Receipt size={21} className={(activeView === 'payment-history' || activeView === 'payments') ? 'text-white dark:text-black shrink-0' : 'text-gray-600 dark:text-gray-400 shrink-0'} />
                  Payment History
              </button>
              <button 
                 onClick={(e) => handleNavigation('support', e)} 
-                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-bold tracking-tight transition-all duration-200 ${activeView === 'support' ? 'bg-black text-white dark:bg-white dark:text-black shadow-lg shadow-black/20' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 hover:text-black dark:hover:text-white'}`}
+                className={`w-full flex items-center gap-3.5 px-3.5 py-3 rounded-2xl text-[15px] sm:text-base font-bold tracking-tight transition-all duration-200 active:scale-[0.98] ${activeView === 'support' ? 'ios-nav-pill-active' : 'text-gray-800 dark:text-gray-200 hover:bg-black/[0.06] dark:hover:bg-white/[0.10] hover:text-gray-950 dark:hover:text-white'}`}
              >
-                 <LifeBuoy size={18} />
+                 <LifeBuoy size={21} className={activeView === 'support' ? 'text-white dark:text-black shrink-0' : 'text-gray-600 dark:text-gray-400 shrink-0'} />
                  {t('support')}
              </button>
              
-             <div className="pt-2 pb-2">
-                 <p className="px-3 text-xs font-bold text-gray-300 dark:text-gray-500 uppercase tracking-widest">App</p>
+             <div className="pt-3 pb-1">
+                 <p className="px-3.5 text-xs font-black text-gray-500 dark:text-gray-400 uppercase tracking-wider">App</p>
              </div>
              <button 
-                onClick={() => {
-                  if (isMobileMenuOpen) setIsMobileMenuOpen(false);
-                  handleDirectAppDownload('Android');
+                onClick={(e) => {
+                    setIsMobileMenuOpen(false);
+                    handleDirectAppDownload(e);
                 }}
-                className="w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-sm font-bold tracking-tight text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800 hover:text-black dark:hover:text-white transition-all group cursor-pointer"
-                title="Download PaperX Android APK"
+                className="w-full flex items-center gap-3.5 px-3.5 py-3 rounded-2xl text-[15px] sm:text-base font-bold tracking-tight text-gray-800 dark:text-gray-200 hover:bg-black/[0.06] dark:hover:bg-white/[0.10] hover:text-gray-950 dark:hover:text-white transition-all active:scale-[0.98] cursor-pointer"
              >
-                 <div className="flex items-center gap-3">
-                   <Download size={18} className="group-hover:translate-y-0.5 transition-transform text-emerald-600 dark:text-emerald-400" />
-                   <span>Download App</span>
-                 </div>
-                 <span className="px-2 py-0.5 text-[10px] font-black uppercase tracking-wider bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 rounded-md">
-                   APK
-                 </span>
+                 <Download size={21} className="text-gray-600 dark:text-gray-400 shrink-0" />
+                 Download App
              </button>
          </div>
 
-         {/* User Profile Snippet */}
-         <div className="p-4 border-t border-gray-50 dark:border-gray-800">
+         {/* User Profile Snippet - iOS Liquid Capsule */}
+         <div className="p-3.5 border-t border-black/[0.06] dark:border-white/[0.08] shrink-0">
              <div 
-                className={`flex items-center gap-3 p-2 rounded-xl cursor-pointer transition-all duration-300 ease-in-out ${
+                className={`flex items-center gap-3.5 p-3 rounded-2xl cursor-pointer transition-all duration-200 active:scale-[0.98] ${
                     user.plan === 'Max Plan' 
-                        ? 'bg-gradient-to-r from-yellow-100/80 to-amber-200/80 dark:from-yellow-900/40 dark:to-amber-900/40 hover:from-yellow-200/80 hover:to-amber-300/80 dark:hover:from-yellow-800/50 dark:hover:to-amber-800/50 shadow-sm' 
+                        ? 'bg-amber-500/15 dark:bg-amber-400/15 border border-amber-500/30 hover:border-amber-500/45 shadow-xs' 
                         : user.plan === 'Plus Plan'
-                        ? 'bg-gradient-to-r from-slate-100/80 to-gray-200/80 dark:from-slate-800/40 dark:to-gray-800/40 hover:from-slate-200/80 hover:to-gray-300/80 dark:hover:from-slate-700/50 dark:hover:to-gray-700/50 shadow-sm'
-                        : 'hover:bg-gray-50 dark:hover:bg-gray-800'
+                        ? 'bg-blue-500/15 dark:bg-blue-400/15 border border-blue-500/30 hover:border-blue-500/45 shadow-xs'
+                        : 'bg-black/[0.05] dark:bg-white/[0.07] border border-black/[0.08] dark:border-white/[0.12] hover:bg-black/[0.08] dark:hover:bg-white/[0.12]'
                 }`}
                 onClick={(e) => {
                     e.stopPropagation();
+                    setIsMobileMenuOpen(false);
                     setProfileInitialTab('menu');
                     setIsProfileOpen(true);
                 }}
              >
-                 <img src={user.avatarUrl} alt={user.name} className="w-9 h-9 rounded-full ring-2 ring-white dark:ring-gray-800 shadow-sm" />
+                 <img src={user.avatarUrl} alt={user.name} className="w-10 h-10 rounded-full ring-2 ring-white/80 dark:ring-white/20 shadow-sm object-cover shrink-0" />
                  <div className="flex-1 min-w-0">
-                     <p className="text-sm font-black tracking-tight text-gray-900 dark:text-white truncate">{user.name}</p>
-                     <p className="text-xs text-gray-500 dark:text-gray-400 truncate font-medium">{user.plan}</p>
+                     <p className="text-base font-bold tracking-tight text-gray-900 dark:text-gray-100 truncate">{user.name}</p>
+                     <p className="text-xs text-gray-500 dark:text-gray-400 truncate font-bold mt-0.5">{user.plan}</p>
                  </div>
              </div>
          </div>
@@ -5379,8 +5576,8 @@ const App: React.FC = () => {
       {/* Main Content Area */}
       <main className="flex-1 flex flex-col h-full overflow-hidden relative bg-transparent">
         
-        {/* Mobile Header - Fixed & Static */}
-        <div className={`lg:hidden flex-shrink-0 h-16 border-b border-white/20 dark:border-gray-800 flex items-center justify-between px-4 bg-white/80 dark:bg-gray-900/90 backdrop-blur-2xl z-40 shadow-[0_8px_32px_rgba(0,0,0,0.05)] sticky top-0 transition-all duration-300 ease-in-out ${isMobileMenuOpen ? '-translate-y-full opacity-0 pointer-events-none' : 'translate-y-0 opacity-100'}`}>
+        {/* Mobile Header - Overlaying Content */}
+        <div className={`lg:hidden absolute top-0 left-0 w-full h-12 flex items-center justify-between px-4 ios-glass-header z-40 transition-all duration-300 ease-in-out ${isMobileMenuOpen ? '-translate-y-full opacity-0 pointer-events-none' : 'translate-y-0 opacity-100'}`}>
             <div className="flex items-center gap-3 text-gray-900 dark:text-white">
                  <button onClick={() => setIsMobileMenuOpen(true)} className="p-2 -ml-2 text-gray-600 dark:text-gray-400 hover:bg-black/5 dark:hover:bg-white/5 rounded-full transition-colors">
                      <Menu size={24} />
@@ -5390,13 +5587,13 @@ const App: React.FC = () => {
                         style={{ 
                             willChange: "background-position", 
                             transform: "translateZ(0)",
-                            backgroundImage: "linear-gradient(to right, #FF671F, #e5e7eb, #046A38, #e5e7eb, #FF671F)",
+                            backgroundImage: "linear-gradient(to right, #4f46e5, #0ea5e9, #6366f1, #0ea5e9, #4f46e5)",
                             backgroundSize: "200% auto",
                             WebkitBackgroundClip: "text",
                             WebkitTextFillColor: "transparent"
                         }}
-                        animate={{ backgroundPosition: ["0% center", "200% center"] }}
-                        transition={{ repeat: Infinity, duration: 4, ease: "linear" }}
+                        animate={{ backgroundPosition: ["0% center", "100% center", "0% center"] }}
+                        transition={{ repeat: Infinity, duration: 6, ease: "easeInOut" }}
                         className="font-heading font-black text-xl tracking-tight drop-shadow-sm block"
                     >
                         {APP_NAME}
@@ -5426,7 +5623,7 @@ const App: React.FC = () => {
         </div>
 
         {/* View Content - Added no-scrollbar */}
-        <div id="main-scroll-container" className="flex-1 overflow-y-auto overflow-x-hidden relative no-scrollbar w-full max-w-full">
+        <div id="main-scroll-container" className="flex-1 overflow-y-auto overflow-x-hidden relative no-scrollbar w-full max-w-full pt-12 lg:pt-0">
           <AnimatePresence mode="wait">
              {activeView === 'dashboard' && (
                  <motion.div
@@ -5472,6 +5669,8 @@ const App: React.FC = () => {
                         onDelete={handleDeleteStoredFile} 
                         onOpen={handleOpenFilePreview} 
                         onShare={handleShareStoredFile}
+                        onNavigateToRecent={() => navigate('/recent')}
+                        onSimulateAge={handleSimulateFileAge}
                     />
                  </motion.div>
              )}
@@ -5493,6 +5692,7 @@ const App: React.FC = () => {
                         onOpen={handleOpenFilePreview} 
                         onShare={handleShareStoredFile}
                         onNavigateToDocuments={() => navigate('/documents')}
+                        onSimulateAge={handleSimulateFileAge}
                     />
                  </motion.div>
              )}

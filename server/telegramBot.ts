@@ -13,6 +13,7 @@ import {
 import { activeOrders } from './paymentRoutes';
 import { generateAdminSuggestedAnswer } from './supportAgent';
 import { emitAdminAction } from './adminRoutes';
+import { generateReceiptForOrder } from './receiptGenerator';
 
 const getBotToken = (): string | undefined => {
   return process.env.TELEGRAM_BOT_TOKEN;
@@ -91,7 +92,18 @@ export const broadcastToAdmins = async (htmlText: string, replyMarkup?: any) => 
       });
       if (!response.ok) {
         const errorText = await response.text();
-        console.error(`[Telegram REST Fallback] Failed to send to ${adminChatId}:`, errorText);
+        console.error(`[Telegram REST Fallback] Failed HTML parse for ${adminChatId}:`, errorText);
+        // Secondary fallback: Send as plain text without HTML parsing
+        const plainText = htmlText.replace(/<[^>]+>/g, '');
+        await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            chat_id: adminChatId,
+            text: plainText,
+            reply_markup: replyMarkup
+          })
+        }).catch(plainErr => console.error('[Telegram REST Fallback] Plain fallback error:', plainErr));
       }
     } catch (restErr: any) {
       console.error(`[Telegram REST Fallback] Network error sending to ${adminChatId}:`, restErr.message || restErr);
@@ -166,17 +178,17 @@ export const fromShortToken = (shortKeyOrFull: string): string => {
 // Helper to recover ID from message text if short token lookup fails (e.g. after restart)
 const recoverIdFromMessage = (text: string | undefined): string => {
   if (!text) return '';
-  // Try Order ID match: `• *Order ID:* \`PX-404...\`` or `💳 *Pending Order: \`PX-...\`*`
-  const orderMatch = text.match(/(?:Order ID|Pending Order):?\s*[`]([^`]+)[`]/i);
-  if (orderMatch) return orderMatch[1];
-  // Try Ticket ID match: `• *Ticket ID:* \`TICK-...\`` or `*Ticket:* \`TICK-...\``
-  const ticketMatch = text.match(/Ticket(?: ID)?:?\s*[`]([^`]+)[`]/i);
+  // Try Ticket ID match: supports `TICK-...`, <code>TICK-...</code>, `• Ticket ID: ...`
+  const ticketMatch = text.match(/Ticket(?: ID)?:?\s*(?:<code>|`|\*|\b)(TICK-[A-Z0-9_-]+)(?:<\/code>|`|\*|\b)?/i);
   if (ticketMatch) return ticketMatch[1];
-  // Try User ID match: `• *User ID:* \`user_...\``
-  const userMatch = text.match(/User ID:?\s*[`]([^`]+)[`]/i);
+  // Try Order ID match: supports `PX-...`, <code>PX-...</code>, `• Order ID: ...`
+  const orderMatch = text.match(/(?:Order ID|Pending Order):?\s*(?:<code>|`|\*|\b)(PX-[A-Z0-9_-]+)(?:<\/code>|`|\*|\b)?/i);
+  if (orderMatch) return orderMatch[1];
+  // Try User ID match: supports <code>user_...</code> or `user_...`
+  const userMatch = text.match(/User ID:?\s*(?:<code>|`|\*|\b)([a-zA-Z0-9_-]{10,40})(?:<\/code>|`|\*|\b)?/i);
   if (userMatch) return userMatch[1];
-  // Try Chat Thread match: `• *Chat Thread:* \`user_...\``
-  const chatMatch = text.match(/Chat Thread:?\s*[`]([^`]+)[`]/i);
+  // Try Chat Thread match
+  const chatMatch = text.match(/Chat Thread:?\s*(?:<code>|`|\*|\b)([a-zA-Z0-9_-]+)(?:<\/code>|`|\*|\b)?/i);
   if (chatMatch) return chatMatch[1];
   return '';
 };
@@ -290,10 +302,13 @@ export const sendTelegramPaymentTicketNotification = async (data: {
   const sUid = toShortToken(data.uid);
 
   const isRefundTicket = (data.reason || '').toLowerCase().includes('refund') || (data.reason || '').toLowerCase().includes('upgrade');
+  const isGdprRequest = data.utr === 'GDPR_ERASURE_REQUEST';
 
   let html = isRefundTicket 
     ? `💸 <b>2-DAY MEMBERSHIP REFUND REQUEST</b>\n\n` 
-    : `🎫 <b>PAYMENT DISPUTE / ACTIVATION TICKET RAISED</b>\n\n`;
+    : (isGdprRequest
+      ? `🛡️ <b>GDPR DATA ERASURE REQUEST</b>\n\n`
+      : `🎫 <b>PAYMENT DISPUTE / ACTIVATION TICKET RAISED</b>\n\n`);
 
   html += `• <b>Ticket ID:</b> <code>${escapeHtml(data.ticketId)}</code>\n` +
     `• <b>Order ID:</b> <code>${escapeHtml(data.orderId || 'N/A')}</code>\n` +
@@ -320,7 +335,11 @@ export const sendTelegramPaymentTicketNotification = async (data: {
     `⚡ <b>Admin Action:</b>`;
 
   const inlineKeyboard = {
-    inline_keyboard: isRefundTicket ? [
+    inline_keyboard: isGdprRequest ? [
+      [
+        { text: "✅ Confirm Erasure & Purge", callback_data: `gdpr_purge|${sUid}|${sTicketId}` }
+      ]
+    ] : (isRefundTicket ? [
       [
         { text: "✅ Approved", callback_data: `tickstat|${sTicketId}|COMPLETED` },
         { text: "⏳ Mark Processing", callback_data: `tickstat|${sTicketId}|PROCESSING` }
@@ -344,7 +363,7 @@ export const sendTelegramPaymentTicketNotification = async (data: {
         { text: "👑 Set Plus Plan", callback_data: `setplan|${sUid}|plus` },
         { text: "👑 Set Max Plan", callback_data: `setplan|${sUid}|max` }
       ]
-    ]
+    ])
   };
 
   await broadcastToAdmins(html, inlineKeyboard);
@@ -455,9 +474,142 @@ export const initTelegramBot = async () => {
     await bot.startPolling();
     console.log("[Telegram Bot] Connected and polling actively.");
 
-    bot.on('message', (msg) => {
+    const handleDirectSearchQuery = async (adminChatId: number | string, query: string): Promise<boolean> => {
+      try {
+        const qLower = query.toLowerCase().trim();
+        const allOrders = await getServerDocs('orders');
+
+        const matchingOrders = allOrders.filter(o => 
+          (o.orderId && o.orderId.toLowerCase().includes(qLower)) ||
+          (o.utr && o.utr.toLowerCase().includes(qLower)) ||
+          (o.userEmail && o.userEmail.toLowerCase().includes(qLower)) ||
+          (o.uid && o.uid.toLowerCase() === qLower) ||
+          (o.ticketId && o.ticketId.toLowerCase().includes(qLower))
+        );
+
+        if (matchingOrders.length > 0) {
+          for (const ord of matchingOrders.slice(0, 3)) {
+            const realOid = ord.orderId || ord.id;
+            const sOrderId = toShortToken(realOid);
+            const sUid = toShortToken(ord.uid || '');
+            const statusStr = (ord.status || 'PENDING').toUpperCase();
+
+            const card = `🔍 <b>MATCHING ORDER FOUND</b>\n\n` +
+              `• <b>Order ID:</b> <code>${escapeHtml(realOid)}</code>\n` +
+              `• <b>User:</b> <code>${escapeHtml(ord.userName || 'User')}</code> (${escapeHtml(ord.userEmail || ord.uid)})\n` +
+              `• <b>Plan:</b> <b>${escapeHtml((ord.plan || 'Plan').toUpperCase())}</b>\n` +
+              `• <b>Amount:</b> <b>₹${ord.amount || 0}</b>\n` +
+              `• <b>12-Digit UTR:</b> <code>${escapeHtml(ord.utr || 'Not submitted')}</code>\n` +
+              `• <b>Status:</b> <b>${escapeHtml(statusStr)}</b>\n` +
+              `• <b>Time:</b> ${new Date(ord.createdAt || ord.submittedAt || Date.now()).toLocaleString()}\n\n` +
+              `⚡ <b>Quick Action Buttons:</b>`;
+
+            const inlineKeyboard = {
+              inline_keyboard: statusStr === 'VERIFIED' ? [
+                [{ text: "💬 Send Message to User", callback_data: `msg|${sUid}` }]
+              ] : [
+                [{ text: "✅ Approve Membership", callback_data: `ap|${sOrderId}` }],
+                [
+                  { text: "❌ Reject: Invalid UTR", callback_data: `rj|${sOrderId}|utr` },
+                  { text: "❌ Reject: Payment Failed", callback_data: `rj|${sOrderId}|fail` }
+                ],
+                [{ text: "💬 Send Message to User", callback_data: `msg|${sUid}` }]
+              ]
+            };
+
+            await bot!.sendMessage(adminChatId, card, { parse_mode: 'HTML', reply_markup: inlineKeyboard });
+          }
+          return true;
+        }
+
+        // Check support tickets
+        const allTickets = await getServerDocs('support_tickets');
+        const matchingTickets = allTickets.filter(t => 
+          (t.ticketId && t.ticketId.toLowerCase().includes(qLower)) ||
+          (t.id && t.id.toLowerCase().includes(qLower)) ||
+          (t.userEmail && t.userEmail.toLowerCase().includes(qLower)) ||
+          (t.uid && t.uid.toLowerCase() === qLower)
+        );
+
+        if (matchingTickets.length > 0) {
+          for (const t of matchingTickets.slice(0, 3)) {
+            const realTid = t.ticketId || t.id;
+            const sTicketId = toShortToken(realTid);
+            const sOrderId = toShortToken(t.orderId || realTid);
+            const sUid = toShortToken(t.uid || '');
+
+            const card = `🎫 <b>MATCHING TICKET FOUND</b>\n\n` +
+              `• <b>Ticket ID:</b> <code>${escapeHtml(realTid)}</code>\n` +
+              `• <b>Order ID:</b> <code>${escapeHtml(t.orderId || 'N/A')}</code>\n` +
+              `• <b>User:</b> <code>${escapeHtml(t.userName || 'User')}</code> (${escapeHtml(t.userEmail)})\n` +
+              `• <b>Reason:</b> ${escapeHtml(t.reason || t.ticketReason || 'Dispute')}\n` +
+              `• <b>Status:</b> <b>${escapeHtml((t.status || 'OPEN').toUpperCase())}</b>\n\n` +
+              `⚡ <b>Quick Action Buttons:</b>`;
+
+            const inlineKeyboard = {
+              inline_keyboard: [
+                [{ text: "✅ Verify & Activate Plan", callback_data: `ap|${sOrderId}` }],
+                [{ text: "💬 Send Support Message", callback_data: `msg|${sUid}` }]
+              ]
+            };
+
+            await bot!.sendMessage(adminChatId, card, { parse_mode: 'HTML', reply_markup: inlineKeyboard });
+          }
+          return true;
+        }
+      } catch (err) {
+        console.warn("[Telegram Bot] handleDirectSearchQuery error:", err);
+      }
+      return false;
+    };
+
+    bot.on('message', async (msg) => {
       if (msg.chat?.id) {
         registerAdminChatId(msg.chat.id);
+      }
+
+      const text = (msg.text || '').trim();
+      if (!text) return;
+
+      // If user typed a slash command, let onText handlers process it
+      if (text.startsWith('/')) return;
+
+      const chatId = msg.chat.id;
+
+      // 1. If admin is directly replying to a previous Telegram notification message (Swipe-to-Reply)
+      if (msg.reply_to_message) {
+        const repliedText = msg.reply_to_message.text || msg.reply_to_message.caption || '';
+        const targetIdentifier = recoverIdFromMessage(repliedText);
+        if (targetIdentifier) {
+          await sendDirectUserMessage(chatId, targetIdentifier, text);
+          return;
+        }
+      }
+
+      // 2. Direct Search for Order ID (e.g. PX-404-LPTT-FTTN3), UTR (e.g. 57577557575), Ticket ID, or Email
+      const hasSearchKey = /PX-[A-Z0-9-]+|\b\d{10,12}\b|[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}|TICK-[A-Z0-9-]+/i.test(text);
+      if (hasSearchKey) {
+        const match = text.match(/PX-[A-Z0-9-]+|\b\d{10,12}\b|[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}|TICK-[A-Z0-9-]+/i);
+        if (match && match[0]) {
+          const handled = await handleDirectSearchQuery(chatId, match[0]);
+          if (handled) return;
+        }
+      }
+
+      // 3. For any normal conversational text (e.g. "hi", "hello", "menu", "status", "orders", etc.)
+      const lower = text.toLowerCase();
+      if (lower === 'orders' || lower === 'pending') {
+        await handlePendingOrders(chatId);
+      } else if (lower === 'users') {
+        await handleUsersList(chatId);
+      } else if (lower === 'refunds') {
+        await handleRefunds(chatId);
+      } else if (lower === 'revenue') {
+        await handleRevenue(chatId);
+      } else if (lower === 'status') {
+        await handleSystemStatus(chatId);
+      } else {
+        sendMainMenu(chatId);
       }
     });
 
@@ -1022,6 +1174,20 @@ export const initTelegramBot = async () => {
       }
     };
 
+    const handleGdprPurge = async (chatId: number | string, uid: string, ticketId: string) => {
+      try {
+        await updateServerDoc('support_tickets', ticketId, { status: 'COMPLETED', resolvedAt: new Date().toISOString() });
+        await updateServerDoc('users', uid, { 
+          isPurged: true, 
+          purgedAt: new Date().toISOString(),
+          status: 'DISABLED'
+        });
+        await bot!.sendMessage(chatId, `✅ <b>GDPR PURGE EXECUTED</b>\n\nUser <code>${uid}</code> has been flagged for erasure. All data associated with this account is scheduled for permanent removal.`, { parse_mode: 'HTML' });
+      } catch (err: any) {
+        bot!.sendMessage(chatId, `⚠️ Error executing GDPR purge: ${err.message}`);
+      }
+    };
+
     // Callback query dispatcher
     bot.on('callback_query', async (callbackQuery) => {
       const message = callbackQuery.message;
@@ -1106,6 +1272,13 @@ export const initTelegramBot = async () => {
           const rawUid = data.replace('userorders_', '');
           const uid = fromShortToken(rawUid);
           await handlePendingOrders(chatId, uid);
+        } else if (data?.startsWith('gdpr_purge|')) {
+          const parts = data.split('|');
+          const rawUid = parts[1];
+          const rawTicketId = parts[2];
+          const uid = fromShortToken(rawUid);
+          const ticketId = fromShortToken(rawTicketId);
+          await handleGdprPurge(chatId, uid, ticketId);
         } else if (data?.startsWith('userrefunds_')) {
           const rawUid = data.replace('userrefunds_', '');
           const uid = fromShortToken(rawUid);
@@ -1492,7 +1665,7 @@ export const initTelegramBot = async () => {
           let ticket = await getServerDoc('support_tickets', ticketId);
           
           // RECOVERY: If ticket not found and looks like a short token (or empty), try to parse from message
-          if (!ticket && (ticketId.startsWith('k') || !ticketId)) {
+          if (!ticket && (!ticketId || (typeof ticketId === 'string' && ticketId.startsWith('k')))) {
             const recovered = recoverIdFromMessage(message.text || message.caption);
             if (recovered) {
               console.log(`[Telegram Bot] Recovered ticket ID from message text: ${recovered}`);
@@ -1547,7 +1720,7 @@ export const initTelegramBot = async () => {
               }
             } else if (newStatus === 'REJECTED_WRONG_INFO') {
               statusLabel = 'Rejected (Wrong Info)';
-              userMsg = `❌ Your refund request (Ticket ${realTicketId}) was **REJECTED** due to wrong information (invalid UPI or Phone). Please contact support.`;
+              userMsg = `❌ Your refund request (Ticket ${realTicketId}) was **REJECTED** due to wrong information (invalid UPI or Phone). Please update your details in Payment History.`;
             } else if (newStatus === 'REJECTED_NOT_VALID') {
               statusLabel = 'Rejected (Not Valid)';
               userMsg = `❌ Your refund request (Ticket ${realTicketId}) was **REJECTED** as it does not meet our refund eligibility criteria (>10 items created or >48h passed).`;
@@ -1562,8 +1735,13 @@ export const initTelegramBot = async () => {
               updatedAt: Date.now()
             });
 
-            // ⚡ Emit socket event for instant app reaction
-            emitAdminAction("ticket-updated", { ticketId: realTicketId, status: newStatus, orderId: ticket.orderId });
+            // ⚡ Emit socket events for instant app reaction
+            emitAdminAction("ticket-updated", { 
+              ticketId: realTicketId, 
+              status: newStatus, 
+              orderId: ticket.orderId, 
+              uid: ticket.uid 
+            });
 
             if (ticket.orderId) {
               const orderUpdates: any = {
@@ -1572,10 +1750,41 @@ export const initTelegramBot = async () => {
               };
               if (newStatus === 'COMPLETED') {
                 orderUpdates.status = 'REFUNDED';
+                orderUpdates.isRefunded = true;
                 orderUpdates.refundedAt = Date.now();
                 orderUpdates.refundReason = ticket.ticketReason || 'Approved via Admin Panel';
+
+                // Automatically generate and persist official REFUND SUCCESSFUL receipt
+                try {
+                  const o = await getServerDoc('orders', ticket.orderId);
+                  if (o) {
+                    await generateReceiptForOrder({ ...o, ...orderUpdates }, 'REFUND_SUCCESSFUL');
+                  }
+                } catch (rcErr) {
+                  console.error('[Receipt System] Error generating refund receipt via Telegram:', rcErr);
+                }
               }
               await updateServerDoc('orders', ticket.orderId, orderUpdates);
+
+              // Update in-memory activeOrders immediately so REST API returns refreshed state
+              const memOrder = activeOrders.get(ticket.orderId);
+              if (memOrder) {
+                activeOrders.set(ticket.orderId, { ...memOrder, ...orderUpdates });
+              }
+
+              // Emit order-updated and refresh_payments
+              emitAdminAction("order-updated", { 
+                orderId: ticket.orderId, 
+                ticketId: realTicketId,
+                status: orderUpdates.status || memOrder?.status || 'VERIFIED',
+                ticketStatus: newStatus, 
+                uid: ticket.uid,
+                isRefunded: newStatus === 'COMPLETED'
+              });
+              emitAdminAction("refresh_payments", { 
+                orderId: ticket.orderId, 
+                uid: ticket.uid 
+              });
             }
 
             // INSTANT DOWNGRADE: If refund is approved (COMPLETED), revert automatically to Basic 5-day Plan
@@ -1688,6 +1897,13 @@ export const initTelegramBot = async () => {
 
             await updateServerDoc('orders', oid, orderUpdate);
 
+            // Automatically generate and persist official PAYMENT SUCCESSFUL receipt
+            try {
+              await generateReceiptForOrder({ ...oData, ...orderUpdate, orderId: oid }, 'PAYMENT_SUCCESSFUL');
+            } catch (rcErr) {
+              console.error('[Receipt System] Error generating approval receipt via Telegram:', rcErr);
+            }
+
             // ⚡ Emit socket event for instant app reaction
             emitAdminAction("order-updated", { orderId: oid, status: 'VERIFIED', plan: targetPlan });
 
@@ -1718,6 +1934,21 @@ export const initTelegramBot = async () => {
                 refundReason: `Automatic refund due to upgrade to ${targetPlan} (Order ${oid})`,
                 adminDecision: 'Refunded automatically on upgrade approval'
               });
+
+              // Automatically generate and persist official REFUND SUCCESSFUL receipt for original order
+              try {
+                const prevOrder = await getServerDoc('orders', oData.upgradeFromOrderId);
+                if (prevOrder) {
+                  await generateReceiptForOrder({
+                    ...prevOrder,
+                    status: 'REFUNDED',
+                    refundedAt: Date.now(),
+                    refundReason: `Automatic refund due to upgrade to ${targetPlan}`
+                  }, 'REFUND_SUCCESSFUL');
+                }
+              } catch (rcErr) {
+                console.error('[Receipt System] Error generating upgrade refund receipt via Telegram:', rcErr);
+              }
               
               // Emit socket for the old order too
               emitAdminAction("order-updated", { orderId: oData.upgradeFromOrderId, status: 'REFUNDED' });

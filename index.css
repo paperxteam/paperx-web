@@ -87,59 +87,7 @@ html[data-larger-text="true"] textarea {
   letter-spacing: 0.015em;
 }
 
-/* Dark Mode Overrides */
-.dark, .dark body {
-  background-color: #0a0a0a !important;
-  color: #f5f5f5 !important;
-}
-
-.dark .bg-white { background-color: #0a0a0a !important; }
-.dark .bg-gray-50 { background-color: #171717 !important; }
-.dark .bg-gray-100 { background-color: #262626 !important; }
-.dark .bg-gray-200 { background-color: #404040 !important; }
-.dark .text-gray-900 { color: #ffffff !important; }
-.dark .text-gray-800 { color: #f8fafc !important; }
-.dark .text-gray-700 { color: #f1f5f9 !important; }
-.dark .text-gray-600 { color: #e2e8f0 !important; }
-.dark .text-gray-500 { color: #cbd5e1 !important; }
-.dark .text-gray-400 { color: #94a3b8 !important; }
-.dark .text-gray-300 { color: #e2e8f0 !important; }
-.dark .text-gray-200 { color: #f1f5f9 !important; }
-.dark .text-gray-100 { color: #f8fafc !important; }
-.dark .text-black { color: #ffffff !important; }
-.dark .text-stone-900 { color: #f5f5f5 !important; }
-.dark .text-stone-800 { color: #e5e5e5 !important; }
-.dark .text-stone-700 { color: #d4d4d4 !important; }
-.dark .text-stone-600 { color: #a3a3a3 !important; }
-.dark .text-stone-500 { color: #737373 !important; }
-.dark .border-gray-50 { border-color: #171717 !important; }
-.dark .bg-stone-50 { background-color: #1c1917 !important; }
-.dark .bg-indigo-50 { background-color: #1e1b4b !important; }
-.dark .bg-slate-50 { background-color: #0f172a !important; }
-.dark .bg-blue-50 { background-color: #172554 !important; }
-.dark .bg-green-50 { background-color: #052e16 !important; }
-.dark .bg-red-50 { background-color: #450a0a !important; }
-.dark .bg-yellow-50 { background-color: #422006 !important; }
-.dark .text-stone-600 { color: #a8a29e !important; }
-.dark .text-indigo-600 { color: #818cf8 !important; }
-.dark .text-slate-600 { color: #94a3b8 !important; }
-.dark .text-blue-600 { color: #60a5fa !important; }
-.dark .text-green-600 { color: #4ade80 !important; }
-.dark .text-red-600 { color: #f87171 !important; }
-.dark .text-yellow-600 { color: #fbbf24 !important; }
-.dark .border-gray-100 { border-color: #262626 !important; }
-.dark .border-gray-200 { border-color: #404040 !important; }
-.dark .border-gray-300 { border-color: #525252 !important; }
-.dark .border-stone-200 { border-color: #292524 !important; }
-.dark .border-white\/60 { border-color: rgba(255, 255, 255, 0.1) !important; }
-.dark .border-white\/20 { border-color: rgba(255, 255, 255, 0.05) !important; }
-.dark .bg-white\/60 { background-color: #0a0a0a !important; }
-.dark .bg-white\/40 { background-color: rgba(0, 0, 0, 0.8) !important; }
-.dark .bg-white\/10 { background-color: rgba(255, 255, 255, 0.05) !important; }
-.dark .bg-white\/50 { background-color: rgba(0, 0, 0, 0.7) !important; }
-.dark .shadow-sm, .dark .shadow-md, .dark .shadow-lg, .dark .shadow-xl, .dark .shadow-2xl {
-  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.5), 0 2px 4px -1px rgba(0, 0, 0, 0.3) !important;
-}
+/* Removed Dark Mode Overrides that interfere with Tailwind dark: classes */
 
 @keyframes pulse-soft {
   0%, 100% { opacity: 1; transform: scale(1); }
@@ -202,3 +150,125 @@ html[data-larger-text="true"] textarea {
 .animate-slide-in-right {
   animation: slide-in-right 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
+
+/* iOS 27 Liquid Glass / Ultra-HD Translucent App Drawer */
+.ios-glass-drawer {
+  background: rgba(255, 255, 255, 0.18) !important;
+  backdrop-filter: blur(22px) saturate(240%) contrast(105%) !important;
+  -webkit-backdrop-filter: blur(22px) saturate(240%) contrast(105%) !important;
+  border-right: 1px solid rgba(255, 255, 255, 0.50) !important;
+  box-shadow: 0 30px 90px -12px rgba(0, 0, 0, 0.08),
+              inset 0 1px 1.5px 0 rgba(255, 255, 255, 0.95),
+              inset 0 -1px 1px 0 rgba(0, 0, 0, 0.02),
+              inset 1px 0 0 0 rgba(255, 255, 255, 0.65) !important;
+}
+
+.dark .ios-glass-drawer {
+  background: rgba(12, 14, 20, 0.22) !important;
+  backdrop-filter: blur(22px) saturate(240%) contrast(105%) !important;
+  -webkit-backdrop-filter: blur(22px) saturate(240%) contrast(105%) !important;
+  border-right: 1px solid rgba(255, 255, 255, 0.14) !important;
+  box-shadow: 0 30px 90px -12px rgba(0, 0, 0, 0.50),
+              inset 0 1px 1.5px 0 rgba(255, 255, 255, 0.25),
+              inset 1px 0 0 0 rgba(255, 255, 255, 0.18) !important;
+}
+
+/* Liquid Pill Nav Items */
+.ios-nav-pill-active {
+  background: rgba(10, 10, 12, 0.92) !important;
+  color: #ffffff !important;
+  box-shadow: 0 6px 20px -2px rgba(0, 0, 0, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.15) !important;
+}
+
+.dark .ios-nav-pill-active {
+  background: rgba(255, 255, 255, 0.95) !important;
+  color: #09090b !important;
+  box-shadow: 0 6px 20px -2px rgba(255, 255, 255, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.4) !important;
+}
+
+/* Glass Header Bar for Profile & Preference Sub-views */
+.ios-glass-header {
+  background: rgba(255, 255, 255, 0.45) !important;
+  backdrop-filter: blur(32px) saturate(240%) contrast(105%) !important;
+  -webkit-backdrop-filter: blur(32px) saturate(240%) contrast(105%) !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.45) !important;
+  box-shadow: 0 4px 24px -2px rgba(0, 0, 0, 0.06) !important;
+}
+
+.dark .ios-glass-header {
+  background: rgba(12, 14, 20, 0.45) !important;
+  backdrop-filter: blur(32px) saturate(240%) contrast(105%) !important;
+  -webkit-backdrop-filter: blur(32px) saturate(240%) contrast(105%) !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.15) !important;
+  box-shadow: 0 4px 24px -2px rgba(0, 0, 0, 0.45) !important;
+}
+
+/* Water Drop Glass Pill Container */
+.ios-water-pill-container {
+  background: rgba(255, 255, 255, 0.15) !important;
+  backdrop-filter: blur(16px) saturate(180%) !important;
+  -webkit-backdrop-filter: blur(16px) saturate(180%) !important;
+  border: 1px solid rgba(255, 255, 255, 0.4) !important;
+  box-shadow: 
+    inset 0 1px 3px rgba(0, 0, 0, 0.05),
+    inset 0 -1px 2px rgba(255, 255, 255, 0.5),
+    0 2px 12px -2px rgba(0, 0, 0, 0.03) !important;
+  border-radius: 9999px !important;
+}
+
+.dark .ios-water-pill-container {
+  background: rgba(0, 0, 0, 0.25) !important;
+  backdrop-filter: blur(16px) saturate(180%) !important;
+  -webkit-backdrop-filter: blur(16px) saturate(180%) !important;
+  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+  border-top-color: rgba(0, 0, 0, 0.4) !important;
+  box-shadow: 
+    inset 0 2px 6px rgba(0, 0, 0, 0.5),
+    inset 0 -1px 1px rgba(255, 255, 255, 0.05),
+    0 1px 0 rgba(255, 255, 255, 0.03) !important;
+  border-radius: 9999px !important;
+}
+
+@keyframes water-shimmer {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+/* Water Drop Glass Active Item */
+.ios-water-pill-active {
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.9) 0%, rgba(255, 255, 255, 0.3) 50%, rgba(255, 255, 255, 0.9) 100%) !important;
+  background-size: 200% 200% !important;
+  animation: water-shimmer 4s ease-in-out infinite !important;
+  backdrop-filter: blur(8px) saturate(200%) !important;
+  -webkit-backdrop-filter: blur(8px) saturate(200%) !important;
+  border: 1px solid rgba(255, 255, 255, 0.6) !important;
+  border-top-color: rgba(255, 255, 255, 1) !important;
+  border-bottom-color: rgba(255, 255, 255, 0.2) !important;
+  box-shadow: 
+    inset 0 2px 4px rgba(255, 255, 255, 1),
+    inset 0 -2px 6px rgba(255, 255, 255, 0.5),
+    0 6px 12px -2px rgba(0, 0, 0, 0.12), 
+    0 2px 4px -1px rgba(0, 0, 0, 0.06) !important;
+  color: #000 !important;
+  border-radius: 9999px !important;
+}
+
+.dark .ios-water-pill-active {
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.25) 0%, rgba(255, 255, 255, 0.02) 50%, rgba(255, 255, 255, 0.25) 100%) !important;
+  background-size: 200% 200% !important;
+  animation: water-shimmer 4s ease-in-out infinite !important;
+  backdrop-filter: blur(12px) saturate(180%) !important;
+  -webkit-backdrop-filter: blur(12px) saturate(180%) !important;
+  border: 1px solid rgba(255, 255, 255, 0.15) !important;
+  border-top-color: rgba(255, 255, 255, 0.4) !important;
+  border-bottom-color: rgba(0, 0, 0, 0.5) !important;
+  box-shadow: 
+    inset 0 2px 3px rgba(255, 255, 255, 0.25),
+    inset 0 -2px 5px rgba(255, 255, 255, 0.05),
+    0 8px 16px -2px rgba(0, 0, 0, 0.5), 
+    0 4px 8px -2px rgba(0, 0, 0, 0.3) !important;
+  color: #fff !important;
+  border-radius: 9999px !important;
+}
+

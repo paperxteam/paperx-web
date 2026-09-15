@@ -19,22 +19,26 @@ if (typeof window !== 'undefined') {
   };
 
   window.addEventListener('unhandledrejection', (event) => {
-    const reason = event.reason;
-    const msg = typeof reason === 'string' ? reason : (reason?.message || '');
-    if (msg.includes('Pending promise was never set') || msg.includes('INTERNAL ASSERTION FAILED')) {
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      console.warn('[Firebase Auth Handled Assertion]:', msg);
-    }
+    try {
+      const reason = event ? event.reason : null;
+      const msg = typeof reason === 'string' ? reason : (reason?.message ? String(reason.message) : '');
+      if (msg && (msg.includes('Pending promise was never set') || msg.includes('INTERNAL ASSERTION FAILED'))) {
+        event.preventDefault();
+        event.stopImmediatePropagation?.();
+        console.warn('[Firebase Auth Handled Assertion]:', msg);
+      }
+    } catch (_) {}
   }, true);
 
   window.addEventListener('error', (event) => {
-    const msg = event.message || '';
-    if (msg.includes('Pending promise was never set') || msg.includes('INTERNAL ASSERTION FAILED')) {
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      console.warn('[Firebase Auth Handled Assertion]:', msg);
-    }
+    try {
+      const msg = (event && event.message) ? String(event.message) : '';
+      if (msg && (msg.includes('Pending promise was never set') || msg.includes('INTERNAL ASSERTION FAILED'))) {
+        event.preventDefault();
+        event.stopImmediatePropagation?.();
+        console.warn('[Firebase Auth Handled Assertion]:', msg);
+      }
+    } catch (_) {}
   }, true);
 }
 

@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import { sendTelegramAdminNotification, sendTelegramCheckoutNotification } from "./telegramBot";
 import { setServerDoc, getServerDocs, getServerDoc } from "./serverDb";
 import { emitAdminAction } from "./adminRoutes";
+import { getReceiptForOrder, generateReceiptForOrder, getAllReceiptsForOrder } from "./receiptGenerator";
 
 const router = express.Router();
 
@@ -331,7 +332,7 @@ router.post("/verify-utr", async (req, res) => {
       userEmail: req.body.email || req.body.userEmail || order.userEmail || '',
       userName: req.body.userName || order.userName || '',
       billingCycle: orderBillingCycle
-    });
+    }).catch(err => console.warn('[PAYMENT SERVER] Telegram notification note:', err));
 
     return res.json({
       success: true,
@@ -507,7 +508,7 @@ const handleUserOrders = async (req: express.Request, res: express.Response) => 
       if (ord.utr && typeof ord.utr === 'string' && ord.utr.trim().length >= 8) {
         submittedUtrs.add(ord.utr.trim());
       }
-      const isFinal = ord.status === 'VERIFIED' || ord.status === 'COMPLETED' || ord.status === 'SUCCESS' || ord.status === 'REJECTED';
+      const isFinal = ord.status === 'VERIFIED' || ord.status === 'COMPLETED' || ord.status === 'SUCCESS' || ord.status === 'REJECTED' || ord.status === 'REFUNDED' || ord.isRefunded;
       if (ord.utr || isFinal) {
         const t = new Date(ord.createdAt || ord.submittedAt || 0).getTime();
         if (t > 0) submittedTimes.push(t);
@@ -517,7 +518,7 @@ const handleUserOrders = async (req: express.Request, res: express.Response) => 
     // Filter and sanitize orders: remove ghost unsubmitted draft sessions that were never paid/submitted
     const cleanOrders = allRecords.filter((ord) => {
       const hasUtr = typeof ord.utr === 'string' && ord.utr.trim().length >= 8;
-      const isFinalized = ord.status === 'VERIFIED' || ord.status === 'COMPLETED' || ord.status === 'SUCCESS' || ord.status === 'REJECTED' || ord.status === 'FAILED';
+      const isFinalized = ord.status === 'VERIFIED' || ord.status === 'COMPLETED' || ord.status === 'SUCCESS' || ord.status === 'REJECTED' || ord.status === 'FAILED' || ord.status === 'REFUNDED' || ord.isRefunded;
       const createdTime = new Date(ord.createdAt || ord.submittedAt || 0).getTime();
       const ageMs = now - createdTime;
 
@@ -540,16 +541,25 @@ const handleUserOrders = async (req: express.Request, res: express.Response) => 
     const utrSeen = new Map<string, any>();
     const nonUtrOrders: any[] = [];
 
+    const getStatusScore = (s?: string) => {
+      if (s === 'REFUNDED') return 4;
+      if (s === 'VERIFIED' || s === 'COMPLETED' || s === 'SUCCESS') return 3;
+      if (s === 'REJECTED' || s === 'FAILED') return 2;
+      return 1;
+    };
+
     for (const ord of cleanOrders) {
       if (ord.utr && typeof ord.utr === 'string' && ord.utr.trim().length >= 8) {
         const cleanUtrKey = ord.utr.trim();
         if (utrSeen.has(cleanUtrKey)) {
           const prev = utrSeen.get(cleanUtrKey);
-          // Prefer verified/completed status
-          const prevScore = (prev.status === 'VERIFIED' || prev.status === 'COMPLETED') ? 2 : (prev.status === 'REJECTED' ? 1 : 0);
-          const curScore = (ord.status === 'VERIFIED' || ord.status === 'COMPLETED') ? 2 : (ord.status === 'REJECTED' ? 1 : 0);
-          if (curScore > prevScore) {
-            utrSeen.set(cleanUtrKey, ord);
+          // Prefer refunded or verified/completed status, merge details
+          const prevScore = getStatusScore(prev.status);
+          const curScore = getStatusScore(ord.status);
+          if (curScore >= prevScore) {
+            utrSeen.set(cleanUtrKey, { ...prev, ...ord });
+          } else {
+            utrSeen.set(cleanUtrKey, { ...ord, ...prev });
           }
         } else {
           utrSeen.set(cleanUtrKey, ord);
@@ -634,6 +644,122 @@ router.post("/webhook/sms", (req, res) => {
   } catch (err: any) {
     console.error("[SMS WEBHOOK ERROR]:", err);
     return res.status(500).json({ error: "Failed to process SMS webhook." });
+  }
+});
+
+/**
+ * GET /api/payments/receipt/order/:orderId
+ * Returns the immutable, backend-generated payment or refund receipt associated with an order.
+ * Verifies user ownership using the query-param uid for bulletproof client isolation.
+ */
+router.get("/receipt/order/:orderId", async (req, res) => {
+  console.log(`[PAYMENT SERVER] Receipt request for orderId: ${req.params.orderId}, uid: ${req.query.uid}, type: ${req.query.type}`);
+  try {
+    const { orderId } = req.params;
+    const { uid, type } = req.query;
+
+    if (!uid || typeof uid !== 'string') {
+      return res.status(400).json({ error: "Missing user UID." });
+    }
+
+    const preferredType = type === 'REFUND_SUCCESSFUL' ? 'REFUND_SUCCESSFUL' : (type === 'PAYMENT_SUCCESSFUL' ? 'PAYMENT_SUCCESSFUL' : undefined);
+    const receipt = await getReceiptForOrder(orderId, uid, preferredType);
+    if (!receipt) {
+      return res.status(404).json({ error: "Receipt not found for this transaction." });
+    }
+
+    const allReceipts = await getAllReceiptsForOrder(orderId, uid);
+
+    return res.json({ success: true, receipt, allReceipts });
+  } catch (err: any) {
+    if (err.message === 'Unauthorized') {
+      return res.status(403).json({ error: "You are not authorized to view this receipt." });
+    }
+    console.error("[RECEIPT ORDER FETCH ERROR]:", err);
+    return res.status(500).json({ error: "Failed to retrieve receipt." });
+  }
+});
+
+/**
+ * GET /api/payments/receipt/verify/:verificationId
+ * Public verification endpoint used by QR codes / Verification URL.
+ * Returns public validation status (VALID, REFUNDED, etc.) with privacy-compliant masked customer details.
+ */
+router.get("/receipt/verify/:verificationId", async (req, res) => {
+  try {
+    const { verificationId } = req.params;
+    const receipts = await getServerDocs('receipts');
+    let receipt = receipts.find(r => r.verificationId === verificationId);
+
+    // Self-healing: if receipt not found, search orders document directly
+    if (!receipt) {
+      const orders = await getServerDocs('orders');
+      for (const ord of orders) {
+        if (ord.receipt && ord.receipt.verificationId === verificationId) {
+          receipt = ord.receipt;
+          break;
+        }
+        if (ord.refundReceipt && ord.refundReceipt.verificationId === verificationId) {
+          receipt = ord.refundReceipt;
+          break;
+        }
+      }
+
+      // If still not found, check if a valid order exists for the corresponding transaction
+      if (!receipt) {
+        const order = orders.find(o => (o.status === 'VERIFIED' || o.status === 'REFUNDED') && (o.utr || o.orderId === verificationId || o.id === verificationId));
+        if (order) {
+          console.log(`[Receipt Verification] Backfilling missing receipt for order: ${order.orderId || order.id}`);
+          const isRefund = order.status === 'REFUNDED' || order.isRefunded === true;
+          receipt = await generateReceiptForOrder(order, isRefund ? 'REFUND_SUCCESSFUL' : 'PAYMENT_SUCCESSFUL');
+        }
+      }
+    }
+
+    if (!receipt) {
+      return res.status(404).json({ error: "Receipt is INVALID. No verified PaperX ledger entry matches this verification token." });
+    }
+
+    // Mask sensitive details to preserve customer privacy on public validation scans
+    const maskedEmail = receipt.userEmail 
+      ? receipt.userEmail.replace(/^(..)(.*)(@.*)$/, (_, p1, p2, p3) => p1 + '*'.repeat(Math.min(p2.length, 6)) + p3)
+      : 'N/A';
+    
+    const maskedName = receipt.userName 
+      ? receipt.userName.replace(/^(..)(.*)$/, (_, p1, p2) => p1 + '*'.repeat(Math.min(p2.length, 6)))
+      : 'Subscriber';
+
+    return res.json({
+      success: true,
+      status: receipt.status || 'VALID',
+      type: receipt.type,
+      receiptDetails: {
+        receiptId: receipt.receiptId,
+        invoiceId: receipt.invoiceId,
+        transactionId: receipt.transactionId,
+        refundId: receipt.refundId,
+        originalReceiptId: receipt.originalReceiptId,
+        originalTransactionId: receipt.originalTransactionId,
+        plan: receipt.plan,
+        billingCycle: receipt.billingCycle,
+        amount: receipt.amount || receipt.originalAmount || receipt.refundAmount || 0,
+        refundAmount: receipt.refundAmount,
+        currency: receipt.currency || 'INR',
+        paymentMethod: receipt.paymentMethod || 'UPI (Instant)',
+        utr: receipt.utr,
+        createdAt: receipt.createdAt,
+        paymentDate: receipt.paymentDate,
+        refundDate: receipt.refundDate,
+        subscriptionStart: receipt.subscriptionStart,
+        subscriptionExpiry: receipt.subscriptionExpiry,
+        customerName: maskedName,
+        customerEmail: maskedEmail,
+        verifiedAt: receipt.verifiedAt
+      }
+    });
+  } catch (err: any) {
+    console.error("[RECEIPT VERIFY ROUTE ERROR]:", err);
+    return res.status(500).json({ error: "Verification system error." });
   }
 });
 

@@ -790,7 +790,7 @@ export const CameraScanner: React.FC<CameraScannerProps> = ({ isOpen, onClose, o
                     }
                 }
 
-                const pattern = localStorage.getItem('pref_namingPattern') || 'paperx_date';
+                const pattern = localStorage.getItem('pref_namingPattern') || 'simple';
                 const exportName = generateFormattedFileName({
                     baseName: 'Scanned_Document.pdf',
                     toolName: 'CameraScan',

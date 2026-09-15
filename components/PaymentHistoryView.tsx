@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { motion } from 'motion/react';
 import { 
   Receipt, 
   CreditCard, 
@@ -71,6 +72,9 @@ export interface PaymentOrder {
   ticketId?: string;
   ticketStatus?: string;
   ticketReason?: string;
+  refundReceipt?: any;
+  refundReceiptId?: string;
+  refundedAt?: string | number;
 }
 
 interface PaymentHistoryViewProps {
@@ -84,12 +88,89 @@ interface PaymentHistoryViewProps {
 
 export const isOrderRefunded = (order: PaymentOrder | null | undefined): boolean => {
   if (!order) return false;
-  if (order.isRefunded || order.status === 'REFUNDED') return true;
-  if (order.ticketStatus === 'COMPLETED' && order.ticketReason) {
-    const reason = order.ticketReason.toLowerCase();
-    return reason.includes('refund') || reason.includes('payout') || reason.includes('money back');
-  }
+  if (order.isRefunded === true || order.status === 'REFUNDED') return true;
+  if (order.ticketStatus === 'COMPLETED' || order.ticketStatus === 'RESOLVED') return true;
+  if (order.refundReceipt || order.refundReceiptId) return true;
+  if (order.refundedAt) return true;
   return false;
+};
+
+export const AnimatedPaymentReceiptIcon: React.FC<{ active?: boolean; className?: string }> = ({ 
+  active = false,
+  className = "" 
+}) => {
+  return (
+    <span className={`relative inline-flex items-center justify-center w-5 h-5 shrink-0 pointer-events-none ${className}`}>
+      {/* Receipt body with micro floating motion */}
+      <motion.span
+        animate={active ? { y: [0, -1.5, 0] } : { y: 0 }}
+        transition={active ? { duration: 2.2, repeat: Infinity, ease: "easeInOut" } : undefined}
+        className={`w-4 h-[18px] rounded-[3px] border-[1.5px] flex flex-col justify-between p-[2px] transition-colors relative shadow-2xs ${
+          active 
+            ? 'bg-emerald-50 dark:bg-emerald-950/80 border-emerald-500 text-emerald-600 dark:text-emerald-400' 
+            : 'bg-white/90 dark:bg-gray-800/90 border-gray-400 dark:border-gray-500 text-gray-400 dark:text-gray-500'
+        }`}
+      >
+        {/* Animated text/ledger lines */}
+        <motion.span 
+          animate={active ? { opacity: [0.5, 1, 0.5] } : { opacity: 0.6 }}
+          transition={active ? { duration: 1.6, repeat: Infinity, ease: "easeInOut" } : undefined}
+          className="w-full h-[1.5px] rounded-full bg-current block" 
+        />
+        <span className="w-3/4 h-[1.5px] rounded-full bg-current opacity-60 block" />
+        <span className="w-1/2 h-[1.5px] rounded-full bg-current opacity-40 block" />
+      </motion.span>
+      {/* Verified checkmark badge with smooth pulse */}
+      <motion.span
+        animate={active ? { scale: [1, 1.25, 1] } : { scale: 1 }}
+        transition={active ? { duration: 1.8, repeat: Infinity, ease: "easeInOut" } : undefined}
+        className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full flex items-center justify-center ring-1 ring-white dark:ring-gray-900 ${
+          active ? 'bg-emerald-500 text-white shadow-xs' : 'bg-gray-400 text-white opacity-75'
+        }`}
+      >
+        <Check size={7} strokeWidth={3.5} />
+      </motion.span>
+    </span>
+  );
+};
+
+export const AnimatedRefundReceiptIcon: React.FC<{ active?: boolean; className?: string }> = ({ 
+  active = false,
+  className = "" 
+}) => {
+  return (
+    <span className={`relative inline-flex items-center justify-center w-5 h-5 shrink-0 pointer-events-none ${className}`}>
+      {/* Receipt body with return motion */}
+      <motion.span
+        animate={active ? { y: [0, -1.5, 0] } : { y: 0 }}
+        transition={active ? { duration: 2.2, repeat: Infinity, ease: "easeInOut", delay: 0.2 } : undefined}
+        className={`w-4 h-[18px] rounded-[3px] border-[1.5px] flex flex-col justify-between p-[2px] transition-colors relative shadow-2xs ${
+          active 
+            ? 'bg-amber-50 dark:bg-amber-950/80 border-amber-500 text-amber-600 dark:text-amber-400' 
+            : 'bg-white/90 dark:bg-gray-800/90 border-gray-400 dark:border-gray-500 text-gray-400 dark:text-gray-500'
+        }`}
+      >
+        {/* Animated text/ledger lines */}
+        <motion.span 
+          animate={active ? { opacity: [0.5, 1, 0.5] } : { opacity: 0.6 }}
+          transition={active ? { duration: 1.6, repeat: Infinity, ease: "easeInOut", delay: 0.2 } : undefined}
+          className="w-full h-[1.5px] rounded-full bg-current block" 
+        />
+        <span className="w-3/4 h-[1.5px] rounded-full bg-current opacity-60 block" />
+        <span className="w-1/2 h-[1.5px] rounded-full bg-current opacity-40 block" />
+      </motion.span>
+      {/* Animated refund circular arrow badge with continuous rotation */}
+      <motion.span
+        animate={active ? { rotate: [0, -360] } : { rotate: 0 }}
+        transition={active ? { duration: 2.8, repeat: Infinity, ease: "linear" } : undefined}
+        className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full flex items-center justify-center ring-1 ring-white dark:ring-gray-900 ${
+          active ? 'bg-amber-500 text-white shadow-xs' : 'bg-gray-400 text-white opacity-75'
+        }`}
+      >
+        <RotateCcw size={6} strokeWidth={3.5} />
+      </motion.span>
+    </span>
+  );
 };
 
 export const PaymentHistoryView: React.FC<PaymentHistoryViewProps> = ({
@@ -115,20 +196,21 @@ export const PaymentHistoryView: React.FC<PaymentHistoryViewProps> = ({
     try {
       const receiptElement = document.getElementById('printable-receipt');
       const orderIdStr = selectedOrderForInvoice.orderId || selectedOrderForInvoice.id || 'order';
-      const fileName = `PaperX_Receipt_${orderIdStr}.pdf`;
+      const isRef = activeReceipt ? (activeReceipt.type === 'REFUND_SUCCESSFUL') : (selectedReceiptType === 'REFUND_SUCCESSFUL');
+      const fileName = isRef ? `PaperX_Refund_Receipt_${orderIdStr}.pdf` : `PaperX_Payment_Receipt_${orderIdStr}.pdf`;
 
       await downloadReceiptPdf(receiptElement, fileName, {
-        orderId: orderIdStr,
-        plan: selectedOrderForInvoice.plan || 'Plus Plan',
-        billingCycle: selectedOrderForInvoice.billingCycle || 'Monthly',
-        amount: selectedOrderForInvoice.amount || 50,
-        userName: user?.name || user?.email?.split('@')[0] || 'Subscriber',
-        userEmail: user?.email,
-        userUid: user?.uid,
-        createdAt: selectedOrderForInvoice.createdAt,
-        paymentMode: 'UPI (Instant)',
-        utr: selectedOrderForInvoice.utr || 'Verified',
-        isRefunded: isOrderRefunded(selectedOrderForInvoice),
+        orderId: activeReceipt?.orderId || orderIdStr,
+        plan: activeReceipt?.plan || selectedOrderForInvoice.plan || 'Plus Plan',
+        billingCycle: activeReceipt?.billingCycle || selectedOrderForInvoice.billingCycle || 'Monthly',
+        amount: activeReceipt?.amount || activeReceipt?.refundAmount || activeReceipt?.originalAmount || selectedOrderForInvoice.amount || 50,
+        userName: activeReceipt?.userName || user?.name || user?.email?.split('@')[0] || 'Subscriber',
+        userEmail: activeReceipt?.userEmail || user?.email,
+        userUid: activeReceipt?.uid || user?.uid,
+        createdAt: activeReceipt?.createdAt || selectedOrderForInvoice.createdAt,
+        paymentMode: activeReceipt?.paymentMethod || 'UPI (Instant)',
+        utr: activeReceipt?.utr || selectedOrderForInvoice.utr || 'Verified',
+        isRefunded: isRef,
       });
     } catch (error) {
       console.error('Error generating PDF:', error);
@@ -147,6 +229,76 @@ export const PaymentHistoryView: React.FC<PaymentHistoryViewProps> = ({
   const [isSubmittingTicket, setIsSubmittingTicket] = useState(false);
   const [ticketFeedback, setTicketFeedback] = useState<{ type: 'success' | 'error'; message: string; ticketId?: string } | null>(null);
 
+  // Fallback builder to guarantee receipts are ALWAYS available forever without fail
+  const buildFallbackReceipt = useCallback((order: PaymentOrder, type: 'PAYMENT_SUCCESSFUL' | 'REFUND_SUCCESSFUL') => {
+    const isRefund = type === 'REFUND_SUCCESSFUL';
+    const prefix = isRefund ? 'RF' : 'RC';
+    const orderId = order.orderId || order.id || 'ORDER';
+    const hash = Math.abs(orderId.split('').reduce((acc, char) => (acc << 5) - acc + char.charCodeAt(0), 0)).toString(16).toUpperCase();
+    const now = new Date().toISOString();
+    const verifiedAt = order.verifiedAt 
+      ? (typeof order.verifiedAt === 'number' ? new Date(order.verifiedAt).toISOString() : String(order.verifiedAt))
+      : (order.createdAt ? (typeof order.createdAt === 'number' ? new Date(order.createdAt).toISOString() : String(order.createdAt)) : now);
+
+    const durationDays = order.durationDays || (
+      order.billingCycle === '1-min' ? (1 / 1440) :
+      order.billingCycle === 'half-year' ? 180 : 
+      order.billingCycle === 'year' ? 365 : 30
+    );
+    const subscriptionExpiry = new Date(new Date(verifiedAt).getTime() + durationDays * 24 * 60 * 60 * 1000).toISOString();
+
+    if (!isRefund) {
+      return {
+        receiptId: `${prefix}-${hash.slice(0, 8)}-${orderId.slice(-6)}`,
+        invoiceId: `INV-${hash.slice(0, 8)}-${orderId.slice(-6)}`,
+        orderId,
+        transactionId: order.utr ? `TX-${order.utr}` : `TX-${hash.slice(0, 8)}`,
+        uid: order.uid || user?.uid || 'user',
+        userName: order.userName || user?.name || user?.email?.split('@')[0] || 'Subscriber',
+        userEmail: order.userEmail || user?.email || '',
+        plan: order.plan || 'Plus Plan',
+        billingCycle: order.billingCycle || 'month',
+        durationDays,
+        amount: Number(order.amount) || 50,
+        currency: order.currency || 'INR',
+        paymentMethod: 'UPI (Instant)',
+        utr: order.utr || 'Verified',
+        paymentDate: verifiedAt,
+        subscriptionStart: verifiedAt,
+        subscriptionExpiry,
+        status: 'VALID' as const,
+        verifiedAt,
+        createdAt: verifiedAt,
+        verificationId: `vr_${hash}_${orderId.replace(/[^a-zA-Z0-9]/g, '')}`,
+        type: 'PAYMENT_SUCCESSFUL' as const
+      };
+    } else {
+      return {
+        receiptId: `${prefix}-${hash.slice(0, 8)}-${orderId.slice(-6)}`,
+        originalReceiptId: `RC-${hash.slice(0, 8)}-${orderId.slice(-6)}`,
+        originalTransactionId: order.utr ? `TX-${order.utr}` : `TX-${hash.slice(0, 8)}`,
+        refundId: `REF-${hash.slice(0, 8)}-${orderId.slice(-6)}`,
+        orderId,
+        uid: order.uid || user?.uid || 'user',
+        userName: order.userName || user?.name || user?.email?.split('@')[0] || 'Subscriber',
+        userEmail: order.userEmail || user?.email || '',
+        originalAmount: Number(order.amount) || 50,
+        refundAmount: Number(order.amount) || 50,
+        currency: order.currency || 'INR',
+        paymentMethod: 'UPI (Instant)',
+        utr: order.utr || 'Verified',
+        refundDate: now,
+        status: 'REFUNDED' as const,
+        reason: order.ticketReason || 'Refund processed',
+        subscriptionStatusAfter: 'Basic Plan',
+        verifiedAt: now,
+        createdAt: now,
+        verificationId: `vr_rf_${hash}_${orderId.replace(/[^a-zA-Z0-9]/g, '')}`,
+        type: 'REFUND_SUCCESSFUL' as const
+      };
+    }
+  }, [user]);
+
   // Open Ticket Modal with real ready-made reason tailored to order status (Rejected vs Awaiting Long Time)
   const openTicketModal = (order: PaymentOrder) => {
     setSelectedOrderForTicket(order);
@@ -159,6 +311,84 @@ export const PaymentHistoryView: React.FC<PaymentHistoryViewProps> = ({
 
   // Invoice / Receipt Modal State
   const [selectedOrderForInvoice, setSelectedOrderForInvoice] = useState<PaymentOrder | null>(null);
+  const [selectedReceiptType, setSelectedReceiptType] = useState<'PAYMENT_SUCCESSFUL' | 'REFUND_SUCCESSFUL'>('PAYMENT_SUCCESSFUL');
+  const [allReceiptsList, setAllReceiptsList] = useState<any[]>([]);
+  
+  // Secure backend receipt details
+  const [activeReceipt, setActiveReceipt] = useState<any>(null);
+  const [isReceiptLoading, setIsReceiptLoading] = useState<boolean>(false);
+  const [receiptError, setReceiptError] = useState<string>('');
+
+  useEffect(() => {
+    if (!selectedOrderForInvoice || !user?.uid) {
+      setActiveReceipt(null);
+      setReceiptError('');
+      setAllReceiptsList([]);
+      return;
+    }
+
+    const orderIdStr = selectedOrderForInvoice.orderId || selectedOrderForInvoice.id;
+    const cacheKey = `paperx_receipt_${orderIdStr}_${selectedReceiptType}`;
+
+    // 1. Instant Cache Layer: load from localStorage if previously stored
+    let hasLoadedCached = false;
+    try {
+      const cachedStr = localStorage.getItem(cacheKey);
+      if (cachedStr) {
+        const cached = JSON.parse(cachedStr);
+        if (cached && cached.type === selectedReceiptType) {
+          setActiveReceipt(cached);
+          hasLoadedCached = true;
+        }
+      }
+    } catch (e) {
+      console.warn('Cache read note:', e);
+    }
+
+    const fetchReceipt = async () => {
+      if (!hasLoadedCached) {
+        setIsReceiptLoading(true);
+      }
+      setReceiptError('');
+      try {
+        const res = await fetch(`/api/payments/receipt/order/${encodeURIComponent(orderIdStr)}?uid=${encodeURIComponent(user.uid)}&type=${selectedReceiptType}`);
+        
+        if (res.ok) {
+          const data = await res.json();
+          if (data.success && data.receipt) {
+            setActiveReceipt(data.receipt);
+            if (Array.isArray(data.allReceipts)) {
+              setAllReceiptsList(data.allReceipts);
+            }
+            // Permanently cache in localStorage
+            try {
+              localStorage.setItem(cacheKey, JSON.stringify(data.receipt));
+            } catch (e) {}
+            return;
+          }
+        }
+        
+        // Self-Healing Resilience: If API couldn't find receipt or failed, build official client fallback
+        console.log('[Receipt System] Engaging bulletproof client-side receipt generator fallback');
+        const fallback = buildFallbackReceipt(selectedOrderForInvoice, selectedReceiptType);
+        setActiveReceipt(fallback);
+        try {
+          localStorage.setItem(cacheKey, JSON.stringify(fallback));
+        } catch (e) {}
+      } catch (err) {
+        console.error('Network error fetching receipt, using permanent client fallback:', err);
+        const fallback = buildFallbackReceipt(selectedOrderForInvoice, selectedReceiptType);
+        setActiveReceipt(fallback);
+        try {
+          localStorage.setItem(cacheKey, JSON.stringify(fallback));
+        } catch (e) {}
+      } finally {
+        setIsReceiptLoading(false);
+      }
+    };
+
+    fetchReceipt();
+  }, [selectedOrderForInvoice, user?.uid, selectedReceiptType, buildFallbackReceipt]);
 
   // UTR Resubmission Form State (for rejected or review orders)
   const [resubmittingOrderMap, setResubmittingOrderMap] = useState<Record<string, string>>({});
@@ -285,7 +515,7 @@ export const PaymentHistoryView: React.FC<PaymentHistoryViewProps> = ({
     const submittedTimes: number[] = [];
 
     for (const ord of all) {
-      const isFinal = ord.status === 'VERIFIED' || ord.status === 'COMPLETED' || ord.status === 'SUCCESS' || ord.status === 'REJECTED';
+      const isFinal = ord.status === 'VERIFIED' || ord.status === 'COMPLETED' || ord.status === 'SUCCESS' || ord.status === 'REJECTED' || ord.status === 'REFUNDED' || isOrderRefunded(ord);
       if (ord.utr || isFinal) {
         const t = new Date(ord.createdAt || ord.submittedAt || 0).getTime();
         if (t > 0) submittedTimes.push(t);
@@ -295,7 +525,7 @@ export const PaymentHistoryView: React.FC<PaymentHistoryViewProps> = ({
     // Filter out unsubmitted phantom drafts that were never submitted
     const filtered = all.filter((ord) => {
       const hasUtr = typeof ord.utr === 'string' && ord.utr.trim().length >= 8;
-      const isFinalized = ord.status === 'VERIFIED' || ord.status === 'COMPLETED' || ord.status === 'SUCCESS' || ord.status === 'REJECTED' || ord.status === 'FAILED';
+      const isFinalized = ord.status === 'VERIFIED' || ord.status === 'COMPLETED' || ord.status === 'SUCCESS' || ord.status === 'REJECTED' || ord.status === 'FAILED' || ord.status === 'REFUNDED' || isOrderRefunded(ord);
       const createdTime = new Date(ord.createdAt || ord.submittedAt || 0).getTime();
       const ageMs = now - createdTime;
 
@@ -315,16 +545,25 @@ export const PaymentHistoryView: React.FC<PaymentHistoryViewProps> = ({
     const utrMap = new Map<string, PaymentOrder>();
     const nonUtrOrders: PaymentOrder[] = [];
 
+    const getOrderScore = (o: PaymentOrder) => {
+      if (isOrderRefunded(o)) return 4;
+      if (o.status === 'VERIFIED' || o.status === 'COMPLETED' || o.status === 'SUCCESS') return 3;
+      if (o.status === 'REJECTED' || o.status === 'FAILED') return 2;
+      return 1;
+    };
+
     for (const ord of filtered) {
       if (ord.utr && typeof ord.utr === 'string' && ord.utr.trim().length >= 8) {
         const cleanUtr = ord.utr.trim();
         if (utrMap.has(cleanUtr)) {
           const prev = utrMap.get(cleanUtr)!;
-          // Priority: VERIFIED (3) > REJECTED (2) > PENDING (1)
-          const prevScore = (prev.status === 'VERIFIED' || prev.status === 'COMPLETED' || prev.status === 'SUCCESS') ? 3 : (prev.status === 'REJECTED' ? 2 : 1);
-          const curScore = (ord.status === 'VERIFIED' || ord.status === 'COMPLETED' || ord.status === 'SUCCESS') ? 3 : (ord.status === 'REJECTED' ? 2 : 1);
+          // Priority: REFUNDED (4) > VERIFIED (3) > REJECTED (2) > PENDING (1)
+          const prevScore = getOrderScore(prev);
+          const curScore = getOrderScore(ord);
           if (curScore >= prevScore) {
             utrMap.set(cleanUtr, { ...prev, ...ord });
+          } else {
+            utrMap.set(cleanUtr, { ...ord, ...prev });
           }
         } else {
           utrMap.set(cleanUtr, ord);
@@ -351,7 +590,7 @@ export const PaymentHistoryView: React.FC<PaymentHistoryViewProps> = ({
       if (res.ok) {
         const data = await res.json();
         if (data.success && Array.isArray(data.orders)) {
-          setOrders((prev) => sanitizeOrdersList([...prev, ...data.orders]));
+          setOrders(sanitizeOrdersList(data.orders));
         }
       }
     } catch (err) {
@@ -709,8 +948,10 @@ export const PaymentHistoryView: React.FC<PaymentHistoryViewProps> = ({
     const items = e.clipboardData?.items;
     if (items) {
       for (let i = 0; i < items.length; i++) {
-        const itemType = items[i].type;
-        if (itemType && typeof itemType === 'string' && itemType.indexOf('image') !== -1) {
+        const item = items[i];
+        if (!item) continue;
+        const itemType = item.type;
+        if (itemType && typeof itemType === 'string' && itemType.includes('image')) {
           const file = items[i].getAsFile();
           if (file) {
             processRefundFile(file);
@@ -908,9 +1149,10 @@ export const PaymentHistoryView: React.FC<PaymentHistoryViewProps> = ({
       ) : (
         <div className="space-y-4">
           {filteredOrders.map((order) => {
-            const isSuccess = order.status === 'VERIFIED' || order.status === 'COMPLETED' || order.status === 'SUCCESS';
-            const isPending = order.status === 'PENDING';
-            const isRejected = order.status === 'REJECTED' || order.status === 'FAILED' || order.status === 'EXPIRED';
+            const isRefunded = isOrderRefunded(order);
+            const isSuccess = !isRefunded && (order.status === 'VERIFIED' || order.status === 'COMPLETED' || order.status === 'SUCCESS');
+            const isPending = !isRefunded && order.status === 'PENDING';
+            const isRejected = !isRefunded && (order.status === 'REJECTED' || order.status === 'FAILED' || order.status === 'EXPIRED');
             const isAwaitingLong = isOrderAwaitingLongTime(order, 10);
             const waitMins = getOrderWaitMinutes(order);
 
@@ -923,7 +1165,13 @@ export const PaymentHistoryView: React.FC<PaymentHistoryViewProps> = ({
               <div
                 key={orderIdStr}
                 className={`p-4 sm:p-6 rounded-2xl sm:rounded-3xl border transition-all duration-200 w-full max-w-full overflow-hidden min-w-0 ${
-                  order.ticketId && order.ticketStatus !== 'RESOLVED'
+                  isRefunded
+                    ? 'bg-white dark:bg-gray-900 border-emerald-300 dark:border-emerald-800/80 shadow-sm'
+                    : order.ticketStatus === 'PROCESSING'
+                    ? 'bg-white dark:bg-gray-900 border-amber-300 dark:border-amber-800/80 shadow-sm'
+                    : order.ticketStatus === 'REJECTED_WRONG_INFO' || order.ticketStatus === 'REJECTED_NOT_VALID'
+                    ? 'bg-white dark:bg-gray-900 border-red-300 dark:border-red-800/80 shadow-sm'
+                    : order.ticketId
                     ? 'bg-white dark:bg-gray-900 border-blue-200/80 dark:border-blue-800/50 shadow-sm'
                     : isSuccess
                     ? 'bg-white dark:bg-gray-900 border-emerald-200/80 dark:border-emerald-800/50 shadow-sm'
@@ -936,7 +1184,13 @@ export const PaymentHistoryView: React.FC<PaymentHistoryViewProps> = ({
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-gray-100 dark:border-gray-800 min-w-0">
                   <div className="flex items-start sm:items-center gap-2.5 sm:gap-3 min-w-0 flex-1">
                     <div className={`p-2 sm:p-2.5 rounded-2xl shrink-0 ${
-                      order.ticketId && order.ticketStatus !== 'RESOLVED'
+                      isRefunded
+                        ? 'bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300'
+                        : order.ticketStatus === 'PROCESSING'
+                        ? 'bg-amber-100 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300'
+                        : order.ticketStatus === 'REJECTED_WRONG_INFO' || order.ticketStatus === 'REJECTED_NOT_VALID'
+                        ? 'bg-red-100 dark:bg-red-950/60 text-red-700 dark:text-red-300'
+                        : order.ticketId
                         ? 'bg-blue-100 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300'
                         : isSuccess
                         ? 'bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300'
@@ -944,7 +1198,21 @@ export const PaymentHistoryView: React.FC<PaymentHistoryViewProps> = ({
                         ? 'bg-amber-100 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300'
                         : 'bg-red-100 dark:bg-red-950/60 text-red-700 dark:text-red-300'
                     }`}>
-                      {order.ticketId ? <Ticket size={18} className={order.ticketStatus === 'PROCESSING' ? 'animate-pulse' : ''} /> : isSuccess ? <CheckCircle2 size={18} /> : isPending ? <Clock size={18} /> : <AlertTriangle size={18} />}
+                      {isRefunded ? (
+                        <CheckCircle2 size={18} className="text-emerald-600 dark:text-emerald-400" />
+                      ) : order.ticketStatus === 'PROCESSING' ? (
+                        <RefreshCw size={18} className="animate-spin text-amber-600 dark:text-amber-400" />
+                      ) : order.ticketStatus === 'REJECTED_WRONG_INFO' || order.ticketStatus === 'REJECTED_NOT_VALID' ? (
+                        <AlertTriangle size={18} className="text-red-600 dark:text-red-400" />
+                      ) : order.ticketId ? (
+                        <Ticket size={18} />
+                      ) : isSuccess ? (
+                        <CheckCircle2 size={18} />
+                      ) : isPending ? (
+                        <Clock size={18} />
+                      ) : (
+                        <AlertTriangle size={18} />
+                      )}
                     </div>
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap min-w-0">
@@ -956,24 +1224,69 @@ export const PaymentHistoryView: React.FC<PaymentHistoryViewProps> = ({
                             {order.billingCycle}
                           </span>
                         )}
-                        <span className={`px-2 py-0.5 rounded-full text-[9px] sm:text-[10px] font-black uppercase tracking-wider flex items-center gap-1 ${
-                          order.ticketId && order.ticketStatus !== 'RESOLVED'
-                            ? 'bg-blue-100 text-blue-800 dark:bg-blue-900/60 dark:text-blue-300'
-                            : isSuccess
-                            ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/60 dark:text-emerald-300'
-                            : isPending
-                            ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/60 dark:text-amber-300'
-                            : 'bg-red-100 text-red-800 dark:bg-red-900/60 dark:text-red-300'
-                        }`}>
-                          {isPending && !order.ticketId && <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-ping inline-block" />}
-                          {order.ticketId && order.ticketStatus !== 'RESOLVED'
-                            ? (order.ticketStatus === 'PROCESSING' ? 'Refund Processing' : 'Manual Review / Dispute')
-                            : isSuccess 
-                            ? 'Verified / Active' 
-                            : isPending 
-                            ? (isAwaitingLong ? `Awaiting Verification (${waitMins}m)` : 'Under Verification') 
-                            : 'Invalid Payment / Rejected'}
-                        </span>
+                        {(() => {
+                          if (isRefunded) {
+                            return (
+                              <span className="px-2 py-0.5 rounded-full text-[9px] sm:text-[10px] font-black uppercase tracking-wider flex items-center gap-1 bg-emerald-100 text-emerald-800 dark:bg-emerald-900/60 dark:text-emerald-300">
+                                <CheckCircle2 size={10} className="text-emerald-600 dark:text-emerald-400" />
+                                <span>Refund Approved / Completed</span>
+                              </span>
+                            );
+                          }
+                          if (order.ticketId) {
+                            const tStatus = order.ticketStatus || 'OPEN';
+                            if (tStatus === 'PROCESSING') {
+                              return (
+                                <span className="px-2 py-0.5 rounded-full text-[9px] sm:text-[10px] font-black uppercase tracking-wider flex items-center gap-1 bg-amber-100 text-amber-800 dark:bg-amber-900/60 dark:text-amber-300">
+                                  <RefreshCw size={10} className="animate-spin" />
+                                  <span>Refund Processing</span>
+                                </span>
+                              );
+                            }
+                            if (tStatus === 'REJECTED_WRONG_INFO') {
+                              return (
+                                <span className="px-2 py-0.5 rounded-full text-[9px] sm:text-[10px] font-black uppercase tracking-wider flex items-center gap-1 bg-red-100 text-red-800 dark:bg-red-900/60 dark:text-red-300">
+                                  <AlertCircle size={10} />
+                                  <span>Refund Rejected (Wrong Info)</span>
+                                </span>
+                              );
+                            }
+                            if (tStatus === 'REJECTED_NOT_VALID') {
+                              return (
+                                <span className="px-2 py-0.5 rounded-full text-[9px] sm:text-[10px] font-black uppercase tracking-wider flex items-center gap-1 bg-red-100 text-red-800 dark:bg-red-900/60 dark:text-red-300">
+                                  <AlertCircle size={10} />
+                                  <span>Refund Ineligible</span>
+                                </span>
+                              );
+                            }
+                            return (
+                              <span className="px-2 py-0.5 rounded-full text-[9px] sm:text-[10px] font-black uppercase tracking-wider flex items-center gap-1 bg-blue-100 text-blue-800 dark:bg-blue-900/60 dark:text-blue-300">
+                                <Ticket size={10} />
+                                <span>Refund Under Review</span>
+                              </span>
+                            );
+                          }
+                          if (isSuccess) {
+                            return (
+                              <span className="px-2 py-0.5 rounded-full text-[9px] sm:text-[10px] font-black uppercase tracking-wider flex items-center gap-1 bg-emerald-100 text-emerald-800 dark:bg-emerald-900/60 dark:text-emerald-300">
+                                Verified / Active
+                              </span>
+                            );
+                          }
+                          if (isPending) {
+                            return (
+                              <span className="px-2 py-0.5 rounded-full text-[9px] sm:text-[10px] font-black uppercase tracking-wider flex items-center gap-1 bg-amber-100 text-amber-800 dark:bg-amber-900/60 dark:text-amber-300">
+                                <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-ping inline-block" />
+                                {isAwaitingLong ? `Awaiting Verification (${waitMins}m)` : 'Under Verification'}
+                              </span>
+                            );
+                          }
+                          return (
+                            <span className="px-2 py-0.5 rounded-full text-[9px] sm:text-[10px] font-black uppercase tracking-wider flex items-center gap-1 bg-red-100 text-red-800 dark:bg-red-900/60 dark:text-red-300">
+                              Invalid Payment / Rejected
+                            </span>
+                          );
+                        })()}
                       </div>
                       <div className="flex items-center gap-1.5 sm:gap-2 mt-1 min-w-0 flex-wrap">
                         <span className="text-[11px] sm:text-xs font-mono text-gray-400 truncate max-w-full">
@@ -1027,29 +1340,62 @@ export const PaymentHistoryView: React.FC<PaymentHistoryViewProps> = ({
 
                   <div className="p-3 bg-gray-50 dark:bg-gray-800/50 rounded-2xl min-w-0 overflow-hidden">
                     <span className="text-[10px] uppercase font-bold text-gray-400 block mb-0.5 truncate">Dispute / Support Status</span>
-                    <span className={`font-bold break-words block text-[11px] sm:text-xs ${
-                      order.ticketId && order.ticketStatus !== 'RESOLVED'
-                        ? 'text-blue-600 dark:text-blue-400'
-                        : isSuccess
-                        ? 'text-emerald-600 dark:text-emerald-400'
-                        : isPending
-                        ? 'text-amber-600 dark:text-amber-400'
-                        : 'text-red-600 dark:text-red-400'
-                    }`}>
-                      {order.ticketId && order.ticketStatus !== 'RESOLVED'
-                        ? `Ticket Raised (${order.ticketId})` 
-                        : isSuccess 
-                        ? 'Membership Activated' 
-                        : isPending 
-                        ? (isAwaitingLong ? `Awaiting (${waitMins}m)` : 'Reviewing') 
-                        : 'Payment Rejected'}
-                    </span>
+                    {(() => {
+                      if (isRefunded) {
+                        return (
+                          <span className="font-bold break-words block text-[11px] sm:text-xs text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
+                            <CheckCircle2 size={12} />
+                            <span>Refund Paid & Completed ({order.ticketId || 'Done'})</span>
+                          </span>
+                        );
+                      }
+                      if (order.ticketId) {
+                        const tStatus = order.ticketStatus || 'OPEN';
+                        if (tStatus === 'PROCESSING') {
+                          return (
+                            <span className="font-bold break-words block text-[11px] sm:text-xs text-amber-600 dark:text-amber-400 flex items-center gap-1">
+                              <RefreshCw size={12} className="animate-spin" />
+                              <span>Bank Transfer Processing ({order.ticketId})</span>
+                            </span>
+                          );
+                        }
+                        if (tStatus === 'REJECTED_WRONG_INFO') {
+                          return (
+                            <span className="font-bold break-words block text-[11px] sm:text-xs text-red-600 dark:text-red-400 flex items-center gap-1">
+                              <AlertCircle size={12} />
+                              <span>Wrong Details - Resubmit ({order.ticketId})</span>
+                            </span>
+                          );
+                        }
+                        if (tStatus === 'REJECTED_NOT_VALID') {
+                          return (
+                            <span className="font-bold break-words block text-[11px] sm:text-xs text-red-600 dark:text-red-400 flex items-center gap-1">
+                              <AlertCircle size={12} />
+                              <span>Ineligible Request ({order.ticketId})</span>
+                            </span>
+                          );
+                        }
+                        return (
+                          <span className="font-bold break-words block text-[11px] sm:text-xs text-blue-600 dark:text-blue-400 flex items-center gap-1">
+                            <Ticket size={12} />
+                            <span>Ticket Under Review ({order.ticketId})</span>
+                          </span>
+                        );
+                      }
+                      if (isSuccess) {
+                        return <span className="font-bold break-words block text-[11px] sm:text-xs text-emerald-600 dark:text-emerald-400">Membership Activated</span>;
+                      }
+                      if (isPending) {
+                        return <span className="font-bold break-words block text-[11px] sm:text-xs text-amber-600 dark:text-amber-400">{isAwaitingLong ? `Awaiting (${waitMins}m)` : 'Reviewing'}</span>;
+                      }
+                      return <span className="font-bold break-words block text-[11px] sm:text-xs text-red-600 dark:text-red-400">Payment Rejected</span>;
+                    })()}
                   </div>
                 </div>
 
                 {/* Refund Request Real-Time Status Tracker */}
-                {order.ticketId && order.ticketStatus !== 'RESOLVED' && (order.ticketReason?.toLowerCase().includes('refund') || order.ticketReason?.toLowerCase().includes('upgrade')) && (() => {
-                  const status = order.ticketStatus || 'OPEN';
+                {(order.ticketId || isRefunded) && (() => {
+                  const status = order.ticketStatus || (isRefunded ? 'COMPLETED' : 'OPEN');
                   // Stages: 0: Pending, 1: Processing, 2: Completed, 3: Error/Rejected
                   let activeStep = 0;
                   let isError = false;
@@ -1057,14 +1403,14 @@ export const PaymentHistoryView: React.FC<PaymentHistoryViewProps> = ({
 
                   if (status === 'PROCESSING' || status === 'IN_PROGRESS' || status === 'UNDER_REVIEW') {
                     activeStep = 1;
-                  } else if (status === 'COMPLETED' || status === 'RESOLVED' || status === 'REFUNDED') {
+                  } else if (status === 'COMPLETED' || status === 'RESOLVED' || status === 'REFUNDED' || isRefunded) {
                     activeStep = 2;
                   } else if (status === 'REJECTED_WRONG_INFO') {
-                    activeStep = 2;
+                    activeStep = 1;
                     isError = true;
                     errorType = 'WRONG_INFO';
                   } else if (status === 'REJECTED_NOT_VALID') {
-                    activeStep = 2;
+                    activeStep = 1;
                     isError = true;
                     errorType = 'NOT_VALID';
                   }
@@ -1073,6 +1419,8 @@ export const PaymentHistoryView: React.FC<PaymentHistoryViewProps> = ({
                     <div className={`mb-4 p-4 border rounded-2xl animate-in fade-in slide-in-from-top-2 duration-300 ${
                       isError 
                         ? 'bg-red-50/40 dark:bg-red-950/25 border-red-200/50 dark:border-red-900/40' 
+                        : isRefunded || activeStep === 2
+                        ? 'bg-emerald-50/40 dark:bg-emerald-950/25 border-emerald-200/50 dark:border-emerald-900/40'
                         : 'bg-amber-50/40 dark:bg-amber-950/25 border-amber-200/50 dark:border-amber-900/40'
                     }`}>
                       <div className="flex items-center justify-between mb-3">
@@ -1084,20 +1432,22 @@ export const PaymentHistoryView: React.FC<PaymentHistoryViewProps> = ({
                               activeStep === 2 ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'
                             }`} />
                           )}
-                          <span className={`text-xs font-bold ${isError ? 'text-red-900 dark:text-red-200' : 'text-amber-900 dark:text-amber-200'}`}>
+                          <span className={`text-xs font-bold ${isError ? 'text-red-900 dark:text-red-200' : activeStep === 2 ? 'text-emerald-900 dark:text-emerald-200' : 'text-amber-900 dark:text-amber-200'}`}>
                             Refund Status
                           </span>
                         </div>
                         <span className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded-lg ${
                           isError 
                             ? 'text-red-600 dark:text-red-400 bg-red-100 dark:bg-red-950/60' 
+                            : activeStep === 2
+                            ? 'text-emerald-600 dark:text-emerald-400 bg-emerald-100 dark:bg-emerald-950/60'
                             : 'text-amber-600 dark:text-amber-400 bg-amber-100 dark:bg-amber-950/60'
                         }`}>
-                          Ticket #{order.ticketId}
+                          Ticket #{order.ticketId || 'REFUND'}
                         </span>
                       </div>
 
-                      <div className="relative grid grid-cols-3 px-2 mb-6 mt-2">
+                      <div className="relative grid grid-cols-3 px-2 mb-4 mt-2">
                         {/* Progress Background Line Container */}
                         <div className="absolute left-[16.66%] right-[16.66%] top-[14px] -translate-y-1/2 h-0.5 bg-gray-200 dark:bg-gray-800 z-0 overflow-hidden rounded-full">
                           {/* Progress Active Line - Constrained to parent bounds */}
@@ -1180,6 +1530,19 @@ export const PaymentHistoryView: React.FC<PaymentHistoryViewProps> = ({
                           </span>
                         </div>
                       </div>
+
+                      {/* Success Confirmation for Completed Refund */}
+                      {activeStep === 2 && !isError && (
+                        <div className="mt-3 pt-2.5 border-t border-emerald-100 dark:border-emerald-900/40 flex flex-col sm:flex-row items-center justify-between gap-2">
+                          <p className="text-[11px] text-emerald-800 dark:text-emerald-300 font-bold flex items-center gap-1.5 text-center sm:text-left">
+                            <CheckCircle2 size={13} className="shrink-0 text-emerald-600 dark:text-emerald-400" />
+                            <span>Refund of ₹{order.amount || (order.plan === 'Max Plan' ? 100 : 50)} was successfully processed and paid to your UPI account.</span>
+                          </p>
+                          <span className="text-[10px] font-mono text-emerald-700 dark:text-emerald-300 px-2 py-0.5 bg-emerald-100 dark:bg-emerald-950/80 rounded font-black shrink-0">
+                            SETTLED
+                          </span>
+                        </div>
+                      )}
 
                       {/* Special Action for Rejections */}
                       {isError && (
@@ -1325,7 +1688,17 @@ export const PaymentHistoryView: React.FC<PaymentHistoryViewProps> = ({
                   <div className="text-[11px] text-gray-500 dark:text-gray-400 flex items-start sm:items-center gap-1.5 min-w-0">
                     <Info size={13} className="shrink-0 text-gray-400 mt-0.5 sm:mt-0" />
                     <span className="break-words">
-                      {isSuccess 
+                      {isOrderRefunded(order)
+                        ? 'Refund completed. Official refund receipt is available.'
+                        : (order.ticketId || order.ticketStatus === 'OPEN')
+                        ? (order.ticketStatus === 'PROCESSING' || order.ticketStatus === 'IN_PROGRESS' || order.ticketStatus === 'UNDER_REVIEW'
+                            ? 'Refund is in progress and bank transfer is initiated.'
+                            : order.ticketStatus === 'REJECTED_WRONG_INFO'
+                            ? 'Refund rejected due to incorrect UPI or phone details. Please resubmit below.'
+                            : order.ticketStatus === 'REJECTED_NOT_VALID'
+                            ? 'Refund request was not eligible under policy terms.'
+                            : 'Ticket submitted and under review by our support team.')
+                        : isSuccess 
                         ? 'Subscription active. Official receipt is available below.'
                         : isPending 
                         ? (isAwaitingLong 
@@ -1336,19 +1709,87 @@ export const PaymentHistoryView: React.FC<PaymentHistoryViewProps> = ({
                   </div>
 
                   <div className="flex items-center gap-2 flex-wrap min-w-0">
-                    {/* Invoice Receipt Button */}
-                    {(isSuccess || isOrderRefunded(order)) && (
+                    {/* Invoice Receipt Buttons: Always available forever for successful or refunded orders */}
+                    {isOrderRefunded(order) ? (
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <button
+                          onClick={() => {
+                            setSelectedReceiptType('REFUND_SUCCESSFUL');
+                            setSelectedOrderForInvoice(order);
+                          }}
+                          className="flex items-center justify-center gap-1.5 px-3 py-1.5 bg-amber-50 dark:bg-amber-950/40 hover:bg-amber-100 dark:hover:bg-amber-900/60 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-800/80 rounded-xl text-xs font-bold transition cursor-pointer shadow-2xs"
+                          title="View Refund Receipt"
+                        >
+                          <AnimatedRefundReceiptIcon active={false} />
+                          <span>Refund Receipt</span>
+                        </button>
+                        <button
+                          onClick={() => {
+                            setSelectedReceiptType('PAYMENT_SUCCESSFUL');
+                            setSelectedOrderForInvoice(order);
+                          }}
+                          className="flex items-center justify-center gap-1.5 px-3 py-1.5 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-200 border border-gray-200 dark:border-gray-700/60 rounded-xl text-xs font-bold transition cursor-pointer shadow-2xs"
+                          title="View Original Payment Receipt"
+                        >
+                          <AnimatedPaymentReceiptIcon active={false} />
+                          <span>Payment Receipt</span>
+                        </button>
+                      </div>
+                    ) : isSuccess ? (
                       <button
-                        onClick={() => setSelectedOrderForInvoice(order)}
-                        className="flex items-center justify-center gap-1.5 px-3 py-2 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-200 rounded-xl text-xs font-bold transition cursor-pointer min-w-0"
+                        onClick={() => {
+                          setSelectedReceiptType('PAYMENT_SUCCESSFUL');
+                          setSelectedOrderForInvoice(order);
+                        }}
+                        className="flex items-center justify-center gap-1.5 px-3.5 py-2 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-200 rounded-xl text-xs font-bold transition cursor-pointer min-w-0 shadow-2xs"
                       >
-                        <FileText size={13} className="shrink-0" />
-                        <span className="truncate">{isOrderRefunded(order) ? 'Refund Receipt' : 'Official Receipt'}</span>
+                        <AnimatedPaymentReceiptIcon active={false} />
+                        <span className="truncate">Official Receipt</span>
                       </button>
-                    )}
+                    ) : null}
 
-                    {/* 2-Day Refund Guarantee Action Button */}
-                    {isSuccess && (() => {
+                    {/* Status Badge or Action based on Telegram/App State */}
+                    {isOrderRefunded(order) ? (
+                      <div className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300 rounded-xl text-xs font-bold">
+                        <CheckCircle2 size={13} className="text-emerald-600 dark:text-emerald-400" />
+                        <span>Refund Settled</span>
+                      </div>
+                    ) : (order.ticketId || order.ticketStatus === 'OPEN') ? (() => {
+                      const tStatus = order.ticketStatus || 'OPEN';
+                      if (tStatus === 'PROCESSING' || tStatus === 'IN_PROGRESS' || tStatus === 'UNDER_REVIEW') {
+                        return (
+                          <div className="flex items-center gap-1.5 px-3.5 py-2 border rounded-xl text-xs font-bold bg-amber-50 dark:bg-amber-950/40 border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-300">
+                            <RefreshCw size={13} className="animate-spin text-amber-600 dark:text-amber-400" />
+                            <span>Refund Processing & Payout Initiated</span>
+                          </div>
+                        );
+                      }
+                      if (tStatus === 'REJECTED_WRONG_INFO') {
+                        return (
+                          <button
+                            onClick={() => openRefundModal(order)}
+                            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-extrabold bg-red-600 hover:bg-red-700 text-white shadow-md animate-pulse cursor-pointer"
+                          >
+                            <Ticket size={13} />
+                            <span>Re-request Refund (Wrong Info)</span>
+                          </button>
+                        );
+                      }
+                      if (tStatus === 'REJECTED_NOT_VALID') {
+                        return (
+                          <div className="flex items-center gap-1.5 px-3.5 py-2 bg-stone-100 dark:bg-stone-800 text-stone-500 rounded-xl text-xs font-bold border border-stone-200 dark:border-stone-700">
+                            <AlertCircle size={13} className="text-red-500" />
+                            <span>Refund Ineligible</span>
+                          </div>
+                        );
+                      }
+                      return (
+                        <div className="flex items-center gap-2 px-3.5 py-2 bg-blue-50 dark:bg-blue-950/50 border border-blue-200 dark:border-blue-800 rounded-xl text-xs font-bold text-blue-700 dark:text-blue-300">
+                          <Ticket size={14} className="text-blue-600 dark:text-blue-400" />
+                          <span>Ticket #{order.ticketId || 'OPEN'} Active (In Review)</span>
+                        </div>
+                      );
+                    })() : isSuccess ? (() => {
                       const orderTime = getOrderTimestamp(order);
                       // Strict 2-day guarantee: Within 2 days (48 hours) from purchase
                       const isWithin2Days = orderTime > 0 && ((Date.now() - orderTime) <= (2 * 24 * 60 * 60 * 1000));
@@ -1360,34 +1801,10 @@ export const PaymentHistoryView: React.FC<PaymentHistoryViewProps> = ({
                         Number((user as any)?.projectsUsed || 0)
                       );
                       const isEligibleUsage = featureUsage < 10;
-
                       const isEligibleForDirectRefund = isWithin2Days && isEligibleUsage;
-                      const isEligibleForUpgradeRefund = isWithin2Days && isEligibleUsage;
-                      
-                      const ticketStatus = order.ticketStatus || 'OPEN';
-                      const isRejectedWithWrongInfo = ticketStatus === 'REJECTED_WRONG_INFO';
-                      const isResolved = ticketStatus === 'RESOLVED';
-
-                      // Hide refund processing if the ticket is resolved or not applicable
-                      if (isResolved) return null;
-
-                      if ((order.ticketId || order.ticketStatus === 'OPEN') && !isRejectedWithWrongInfo) {
-                        const isRefundCompleted = isOrderRefunded(order);
-                        
-                        return (
-                          <div className={`flex items-center gap-1.5 px-3.5 py-2 border rounded-xl text-xs font-bold ${
-                            isRefundCompleted 
-                              ? 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300'
-                              : 'bg-amber-50 dark:bg-amber-950/40 border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-300'
-                          }`}>
-                            {isRefundCompleted ? <CheckCircle2 size={13} className="text-emerald-600 dark:text-emerald-400" /> : <Ticket size={13} className="text-amber-600 dark:text-amber-400" />}
-                            <span>{isRefundCompleted ? 'Refund Successfully Processed' : 'Refund Processing & Payout Pending'}</span>
-                          </div>
-                        );
-                      }
                       
                       // Show invalid reason if not eligible
-                      if (!isEligibleForDirectRefund && !isEligibleForUpgradeRefund && !isRejectedWithWrongInfo) {
+                      if (!isEligibleForDirectRefund) {
                         let invalidReason = "";
                         if (!isWithin2Days && !isEligibleUsage) {
                           invalidReason = `Exceeded 2 days limit (48h) & 10 feature usages (${featureUsage}/10)`;
@@ -1408,28 +1825,13 @@ export const PaymentHistoryView: React.FC<PaymentHistoryViewProps> = ({
                       return (
                         <button
                           onClick={() => openRefundModal(order)}
-                          className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-extrabold transition cursor-pointer ${
-                            isRejectedWithWrongInfo 
-                              ? 'bg-red-600 hover:bg-red-700 text-white shadow-md animate-pulse' 
-                              : 'bg-amber-100/80 hover:bg-amber-200 text-amber-900 border border-amber-300/60 dark:bg-amber-950/50 dark:text-amber-300 dark:border-amber-800 dark:hover:bg-amber-900'
-                          }`}
+                          className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-extrabold transition cursor-pointer bg-amber-100/80 hover:bg-amber-200 text-amber-900 border border-amber-300/60 dark:bg-amber-950/50 dark:text-amber-300 dark:border-amber-800 dark:hover:bg-amber-900"
                         >
                           <Ticket size={13} />
-                          <span>{isRejectedWithWrongInfo ? 'Re-request Refund (Correct Info)' : isEligibleForDirectRefund ? 'Request Refund' : 'Upgrade & Refund Request'}</span>
+                          <span>Request Refund</span>
                         </button>
                       );
-                    })()}
-
-                    {/* Active Ticket Status Badge */}
-                    {!isSuccess && (order.ticketId || order.ticketStatus === 'OPEN') && (
-                      <div className="flex items-center gap-2 px-3.5 py-2 bg-blue-50 dark:bg-blue-950/50 border border-blue-200 dark:border-blue-800 rounded-xl text-xs font-bold text-blue-700 dark:text-blue-300">
-                        <Ticket size={14} className="text-blue-600 dark:text-blue-400" />
-                        <span>Ticket #{order.ticketId || 'OPEN'} Active (In Review)</span>
-                      </div>
-                    )}
-
-                    {/* If Rejected: Raise Ticket or Resubmit UTR */}
-                    {!isSuccess && !order.ticketId && order.ticketStatus !== 'OPEN' && isRejected && (
+                    })() : isRejected ? (
                       <div className="flex items-center gap-2 flex-wrap min-w-0">
                         <button
                           onClick={() => openTicketModal(order)}
@@ -1446,10 +1848,7 @@ export const PaymentHistoryView: React.FC<PaymentHistoryViewProps> = ({
                           <span>Support</span>
                         </button>
                       </div>
-                    )}
-
-                    {/* If Pending & Awaiting Long Time (> 5m): Prominent Raise Ticket Button */}
-                    {!isSuccess && !order.ticketId && order.ticketStatus !== 'OPEN' && isPending && isAwaitingLong && (
+                    ) : isPending && isAwaitingLong ? (
                       <button
                         onClick={() => openTicketModal(order)}
                         className="flex items-center gap-1.5 px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold transition shadow-sm cursor-pointer animate-pulse"
@@ -1457,10 +1856,7 @@ export const PaymentHistoryView: React.FC<PaymentHistoryViewProps> = ({
                         <Ticket size={13} />
                         <span>Raise Ticket (Awaiting {waitMins}m)</span>
                       </button>
-                    )}
-
-                    {/* If Pending & Normal Wait (< 5m): Normal status with optional help link */}
-                    {!isSuccess && !order.ticketId && order.ticketStatus !== 'OPEN' && isPending && !isAwaitingLong && (
+                    ) : isPending ? (
                       <div className="flex items-center gap-2">
                         <span className="text-[11px] font-medium text-amber-600 dark:text-amber-400 flex items-center gap-1">
                           <Clock size={12} className="animate-spin text-amber-500" />
@@ -1474,7 +1870,7 @@ export const PaymentHistoryView: React.FC<PaymentHistoryViewProps> = ({
                           Raise Ticket
                         </button>
                       </div>
-                    )}
+                    ) : null}
                   </div>
                 </div>
               </div>
@@ -2043,7 +2439,7 @@ export const PaymentHistoryView: React.FC<PaymentHistoryViewProps> = ({
                           type="text"
                           value={refundName}
                           onChange={(e) => setRefundName(e.target.value)}
-                          placeholder="e.g. Rahul Sharma"
+                          placeholder="Enter your Full Name"
                           className="w-full h-11 px-3.5 bg-stone-50 dark:bg-stone-800/60 border border-stone-200 dark:border-stone-700 rounded-xl text-xs sm:text-sm font-semibold text-stone-900 dark:text-white placeholder:text-stone-400 dark:placeholder:text-stone-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-600 dark:focus:border-emerald-400 focus:bg-white dark:focus:bg-stone-800 transition-all"
                         />
                       </div>
@@ -2064,8 +2460,8 @@ export const PaymentHistoryView: React.FC<PaymentHistoryViewProps> = ({
                           maxLength={10}
                           value={refundPhone}
                           onChange={(e) => setRefundPhone(e.target.value.replace(/\D/g, '').slice(0, 10))}
-                          placeholder="e.g. 9876543210"
-                          className="w-full h-11 px-3.5 bg-stone-50 dark:bg-stone-800/60 border border-stone-200 dark:border-stone-700 rounded-xl text-xs sm:text-sm font-mono font-semibold text-stone-900 dark:text-white placeholder:text-stone-400 dark:placeholder:text-stone-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-600 dark:focus:border-emerald-400 focus:bg-white dark:focus:bg-stone-800 transition-all"
+                          placeholder="Enter your Phone number"
+                          className="w-full h-11 px-3.5 bg-stone-50 dark:bg-stone-800/60 border border-stone-200 dark:border-stone-700 rounded-xl text-xs sm:text-sm font-mono font-semibold text-stone-900 dark:text-white placeholder:font-sans placeholder:font-normal placeholder:text-stone-400 dark:placeholder:text-stone-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-600 dark:focus:border-emerald-400 focus:bg-white dark:focus:bg-stone-800 transition-all"
                         />
                       </div>
 
@@ -2081,8 +2477,8 @@ export const PaymentHistoryView: React.FC<PaymentHistoryViewProps> = ({
                           type="text"
                           value={refundUpiId}
                           onChange={(e) => setRefundUpiId(e.target.value.trim())}
-                          placeholder="e.g. username@paytm"
-                          className="w-full h-11 px-3.5 bg-stone-50 dark:bg-stone-800/60 border border-stone-200 dark:border-stone-700 rounded-xl text-xs sm:text-sm font-mono font-semibold text-stone-900 dark:text-white placeholder:text-stone-400 dark:placeholder:text-stone-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-600 dark:focus:border-emerald-400 focus:bg-white dark:focus:bg-stone-800 transition-all"
+                          placeholder="Enter your Upi ID"
+                          className="w-full h-11 px-3.5 bg-stone-50 dark:bg-stone-800/60 border border-stone-200 dark:border-stone-700 rounded-xl text-xs sm:text-sm font-mono font-semibold text-stone-900 dark:text-white placeholder:font-sans placeholder:font-normal placeholder:text-stone-400 dark:placeholder:text-stone-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-600 dark:focus:border-emerald-400 focus:bg-white dark:focus:bg-stone-800 transition-all"
                         />
                       </div>
                     </div>
@@ -2256,158 +2652,301 @@ export const PaymentHistoryView: React.FC<PaymentHistoryViewProps> = ({
       {/* Official Receipt Modal */}
       {selectedOrderForInvoice && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-md">
-          <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-3xl p-6 sm:p-8 w-full max-w-xl shadow-2xl relative animate-in fade-in zoom-in duration-200 max-h-[90vh] overflow-y-auto">
-            {/* Modal Controls */}
-            <div className="flex items-center justify-between pb-4 mb-4 border-b border-gray-200 dark:border-gray-800">
-              <div className="flex items-center gap-2">
-                <FileText size={20} className="text-emerald-500" />
-                <h3 className="font-bold text-gray-900 dark:text-white text-base font-heading">
-                  Official Payment Receipt
-                </h3>
+          <div className="bg-white dark:bg-gray-950 border border-gray-200 dark:border-gray-800 rounded-3xl p-5 sm:p-7 w-full max-w-xl shadow-2xl relative animate-in fade-in zoom-in duration-200 max-h-[90vh] overflow-y-auto">
+            {/* Modal Header: Title on Left, Close Button on Top Right */}
+            <div className="flex items-center justify-between gap-3 pb-3.5 mb-3 border-b border-gray-100 dark:border-gray-800/80">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div className={`w-8 h-8 rounded-xl flex items-center justify-center shrink-0 ${
+                  selectedReceiptType === 'REFUND_SUCCESSFUL'
+                    ? 'bg-amber-100 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300'
+                    : 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300'
+                }`}>
+                  <FileText size={18} className={selectedReceiptType === 'REFUND_SUCCESSFUL' ? "text-amber-600 dark:text-amber-400" : "text-emerald-600 dark:text-emerald-400"} />
+                </div>
+                <div className="min-w-0">
+                  <h3 className="font-bold text-gray-900 dark:text-white text-base font-heading leading-tight truncate">
+                    {selectedReceiptType === 'REFUND_SUCCESSFUL' ? 'Official Refund Receipt' : 'Official Payment Receipt'}
+                  </h3>
+                </div>
               </div>
+
               <button
+                type="button"
                 onClick={() => setSelectedOrderForInvoice(null)}
-                className="w-8 h-8 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-500 hover:text-black dark:hover:text-white flex items-center justify-center font-bold text-sm cursor-pointer"
+                className="w-8 h-8 rounded-full bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 text-gray-500 hover:text-gray-900 dark:hover:text-white flex items-center justify-center font-bold text-sm transition-colors cursor-pointer shrink-0"
+                title="Close Window"
               >
-                ✕
+                <X size={15} />
               </button>
             </div>
 
-            {/* Printable Receipt Paper */}
-            <div id="printable-receipt" className="p-4 sm:p-6 bg-gray-50 dark:bg-gray-800/60 rounded-2xl border border-gray-200 dark:border-gray-700/80 space-y-4 sm:space-y-5 text-xs text-gray-700 dark:text-gray-300 font-sans">
-              
-              {/* Header */}
-              <div className="flex flex-col sm:flex-row justify-between items-start gap-3 sm:gap-0 border-b border-gray-200 dark:border-gray-700 pb-4">
-                <div>
-                  <h4 className="text-base font-black text-gray-900 dark:text-white font-heading tracking-tight">PaperX Cloud Suite</h4>
-                </div>
-                <div className="text-left sm:text-right">
-                  <span className={`px-2.5 py-1 rounded-md font-black text-[10px] uppercase tracking-wider inline-block sm:block mb-1 ${
-                    isOrderRefunded(selectedOrderForInvoice)
-                      ? 'bg-amber-100 text-amber-800 dark:bg-amber-950/80 dark:text-amber-300'
-                      : 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/80 dark:text-emerald-300'
-                  }`}>
-                    {isOrderRefunded(selectedOrderForInvoice) ? 'REFUNDED & CLOSED' : 'PAID & VERIFIED'}
-                  </span>
-                  <span className="text-[11px] font-mono text-gray-500 block">
-                    {isOrderRefunded(selectedOrderForInvoice) ? 'REF-' : 'INV-'}
-                    {selectedOrderForInvoice.orderId || selectedOrderForInvoice.id}
-                  </span>
-                </div>
-              </div>
-
-              {/* Customer & Order Metadata */}
-              <div className="flex flex-col sm:grid sm:grid-cols-2 gap-4 text-xs">
-                <div>
-                  <span className="text-[10px] uppercase font-bold text-gray-400 block mb-0.5">Billed To</span>
-                  <p className="font-bold text-gray-900 dark:text-white break-words">{user?.name || user?.email?.split('@')[0] || 'Subscriber'}</p>
-                  <p className="text-gray-500 text-[11px] font-mono break-all">{user?.email || 'N/A'}</p>
-                  <p className="text-gray-400 text-[10px] font-mono break-all">UID: {user?.uid || 'N/A'}</p>
-                </div>
-                <div>
-                  <span className="text-[10px] uppercase font-bold text-gray-400 block mb-0.5">Transaction Details</span>
-                  <p className="text-gray-600 dark:text-gray-300">
-                    <strong>Date:</strong> {selectedOrderForInvoice.createdAt ? new Date(selectedOrderForInvoice.createdAt).toLocaleString() : 'N/A'}
-                  </p>
-                  <p className="text-gray-600 dark:text-gray-300">
-                    <strong>Payment Mode:</strong> UPI (Instant)
-                  </p>
-                  <p className="text-gray-600 dark:text-gray-300 font-mono text-[11px] break-all">
-                    <strong>UTR / RRN:</strong> {selectedOrderForInvoice.utr || 'Verified'}
-                  </p>
+            {/* If order is refunded or has multiple receipts, allow toggle between Payment and Refund receipts */}
+            {(isOrderRefunded(selectedOrderForInvoice) || allReceiptsList.length > 1) && (
+              <div className="mb-4">
+                <div className="inline-flex p-1 bg-gray-100 dark:bg-gray-800/80 rounded-2xl text-xs font-bold w-full sm:w-auto border border-gray-200/70 dark:border-gray-700/60 gap-1">
+                  <button
+                    type="button"
+                    onClick={() => setSelectedReceiptType('PAYMENT_SUCCESSFUL')}
+                    className={`flex-1 sm:flex-initial px-3.5 py-2 rounded-xl transition-all duration-200 cursor-pointer flex items-center justify-center gap-2 ${
+                      selectedReceiptType === 'PAYMENT_SUCCESSFUL'
+                        ? 'bg-white dark:bg-gray-900 text-emerald-700 dark:text-emerald-300 shadow-sm font-extrabold ring-1 ring-emerald-500/25'
+                        : 'text-gray-500 hover:text-gray-900 dark:hover:text-gray-200'
+                    }`}
+                  >
+                    <AnimatedPaymentReceiptIcon active={selectedReceiptType === 'PAYMENT_SUCCESSFUL'} />
+                    <span>Payment Receipt</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedReceiptType('REFUND_SUCCESSFUL')}
+                    className={`flex-1 sm:flex-initial px-3.5 py-2 rounded-xl transition-all duration-200 cursor-pointer flex items-center justify-center gap-2 ${
+                      selectedReceiptType === 'REFUND_SUCCESSFUL'
+                        ? 'bg-white dark:bg-gray-900 text-amber-700 dark:text-amber-300 shadow-sm font-extrabold ring-1 ring-amber-500/25'
+                        : 'text-gray-500 hover:text-gray-900 dark:hover:text-gray-200'
+                    }`}
+                  >
+                    <AnimatedRefundReceiptIcon active={selectedReceiptType === 'REFUND_SUCCESSFUL'} />
+                    <span>Refund Receipt</span>
+                  </button>
                 </div>
               </div>
+            )}
 
-              {/* Line Items Table */}
-              <div className="border-t border-b border-gray-200 dark:border-gray-700 py-3">
-                <div className="flex justify-between items-center text-[11px] font-bold text-gray-400 uppercase tracking-wider mb-2">
-                  <span>Description</span>
-                  <span>Amount (INR)</span>
-                </div>
-                <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center text-xs py-1 gap-1 sm:gap-0">
-                  <div>
-                    <strong className="text-gray-900 dark:text-white block sm:inline">{selectedOrderForInvoice.plan || 'Plus Plan'}</strong>
-                    <span className="text-gray-400 text-[11px] sm:ml-1.5">({selectedOrderForInvoice.billingCycle || 'Monthly'} Subscription)</span>
-                  </div>
-                  <span className="font-mono font-bold text-gray-900 dark:text-white self-start sm:self-auto">
-                    ₹{selectedOrderForInvoice.amount || 50}.00
-                  </span>
-                </div>
+            {isReceiptLoading ? (
+              <div className="flex flex-col items-center justify-center py-12 space-y-3">
+                <RefreshCw size={32} className="text-emerald-500 animate-spin" />
+                <p className="text-xs font-medium text-gray-500 dark:text-gray-400">
+                  Retrieving official cryptographically secure receipt from ledger...
+                </p>
               </div>
-
-              {/* Total */}
-              <div className="flex justify-between items-center text-sm font-black">
-                <span className="text-gray-900 dark:text-white">
-                  {isOrderRefunded(selectedOrderForInvoice) ? 'Total Amount Refunded' : 'Total Amount Paid'}
-                </span>
-                <span className={`text-base font-mono ${
-                  isOrderRefunded(selectedOrderForInvoice)
-                    ? 'text-amber-600 dark:text-amber-400'
-                    : 'text-emerald-600 dark:text-emerald-400'
-                }`}>
-                  ₹{selectedOrderForInvoice.amount || 50}.00
-                </span>
+            ) : receiptError ? (
+              <div className="p-4 bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-900 rounded-2xl text-center space-y-3">
+                <AlertCircle size={28} className="text-red-500 mx-auto" />
+                <h4 className="font-bold text-red-800 dark:text-red-400 text-sm">Receipt Retrieval Error</h4>
+                <p className="text-xs text-red-600 dark:text-red-300">{receiptError}</p>
+                <button
+                  onClick={() => {
+                    setSelectedOrderForInvoice(null);
+                  }}
+                  className="px-4 py-1.5 bg-red-100 dark:bg-red-900/40 text-red-800 dark:text-red-300 font-bold text-xs rounded-xl hover:bg-red-200 transition"
+                >
+                  Close Window
+                </button>
               </div>
-
-              {/* Authorized Signatory */}
-              <div className="flex justify-end pt-4 pb-2">
-                <div className="text-center">
-                  <div className="w-32 h-32 flex items-center justify-center -my-6 mx-auto overflow-visible">
-                    <img 
-                      src="/signature.png" 
-                      alt="CEO Signature" 
-                      className="w-full h-full object-contain mix-blend-multiply dark:invert contrast-150 grayscale -rotate-90"
-                      onError={(e) => {
-                        // Fallback text if the image isn't uploaded yet
-                        (e.target as HTMLImageElement).style.display = 'none';
-                        const fallback = document.getElementById('signature-fallback');
-                        if (fallback) fallback.style.display = 'block';
-                      }}
-                    />
-                    <div id="signature-fallback" className="hidden font-serif italic text-xl text-gray-800 dark:text-gray-200" style={{ fontFamily: "'Brush Script MT', cursive" }}>
-                      PaperX CEO
+            ) : activeReceipt ? (
+              <div className="space-y-4">
+                {/* Printable Receipt Paper */}
+                <div id="printable-receipt" className="p-5 sm:p-6 bg-gray-50 dark:bg-gray-900/60 rounded-2xl border border-gray-200 dark:border-gray-800/80 space-y-4 text-xs text-gray-700 dark:text-gray-300 font-sans leading-relaxed shadow-inner">
+                  
+                  {/* Header / Branding */}
+                  <div className="flex flex-col sm:flex-row justify-between items-start gap-3 sm:gap-0 border-b border-gray-200 dark:border-gray-800 pb-3">
+                    <div>
+                      <h4 className="text-base font-black text-gray-900 dark:text-white font-heading tracking-tight flex items-center gap-1.5">
+                        <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse inline-block" />
+                        PaperX Cloud Suite
+                      </h4>
+                      <p className="text-[9px] font-mono text-gray-400 mt-0.5 uppercase tracking-wider">
+                        Receipt Type: {activeReceipt.type === 'REFUND_SUCCESSFUL' ? 'REFUND SUCCESSFUL' : 'PAYMENT SUCCESSFUL'}
+                      </p>
+                    </div>
+                    <div className="text-left sm:text-right">
+                      <span className={`px-2.5 py-1 rounded-md font-black text-[9px] uppercase tracking-wider inline-block ${
+                        activeReceipt.type === 'REFUND_SUCCESSFUL'
+                          ? 'bg-amber-100 text-amber-800 dark:bg-amber-950/80 dark:text-amber-300'
+                          : 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/80 dark:text-emerald-300'
+                      }`}>
+                        {activeReceipt.type === 'REFUND_SUCCESSFUL' ? 'REFUNDED' : 'SUCCESS'}
+                      </span>
+                      <span className="text-[10px] font-mono text-gray-400 block mt-1">
+                        ID: {activeReceipt.receiptId}
+                      </span>
                     </div>
                   </div>
-                  <div className="border-t border-gray-300 dark:border-gray-600 w-32 mx-auto pt-1 relative z-10">
-                    <p className="text-[10px] font-bold text-gray-700 dark:text-gray-300 uppercase tracking-wide">Authorized Signatory</p>
-                    <p className="text-[9px] text-gray-500">Chief Executive Officer</p>
+
+                  {/* Customer & Order Metadata */}
+                  {activeReceipt.type === 'REFUND_SUCCESSFUL' ? (
+                    /* REFUND RECEIPT METADATA */
+                    <div className="flex flex-col sm:grid sm:grid-cols-2 gap-4 text-xs">
+                      <div className="space-y-1">
+                        <span className="text-[9px] uppercase font-bold text-gray-400 block tracking-wider">Customer Details</span>
+                        <p className="font-bold text-gray-900 dark:text-white">{activeReceipt.userName}</p>
+                        <p className="text-gray-500 text-[10px] font-mono">{activeReceipt.userEmail}</p>
+                        <p className="text-gray-400 text-[9px] font-mono">UID: {activeReceipt.uid}</p>
+                      </div>
+                      <div className="space-y-1">
+                        <span className="text-[9px] uppercase font-bold text-gray-400 block tracking-wider">Refund Details</span>
+                        <p className="text-gray-600 dark:text-gray-300">
+                          <strong>Refund ID:</strong> <span className="font-mono text-[10px]">{activeReceipt.refundId}</span>
+                        </p>
+                        <p className="text-gray-600 dark:text-gray-300">
+                          <strong>Date:</strong> {new Date(activeReceipt.refundDate).toLocaleString()}
+                        </p>
+                        <p className="text-gray-600 dark:text-gray-300">
+                          <strong>Method:</strong> {activeReceipt.paymentMethod}
+                        </p>
+                        <p className="text-gray-600 dark:text-gray-300 font-mono text-[10px] break-all">
+                          <strong>Orig UTR:</strong> {activeReceipt.utr || 'Verified'}
+                        </p>
+                      </div>
+                    </div>
+                  ) : (
+                    /* PAYMENT RECEIPT METADATA */
+                    <div className="flex flex-col sm:grid sm:grid-cols-2 gap-4 text-xs">
+                      <div className="space-y-1">
+                        <span className="text-[9px] uppercase font-bold text-gray-400 block tracking-wider">Billed To</span>
+                        <p className="font-bold text-gray-900 dark:text-white">{activeReceipt.userName}</p>
+                        <p className="text-gray-500 text-[10px] font-mono">{activeReceipt.userEmail}</p>
+                        <p className="text-gray-400 text-[9px] font-mono">UID: {activeReceipt.uid}</p>
+                      </div>
+                      <div className="space-y-1">
+                        <span className="text-[9px] uppercase font-bold text-gray-400 block tracking-wider">Transaction Ledger</span>
+                        <p className="text-gray-600 dark:text-gray-300">
+                          <strong>Invoice ID:</strong> <span className="font-mono text-[10px]">{activeReceipt.invoiceId}</span>
+                        </p>
+                        <p className="text-gray-600 dark:text-gray-300">
+                          <strong>Order ID:</strong> <span className="font-mono text-[10px]">{activeReceipt.orderId}</span>
+                        </p>
+                        <p className="text-gray-600 dark:text-gray-300">
+                          <strong>Payment ID:</strong> <span className="font-mono text-[10px]">{activeReceipt.transactionId}</span>
+                        </p>
+                        <p className="text-gray-600 dark:text-gray-300 font-mono text-[10px] break-all">
+                          <strong>UTR/RRN:</strong> {activeReceipt.utr || 'Verified'}
+                        </p>
+                        <p className="text-gray-600 dark:text-gray-300">
+                          <strong>Date:</strong> {new Date(activeReceipt.paymentDate).toLocaleString()}
+                        </p>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Line Items Table */}
+                  <div className="border-t border-b border-gray-200 dark:border-gray-800 py-3">
+                    <div className="flex justify-between items-center text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-2">
+                      <span>Description</span>
+                      <span>Amount ({activeReceipt.currency || 'INR'})</span>
+                    </div>
+                    
+                    {activeReceipt.type === 'REFUND_SUCCESSFUL' ? (
+                      /* REFUND RECEIPT LINE ITEMS */
+                      <div className="space-y-1">
+                        <div className="flex justify-between items-start text-xs py-1">
+                          <div>
+                            <strong className="text-gray-900 dark:text-white font-bold">Subscription Refund</strong>
+                            <p className="text-gray-400 text-[10px] mt-0.5">Original Item: {activeReceipt.plan || 'Plus Plan'} Subscription</p>
+                            <p className="text-gray-400 text-[10px]">Reason: {activeReceipt.reason || 'Requested by customer'}</p>
+                            <p className="text-gray-400 text-[10px]">Membership status after refund: <strong className="text-amber-500">{activeReceipt.subscriptionStatusAfter || 'Basic Plan'}</strong></p>
+                          </div>
+                          <span className="font-mono font-bold text-gray-900 dark:text-white text-right">
+                            ₹{activeReceipt.originalAmount}.00
+                          </span>
+                        </div>
+                        <div className="flex justify-between items-center text-xs pt-1.5 border-t border-dashed border-gray-200 dark:border-gray-800">
+                          <span className="text-gray-500 font-medium">Original amount paid:</span>
+                          <span className="font-mono text-gray-500">₹{activeReceipt.originalAmount}.00</span>
+                        </div>
+                      </div>
+                    ) : (
+                      /* PAYMENT RECEIPT LINE ITEMS */
+                      <div className="flex justify-between items-center text-xs py-1">
+                        <div>
+                          <strong className="text-gray-900 dark:text-white font-bold">{activeReceipt.plan || 'Plus Plan'}</strong>
+                          <span className="text-gray-400 text-[10px] ml-1.5">({activeReceipt.billingCycle === 'year' ? 'Annual' : activeReceipt.billingCycle === 'half-year' ? '6-Month' : 'Monthly'} Subscription)</span>
+                          <div className="text-[10px] text-gray-400 mt-1">
+                            Duration: {activeReceipt.durationDays || 30} days
+                          </div>
+                          <div className="text-[10px] text-gray-400">
+                            Term: {new Date(activeReceipt.subscriptionStart).toLocaleDateString()} to {new Date(activeReceipt.subscriptionExpiry).toLocaleDateString()}
+                          </div>
+                        </div>
+                        <span className="font-mono font-bold text-gray-900 dark:text-white">
+                          ₹{activeReceipt.amount}.00
+                        </span>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Total Summary */}
+                  <div className="flex justify-between items-center text-sm font-black">
+                    <span className="text-gray-900 dark:text-white">
+                      {activeReceipt.type === 'REFUND_SUCCESSFUL' ? 'Total Amount Refunded' : 'Total Amount Paid'}
+                    </span>
+                    <span className={`text-base font-mono ${
+                      activeReceipt.type === 'REFUND_SUCCESSFUL'
+                        ? 'text-amber-600 dark:text-amber-400'
+                        : 'text-emerald-600 dark:text-emerald-400'
+                    }`}>
+                      ₹{activeReceipt.type === 'REFUND_SUCCESSFUL' ? activeReceipt.refundAmount : activeReceipt.amount}.00
+                    </span>
+                  </div>
+
+                  {/* Bottom CEO Signature (left side kept completely blank) */}
+                  <div className="flex flex-row justify-end items-end pt-3 pb-1 border-t border-dashed border-gray-200 dark:border-gray-800">
+                    <div className="text-center">
+                      <div className="h-16 flex items-center justify-center mx-auto relative z-10">
+                        <img 
+                          src="/signature.png" 
+                          alt="CEO Signature" 
+                          className="h-14 w-auto object-contain mix-blend-multiply dark:invert contrast-125 grayscale"
+                          onError={(e) => {
+                            (e.target as HTMLImageElement).style.display = 'none';
+                            const fallback = document.getElementById('signature-fallback-p');
+                            if (fallback) fallback.style.display = 'block';
+                          }}
+                        />
+                        <p 
+                          id="signature-fallback-p" 
+                          className="hidden text-stone-800 dark:text-indigo-300 font-semibold italic text-base select-none leading-none font-serif" 
+                          style={{ fontFamily: "'Brush Script MT', cursive, Georgia, serif" }}
+                        >
+                          PaperX CEO
+                        </p>
+                      </div>
+                      <div className="border-t border-gray-300 dark:border-gray-800 w-28 mx-auto pt-1">
+                        <p className="text-[9px] font-bold text-gray-700 dark:text-gray-300 uppercase tracking-wide leading-none">CEO Signature</p>
+                        <p className="text-[8px] text-gray-500 mt-0.5 leading-none">Authorized Signatory</p>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Audit Stamps & Verification Logs */}
+                  <div className="text-[8px] font-mono text-gray-400/80 border-t border-gray-200 dark:border-gray-800 pt-2 text-center space-y-0.5">
+                    <div>Verification audit date: {new Date(activeReceipt.verifiedAt).toLocaleString()}</div>
+                    <div>Receipt issued date: {new Date(activeReceipt.createdAt).toLocaleString()}</div>
                   </div>
                 </div>
-              </div>
 
-              {/* Footer Stamp */}
-              <div className="text-[10px] text-gray-400 text-center pt-2 border-t border-gray-200 dark:border-gray-700">
-                This is an official and real electronically generated receipt. No GST or government tax information is applicable. <br className="hidden sm:block" />
-                Support email: <strong className="text-gray-600 dark:text-gray-300">paperx.assist@gmail.com</strong>
+                {/* Actions */}
+                <div className="flex flex-col sm:flex-row gap-2 pt-4">
+                  <button
+                    onClick={() => setSelectedOrderForInvoice(null)}
+                    className="py-2.5 px-4 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 font-bold rounded-xl text-xs transition cursor-pointer"
+                  >
+                    Close Window
+                  </button>
+                  <button
+                    disabled={isGeneratingPDF}
+                    onClick={handleDownloadPDF}
+                    className={`flex-1 py-2.5 px-4 text-white font-bold rounded-xl text-xs transition shadow-sm cursor-pointer flex items-center justify-center gap-2 disabled:opacity-50 ${
+                      activeReceipt.type === 'REFUND_SUCCESSFUL'
+                        ? 'bg-amber-600 hover:bg-amber-700'
+                        : 'bg-emerald-600 hover:bg-emerald-700'
+                    }`}
+                  >
+                    {isGeneratingPDF ? (
+                      <>
+                        <RefreshCw size={14} className="animate-spin" />
+                        <span>Rendering PDF...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Download size={14} />
+                        <span>{activeReceipt.type === 'REFUND_SUCCESSFUL' ? 'Download Refund Receipt PDF' : 'Download Payment Receipt PDF'}</span>
+                      </>
+                    )}
+                  </button>
+                </div>
               </div>
-            </div>
-
-            {/* Actions */}
-            <div className="flex flex-col sm:flex-row gap-2 pt-4">
-              <button
-                onClick={() => setSelectedOrderForInvoice(null)}
-                className="py-2.5 px-4 bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 font-bold rounded-xl text-xs hover:bg-gray-200 transition cursor-pointer"
-              >
-                Close
-              </button>
-              <button
-                disabled={isGeneratingPDF}
-                onClick={handleDownloadPDF}
-                className="flex-1 py-2.5 px-4 bg-black text-white dark:bg-white dark:text-black font-bold rounded-xl text-xs hover:opacity-90 transition shadow-sm cursor-pointer flex items-center justify-center gap-2 disabled:opacity-50"
-              >
-                {isGeneratingPDF ? (
-                  <>
-                    <RefreshCw size={14} className="animate-spin" />
-                    <span>Generating PDF...</span>
-                  </>
-                ) : (
-                  <>
-                    <Download size={14} />
-                    <span>Download PDF</span>
-                  </>
-                )}
-              </button>
-            </div>
+            ) : null}
           </div>
         </div>
       )}

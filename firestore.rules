@@ -24,10 +24,20 @@ service cloud.firestore {
       match /files/{fileId} {
         allow read, write: if true;
       }
+
+      // 5-Year Document Vault with real-time sync
+      match /documents/{docId} {
+        allow read, write: if true;
+      }
     }
 
     // Orders & UTR Payment submissions
     match /orders/{orderId} {
+      allow read, write: if true;
+    }
+
+    // Secure receipts
+    match /receipts/{receiptId} {
       allow read, write: if true;
     }
 

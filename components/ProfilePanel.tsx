@@ -98,6 +98,7 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
   const [autoDelete, setAutoDelete] = useState(() => localStorage.getItem('pref_autoDelete') === 'true');
   const [marketing, setMarketing] = useState(() => localStorage.getItem('pref_marketing') === 'true');
   const [darkMode, setDarkMode] = useState(() => {
+    if (user?.theme) return user.theme === 'dark';
     const saved = localStorage.getItem('pref_darkMode');
     if (saved !== null) return saved === 'true';
     return window.matchMedia('(prefers-color-scheme: dark)').matches;
@@ -105,7 +106,7 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
 
   // 1. Font Size State
   const [fontSize, setFontSize] = useState<'system' | 'small' | 'medium' | 'large'>(() => {
-    return (localStorage.getItem('pref_fontSize') as 'system' | 'small' | 'medium' | 'large') || user?.fontSize || 'system';
+    return user?.fontSize || (localStorage.getItem('pref_fontSize') as 'system' | 'small' | 'medium' | 'large') || 'system';
   });
 
   // 3. Notification Sound State
@@ -114,10 +115,11 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
     return localStorage.getItem('pref_sound') !== 'false';
   });
 
-  // 4. Language State
+  // 4. Language State & Reactive Translations
   const [language, setLanguage] = useState<string>(() => {
-    return localStorage.getItem('pref_language') || user?.language || 'English';
+    return user?.language || localStorage.getItem('pref_language') || 'English';
   });
+  const { t, changeLanguage } = useAppTranslation(language);
 
   // 8. Larger Text Accessibility State
   const [largerText, setLargerText] = useState<boolean>(() => {
@@ -133,28 +135,86 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
 
   // 10. Document & PDF Studio Preferences (Real Working Settings for PaperX)
   const [pdfQuality, setPdfQuality] = useState<'high' | 'standard' | 'compact'>(() => {
-    return (localStorage.getItem('pref_pdfQuality') as 'high' | 'standard' | 'compact') || 'high';
+    return user?.pdfQuality || (localStorage.getItem('pref_pdfQuality') as 'high' | 'standard' | 'compact') || 'high';
   });
 
   const [namingPattern, setNamingPattern] = useState<'simple' | 'original' | 'date' | 'paperx' | string>(() => {
-    return localStorage.getItem('pref_namingPattern') || 'simple';
+    const rawPattern = user?.namingPattern || localStorage.getItem('pref_namingPattern') || 'simple';
+    return rawPattern === 'paperx_date' ? 'paperx' : rawPattern;
   });
 
   const [autoSaveScan, setAutoSaveScan] = useState<boolean>(() => {
+    if (user?.autoSaveScan !== undefined) return user.autoSaveScan;
     return localStorage.getItem('pref_autoSaveScan') !== 'false';
   });
 
   const [ocrLanguage, setOcrLanguage] = useState<string>(() => {
-    return localStorage.getItem('pref_ocrLanguage') || 'English';
+    return user?.ocrLanguage || localStorage.getItem('pref_ocrLanguage') || 'English';
   });
 
   const [autoCopyText, setAutoCopyText] = useState<boolean>(() => {
+    if (user?.autoCopyText !== undefined) return user.autoCopyText;
     return localStorage.getItem('pref_autoCopyText') !== 'false';
   });
 
   const [pdfAutoCompress, setPdfAutoCompress] = useState<boolean>(() => {
     return localStorage.getItem('pref_pdfAutoCompress') !== 'false';
   });
+
+  // Sync state if user profile loads later
+  useEffect(() => {
+    if (user) {
+        if (user.theme && (user.theme === 'dark') !== darkMode) {
+          setDarkMode(user.theme === 'dark');
+        }
+        if (user.fontSize && user.fontSize !== fontSize) {
+          setFontSize(user.fontSize as 'system' | 'small' | 'medium' | 'large');
+        }
+        if (user.largerTextEnabled !== undefined && user.largerTextEnabled !== largerText) {
+          setLargerText(user.largerTextEnabled);
+        }
+        if (user.language && user.language !== language) {
+          setLanguage(user.language);
+        }
+        if (user.autoSaveScan !== undefined && user.autoSaveScan !== autoSaveScan) {
+          setAutoSaveScan(user.autoSaveScan);
+        }
+        if (user.ocrLanguage && user.ocrLanguage !== ocrLanguage) {
+          setOcrLanguage(user.ocrLanguage);
+        }
+        if (user.autoCopyText !== undefined && user.autoCopyText !== autoCopyText) {
+          setAutoCopyText(user.autoCopyText);
+        }
+        if (user.pdfQuality && user.pdfQuality !== pdfQuality) {
+          setPdfQuality(user.pdfQuality as 'high' | 'standard' | 'compact');
+        }
+        if (user.namingPattern) {
+          const expected = user.namingPattern === 'paperx_date' ? 'paperx' : user.namingPattern;
+          if (expected !== namingPattern) {
+            setNamingPattern(expected);
+          }
+        }
+    }
+  }, [
+    user?.theme,
+    user?.fontSize,
+    user?.largerTextEnabled,
+    user?.language,
+    user?.autoSaveScan,
+    user?.ocrLanguage,
+    user?.autoCopyText,
+    user?.pdfQuality,
+    user?.namingPattern,
+    darkMode,
+    fontSize,
+    largerText,
+    language,
+    autoSaveScan,
+    ocrLanguage,
+    autoCopyText,
+    pdfQuality,
+    namingPattern
+  ]);
 
   // 6. Trusted Devices / Active Sessions State
   const [activeSessions, setActiveSessions] = useState<UserSession[]>([]);
@@ -222,6 +282,65 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
     }
   });
   const [isVerifyingFA, setIsVerifyingFA] = useState(false);
+  const [faVerifyState, setFaVerifyState] = useState<'idle' | 'checking' | 'valid' | 'invalid'>('idle');
+
+  const handleAutoVerifyProfile2FA = async (code: string) => {
+    if (code.length !== 6 || isVerifyingFA) return;
+    setIsVerifyingFA(true);
+    setFaError(null);
+    setFaVerifyState('checking');
+
+    try {
+      const isVerified = await verifyTOTPCode(faSecret, code);
+      if (!isVerified) {
+        setIsVerifyingFA(false);
+        setFaVerifyState('invalid');
+        setFaError('Invalid verification code. Please check your authenticator app.');
+        setTimeout(() => {
+          setFaCode('');
+          setFaVerifyState('idle');
+        }, 1200);
+        return;
+      }
+
+      setFaVerifyState('valid');
+      setIsVerifyingFA(false);
+
+      const codes = [
+        `PX-${Math.floor(1000 + Math.random() * 9000)}-${Math.floor(1000 + Math.random() * 9000)}`,
+        `PX-${Math.floor(1000 + Math.random() * 9000)}-${Math.floor(1000 + Math.random() * 9000)}`,
+        `PX-${Math.floor(1000 + Math.random() * 9000)}-${Math.floor(1000 + Math.random() * 9000)}`,
+        `PX-${Math.floor(1000 + Math.random() * 9000)}-${Math.floor(1000 + Math.random() * 9000)}`
+      ];
+      setFaBackupCodes(codes);
+      setTwoStepEnabled(true);
+      localStorage.setItem('pref_twoStep', 'true');
+      localStorage.setItem('paperx_2fa_method', 'totp');
+      localStorage.setItem('paperx_2fa_secret', faSecret);
+      localStorage.setItem('paperx_2fa_backup_codes', JSON.stringify(codes));
+      if (user?.uid) {
+        updateUserInFirestore(user.uid, { 
+          twoFactorEnabled: true, 
+          twoFactorMethod: 'totp',
+          twoFactorSecret: faSecret,
+          twoFactorBackupCodes: codes
+        });
+      }
+
+      setTimeout(() => {
+        setFaStep(3);
+        setFaVerifyState('idle');
+      }, 650);
+    } catch (err: any) {
+      setIsVerifyingFA(false);
+      setFaVerifyState('invalid');
+      setFaError(err?.message || 'Verification error occurred');
+      setTimeout(() => {
+        setFaCode('');
+        setFaVerifyState('idle');
+      }, 1200);
+    }
+  };
 
   useEffect(() => {
     if (user?.twoFactorEnabled !== undefined) {
@@ -532,7 +651,7 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
         const hasUtr = ord.utr && typeof ord.utr === 'string' && ord.utr.trim().length >= 8;
         
         if (hasUtr) {
-          const cleanUtr = ord.utr.trim().toLowerCase();
+          const cleanUtr = (ord.utr || '').trim().toLowerCase();
           const existing = bestOrdersByUtr.get(cleanUtr);
           if (!existing || getOrderStatusScore(ord) > getOrderStatusScore(existing)) {
             bestOrdersByUtr.set(cleanUtr, ord);
@@ -627,11 +746,11 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
   };
 
   const menuItems = [
-    { id: 'personal', label: 'Personal Information', subLabel: 'Manage your personal details', icon: UserIcon },
-    { id: 'billing', label: 'Billing & Subscription', subLabel: 'Manage your plan and payment', icon: CreditCard },
-    { id: 'preferences', label: 'Preferences', subLabel: 'Customize your experience', icon: Settings },
-    { id: 'support', label: 'Support Settings', subLabel: 'Help and troubleshooting', icon: LifeBuoy },
-    ...(isUserAdmin && onOpenAdmin ? [{ id: 'admin', label: 'PaperX Team Console', subLabel: 'Manage users, approvals, live queries & AI assist', icon: Shield }] : [])
+    { id: 'personal', label: t('profile.account', 'Personal Information'), subLabel: t('profile.accountDesc', 'Manage your personal details'), icon: UserIcon },
+    { id: 'billing', label: t('profile.planBilling', 'Billing & Subscription'), subLabel: t('profile.planBillingDesc', 'Manage your plan and payment'), icon: CreditCard },
+    { id: 'preferences', label: t('profile.preferencesTab', 'Preferences'), subLabel: t('profile.preferencesTabDesc', 'Customize your experience'), icon: Settings },
+    { id: 'support', label: t('profile.supportTab', 'Support Settings'), subLabel: t('profile.supportTabDesc', 'Help and troubleshooting'), icon: LifeBuoy },
+    ...(isUserAdmin && onOpenAdmin ? [{ id: 'admin', label: t('profile.adminTab', 'PaperX Team Console'), subLabel: t('profile.adminTabDesc', 'Manage users, approvals, live queries & AI assist'), icon: Shield }] : [])
   ];
 
   // Reset view when closed or initialTab changes
@@ -659,12 +778,7 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
     if (document.documentElement.getAttribute('data-font-size') !== fontSize) {
       document.documentElement.setAttribute('data-font-size', fontSize);
     }
-    if (!user?.uid) return;
-    const timer = setTimeout(() => {
-      updateUserInFirestore(user.uid, { fontSize });
-    }, 400);
-    return () => clearTimeout(timer);
-  }, [fontSize, user?.uid]);
+  }, [fontSize]);
 
   // 2. Apply Larger Text Scale (Accessibility)
   useEffect(() => {
@@ -672,71 +786,80 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
     if (document.documentElement.getAttribute('data-larger-text') !== String(largerText)) {
       document.documentElement.setAttribute('data-larger-text', String(largerText));
     }
-    if (!user?.uid) return;
-    const timer = setTimeout(() => {
-      updateUserInFirestore(user.uid, { largerTextEnabled: largerText });
-    }, 400);
-    return () => clearTimeout(timer);
-  }, [largerText, user?.uid]);
+  }, [largerText]);
 
   // 3. Sound Effects Sync
   useEffect(() => {
     localStorage.setItem('pref_sound', String(soundEffects));
-    if (user?.uid) {
+    if (user?.uid && user.notificationSoundEnabled !== soundEffects) {
       updateUserInFirestore(user.uid, { notificationSoundEnabled: soundEffects });
     }
-  }, [soundEffects, user?.uid]);
+  }, [soundEffects, user?.uid, user?.notificationSoundEnabled]);
 
   // 4. Language Sync
   useEffect(() => {
     localStorage.setItem('pref_language', language);
     window.dispatchEvent(new CustomEvent('paperx_language_changed', { detail: language }));
-    if (user?.uid) {
+    if (user?.uid && user.language !== language) {
       updateUserInFirestore(user.uid, { language });
     }
-  }, [language, user?.uid]);
+  }, [language, user?.uid, user?.language]);
 
   // 9. Auto-Restore Session Sync
   useEffect(() => {
     localStorage.setItem('pref_autoRestoreSession', String(autoRestoreSession));
-    if (user?.uid) {
+    if (user?.uid && user.autoRestoreSession !== autoRestoreSession) {
       updateUserInFirestore(user.uid, { autoRestoreSession });
     }
     try {
       setPersistence(auth, autoRestoreSession ? browserLocalPersistence : browserSessionPersistence);
     } catch (e) {}
-  }, [autoRestoreSession, user?.uid]);
+  }, [autoRestoreSession, user?.uid, user?.autoRestoreSession]);
 
   // 10. Document & PDF Studio Preferences Sync
   useEffect(() => {
     localStorage.setItem('pref_pdfQuality', pdfQuality);
-    if (user?.uid) updateUserInFirestore(user.uid, { pdfQuality });
-  }, [pdfQuality, user?.uid]);
+    if (user?.uid && user.pdfQuality !== pdfQuality) {
+      updateUserInFirestore(user.uid, { pdfQuality });
+    }
+  }, [pdfQuality, user?.uid, user?.pdfQuality]);
 
   useEffect(() => {
     localStorage.setItem('pref_namingPattern', namingPattern);
-    if (user?.uid) updateUserInFirestore(user.uid, { namingPattern });
-  }, [namingPattern, user?.uid]);
+    const normalizedUserPattern = user?.namingPattern === 'paperx_date' ? 'paperx' : user?.namingPattern;
+    if (user?.uid && normalizedUserPattern !== namingPattern) {
+      updateUserInFirestore(user.uid, { namingPattern });
+    }
+  }, [namingPattern, user?.uid, user?.namingPattern]);
 
   useEffect(() => {
     localStorage.setItem('pref_autoSaveScan', String(autoSaveScan));
-    if (user?.uid) updateUserInFirestore(user.uid, { autoSaveScan });
-  }, [autoSaveScan, user?.uid]);
+    if (user?.uid && user.autoSaveScan !== autoSaveScan) {
+      updateUserInFirestore(user.uid, { autoSaveScan });
+    }
+  }, [autoSaveScan, user?.uid, user?.autoSaveScan]);
 
   useEffect(() => {
     localStorage.setItem('pref_ocrLanguage', ocrLanguage);
-    if (user?.uid) updateUserInFirestore(user.uid, { ocrLanguage });
-  }, [ocrLanguage, user?.uid]);
+    if (user?.uid && user.ocrLanguage !== ocrLanguage) {
+      updateUserInFirestore(user.uid, { ocrLanguage });
+    }
+  }, [ocrLanguage, user?.uid, user?.ocrLanguage]);
 
   useEffect(() => {
     localStorage.setItem('pref_autoCopyText', String(autoCopyText));
-    if (user?.uid) updateUserInFirestore(user.uid, { autoCopyText });
-  }, [autoCopyText, user?.uid]);
+    if (user?.uid && user.autoCopyText !== autoCopyText) {
+      updateUserInFirestore(user.uid, { autoCopyText });
+    }
+  }, [autoCopyText, user?.uid, user?.autoCopyText]);
 
   useEffect(() => {
     localStorage.setItem('pref_pdfAutoCompress', String(pdfAutoCompress));
-    if (user?.uid) updateUserInFirestore(user.uid, { pdfAutoCompress });
-  }, [pdfAutoCompress, user?.uid]);
+    const rawUserCompress = (user as any)?.pdfAutoCompress;
+    if (user?.uid && rawUserCompress !== pdfAutoCompress) {
+      updateUserInFirestore(user.uid, { pdfAutoCompress });
+    }
+  }, [pdfAutoCompress, user?.uid, (user as any)?.pdfAutoCompress]);
 
   // Test Sound Player
   const playTestSound = () => {
@@ -760,14 +883,21 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
 
   // 7. Revoke All Sessions Handler
   const handleLogoutAllDevices = async () => {
+    console.log('Starting logout of other devices...');
     setIsLoggingOutAll(true);
     try {
       if (user?.uid) {
-        await removeAllOtherSessions(user.uid);
+        // Wrap the session revocation in a timeout to prevent hanging
+        const timeoutPromise = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('Session revocation timed out')), 30000)
+        );
+        await Promise.race([removeAllOtherSessions(user.uid), timeoutPromise]);
+        console.log('Successfully called removeAllOtherSessions');
       }
     } catch (e) {
-      console.warn('Revoke all sessions notice:', e);
+      console.error('Revoke all sessions error:', e);
     } finally {
+      console.log('Closing modal and resetting state');
       setIsLoggingOutAll(false);
       setShowLogoutAllModal(false);
     }
@@ -826,9 +956,9 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
       const preservePrefixes = [
         'firebase:',
         'pref_',
-        'paperx_user_',
-        'paperx_2fa_',
-        'paperx_local_stored_files'
+        'paperx_',
+        'theme',
+        'language'
       ];
 
       const keysToRemove: string[] = [];
@@ -1009,17 +1139,17 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
 
   const renderEmailChange = () => (
       <div className="flex flex-col h-full animate-slide-in-right bg-white dark:bg-gray-900">
-          <div className="p-6 flex items-center justify-between border-b border-gray-50 dark:border-gray-800 bg-white/80 dark:bg-gray-900/80 backdrop-blur-md sticky top-0 z-20 relative">
+          <div className="p-6 flex items-center justify-between border-b border-gray-50 dark:border-gray-800 bg-transparent relative">
             <button 
               type="button"
               onClick={() => { setView('personal'); setEmailError(null); }} 
-              className="group p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-full transition-colors text-gray-500 dark:text-gray-400 hover:text-black dark:hover:text-white cursor-pointer z-10"
+              className="group p-2 hover:bg-gray-50 dark:hover:bg-gray-800 rounded-full transition-colors text-gray-400 hover:text-black dark:hover:text-white cursor-pointer z-10"
               title="Back"
             >
                 <ChevronLeft size={20} className="group-hover:-translate-x-0.5 transition-transform" />
             </button>
             <div className="absolute inset-x-0 flex items-center justify-center pointer-events-none px-12">
-              <h2 className="text-lg font-heading font-black tracking-tighter text-gray-900 dark:text-white text-center">Update Email</h2>
+              <h2 className="text-xl font-heading font-black tracking-tighter text-gray-900 dark:text-white text-center">Update Email</h2>
             </div>
             <div className="w-9 h-9" aria-hidden="true" />
           </div>
@@ -1278,7 +1408,7 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
   );
 
   const renderHeader = (title: string) => (
-    <div className="p-6 flex items-center justify-between border-b border-gray-50 dark:border-gray-800 bg-white/80 dark:bg-gray-900/80 backdrop-blur-md sticky top-0 z-20 relative">
+    <div className="px-4 py-2 sm:px-5 sm:py-2.5 flex items-center justify-between ios-glass-header sticky top-0 z-20 relative">
         <button 
           type="button"
           onClick={() => {
@@ -1307,19 +1437,19 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
               onClose();
             }
           }} 
-          className="group p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-full transition-colors text-gray-500 dark:text-gray-400 hover:text-black dark:hover:text-white cursor-pointer z-10"
+          className="group p-1.5 hover:bg-black/5 dark:hover:bg-white/10 rounded-full transition-colors text-gray-600 dark:text-gray-300 hover:text-black dark:hover:text-white cursor-pointer z-10"
           title={viewHistory.length > 0 ? "Back" : "Close"}
         >
-          <ChevronLeft size={20} className="group-hover:-translate-x-0.5 transition-transform" />
+          <ChevronLeft size={18} className="group-hover:-translate-x-0.5 transition-transform" />
         </button>
 
-        <div className="absolute inset-x-0 flex items-center justify-center pointer-events-none px-12">
-          <h2 className="text-lg font-heading font-black tracking-tighter text-gray-900 dark:text-white text-center">
+        <div className="absolute inset-x-0 flex items-center justify-center pointer-events-none px-10">
+          <h2 className="text-sm sm:text-base font-heading font-black tracking-tight text-gray-900 dark:text-white text-center">
             {title}
           </h2>
         </div>
 
-        <div className="w-9 h-9" aria-hidden="true" />
+        <div className="w-7 h-7" aria-hidden="true" />
     </div>
   );
 
@@ -2099,7 +2229,11 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
                 role="switch"
                 aria-checked={darkMode}
                 aria-label="Toggle dark mode"
-                onClick={() => setDarkMode(!darkMode)}
+                onClick={() => {
+                  const newValue = !darkMode;
+                  setDarkMode(newValue);
+                  if (user?.uid) updateUserInFirestore(user.uid, { theme: newValue ? 'dark' : 'light' });
+                }}
                 className={`relative w-12 h-7 rounded-full p-1 transition-colors duration-300 focus:outline-none focus:ring-2 focus:ring-black dark:focus:ring-white focus:ring-offset-2 dark:focus:ring-offset-gray-900 cursor-pointer shrink-0 ${
                   darkMode ? 'bg-black dark:bg-white' : 'bg-stone-200 dark:bg-stone-800'
                 }`}
@@ -2152,7 +2286,10 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
                     <button
                       key={size}
                       type="button"
-                      onClick={() => setFontSize(size)}
+                      onClick={() => {
+                        setFontSize(size);
+                        if (user?.uid) updateUserInFirestore(user.uid, { fontSize: size });
+                      }}
                       title={size === 'system' ? 'Device Default (Auto-scales per screen resolution)' : `${labels[size]} Font Size`}
                       className={`relative py-2 px-1.5 rounded-xl text-xs font-bold transition-colors cursor-pointer text-center z-10 ${
                         isActive 
@@ -2199,7 +2336,11 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
                 role="switch"
                 aria-checked={largerText}
                 aria-label="Toggle accessibility font"
-                onClick={() => setLargerText(!largerText)}
+                onClick={() => {
+                  const newValue = !largerText;
+                  setLargerText(newValue);
+                  if (user?.uid) updateUserInFirestore(user.uid, { largerTextEnabled: newValue });
+                }}
                 className={`relative w-12 h-7 rounded-full p-1 transition-colors duration-300 focus:outline-none focus:ring-2 focus:ring-black dark:focus:ring-white focus:ring-offset-2 dark:focus:ring-offset-gray-900 cursor-pointer shrink-0 ${
                   largerText ? 'bg-black dark:bg-white' : 'bg-stone-200 dark:bg-stone-800'
                 }`}
@@ -2255,7 +2396,11 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
             <div className="relative">
               <select
                 value={language}
-                onChange={(e) => setLanguage(e.target.value)}
+                onChange={(e) => {
+                  const newLang = e.target.value;
+                  setLanguage(newLang);
+                  changeLanguage(newLang);
+                }}
                 className="w-full py-3 pl-4 pr-10 bg-stone-100/90 dark:bg-stone-800/90 border border-stone-200/80 dark:border-stone-700/80 rounded-2xl text-xs font-bold text-stone-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-black dark:focus:ring-white cursor-pointer appearance-none transition-all shadow-xs"
               >
                 {[
@@ -2271,7 +2416,12 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
                   { code: 'Korean', label: '한국어 (Korean)' },
                   { code: 'Italian', label: 'Italiano (Italian)' },
                   { code: 'Arabic', label: 'العربية (Arabic)' },
-                  { code: 'Bengali', label: 'বাংলা (Bengali)' }
+                  { code: 'Bengali', label: 'বাংলা (Bengali)' },
+                  { code: 'Marathi', label: 'मराठी (Marathi)' },
+                  { code: 'Telugu', label: 'తెలుగు (Telugu)' },
+                  { code: 'Tamil', label: 'தமிழ் (Tamil)' },
+                  { code: 'Gujarati', label: 'ગુજરાતી (Gujarati)' },
+                  { code: 'Urdu', label: 'اردو (Urdu)' }
                 ].map((l) => (
                   <option key={l.code} value={l.code} className="bg-white dark:bg-gray-900 text-gray-900 dark:text-white">
                     {l.label}
@@ -2671,6 +2821,16 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
           </p>
         </div>
 
+        {/* CEO Section */}
+        <div className="p-6 bg-stone-50/90 dark:bg-stone-800/60 border border-stone-200/80 dark:border-stone-800/80 rounded-2xl md:rounded-3xl text-center space-y-4">
+          <img src="/ceo.png" alt="Sayan Biswas - CEO of PaperX" className="w-24 h-24 mx-auto rounded-full object-cover border-4 border-white dark:border-stone-700 shadow-md" />
+          <div>
+            <h3 className="text-base font-black font-heading text-stone-900 dark:text-white tracking-tight">Sayan Biswas</h3>
+            <p className="text-xs font-semibold text-stone-500 dark:text-stone-400 mt-0.5">CEO of PaperX</p>
+            <p className="text-xs text-stone-500 dark:text-stone-400 mt-1.5 font-medium italic">"Empowering productivity through innovative document solutions."</p>
+          </div>
+        </div>
+
         {/* Feature Highlights Grid */}
         <div className="space-y-3">
           <h4 className="text-[11px] font-black uppercase tracking-widest text-stone-400 dark:text-stone-500 pl-1 font-heading">
@@ -3032,9 +3192,16 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
               <button
                 disabled={isLoggingOutAll}
                 onClick={handleLogoutAllDevices}
-                className="flex-1 py-3 bg-red-600 text-white font-bold rounded-xl text-xs hover:bg-red-700 transition-colors cursor-pointer disabled:opacity-50"
+                className="flex-1 py-3 bg-red-600 text-white font-bold rounded-xl text-xs hover:bg-red-700 transition-colors cursor-pointer disabled:opacity-50 flex items-center justify-center gap-2"
               >
-                {isLoggingOutAll ? 'Revoking...' : 'Log Out Other Devices'}
+                {isLoggingOutAll ? (
+                  <>
+                    <RefreshCw size={12} className="animate-spin" />
+                    <span>Revoking...</span>
+                  </>
+                ) : (
+                  'Log Out Other Devices'
+                )}
               </button>
             </div>
           </div>
@@ -3086,21 +3253,22 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
       {show2FAModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-md">
           <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-3xl p-6 w-full max-w-md shadow-2xl relative animate-in fade-in zoom-in duration-200">
-            <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center gap-3">
-                <div className="p-2.5 rounded-xl bg-indigo-50 dark:bg-indigo-950/50 text-indigo-600 dark:text-indigo-400">
+            <div className="flex items-start justify-between gap-3 mb-4">
+              <div className="flex items-center gap-3 min-w-0 flex-1">
+                <div className="p-2.5 rounded-xl bg-indigo-50 dark:bg-indigo-950/50 text-indigo-600 dark:text-indigo-400 shrink-0">
                   <ShieldCheck size={22} />
                 </div>
-                <div>
-                  <h3 className="font-bold text-gray-900 dark:text-white text-base font-heading">2-Step Verification</h3>
-                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                <div className="min-w-0 flex-1 pr-2">
+                  <h3 className="font-bold text-gray-900 dark:text-white text-base font-heading truncate">2-Step Verification</h3>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 truncate">
                     Secure your account with an Authenticator App
                   </p>
                 </div>
               </div>
               <button 
                 onClick={() => setShow2FAModal(false)}
-                className="w-8 h-8 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-500 hover:text-black dark:hover:text-white flex items-center justify-center font-bold text-sm cursor-pointer"
+                className="w-8 h-8 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-500 hover:text-black dark:hover:text-white flex items-center justify-center font-bold text-sm cursor-pointer shrink-0 ml-auto"
+                aria-label="Close modal"
               >
                 ✕
               </button>
@@ -3140,79 +3308,110 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
 
             {/* Step 2: Verification Code */}
             {faStep === 2 && (
-              <div className="space-y-4">
-                <p className="text-xs text-gray-600 dark:text-gray-300">
+              <div className="space-y-4 py-1">
+                <p className="text-xs text-gray-600 dark:text-gray-300 text-center">
                   Open your authenticator app and enter the 6-digit verification code:
                 </p>
 
-                <div>
-                  <label className="block text-xs font-bold text-gray-700 dark:text-gray-300 mb-1.5">6-Digit Authenticator Code</label>
-                  <input
-                    type="text"
-                    maxLength={6}
-                    value={faCode}
-                    onChange={(e) => {
-                      setFaCode(e.target.value.replace(/\D/g, ''));
-                      setFaError(null);
-                    }}
-                    placeholder="e.g. 849201"
-                    autoFocus
-                    className="w-full px-4 py-3 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl text-center font-mono text-lg tracking-widest text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-black dark:focus:ring-white"
-                  />
-                  {faError && <p className="text-xs text-red-500 mt-1.5 font-medium">{faError}</p>}
-                </div>
+                <div className="flex flex-col items-center">
+                  <label className="block text-xs font-bold text-gray-700 dark:text-gray-300 mb-2 text-center">
+                    6-Digit Authenticator Code
+                  </label>
 
-                <div className="flex gap-2 pt-2">
-                  <button
-                    onClick={() => setFaStep(1)}
-                    className="flex-1 py-3 bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 text-gray-700 dark:text-gray-300 font-bold rounded-xl text-xs transition-colors cursor-pointer"
-                  >
-                    Back
-                  </button>
-                  <button
-                    disabled={isVerifyingFA}
-                    onClick={async () => {
-                      if (faCode.length !== 6) {
-                        setFaError('Please enter a valid 6-digit code');
-                        return;
-                      }
-                      setIsVerifyingFA(true);
-                      setFaError(null);
+                  {/* 6-Box Segmented Code Input with Dynamic Outer Line States */}
+                  <div className="relative flex items-center justify-center gap-2 sm:gap-2.5 w-full max-w-[320px] mx-auto my-1">
+                    {Array.from({ length: 6 }).map((_, idx) => {
+                      const char = faCode[idx] || '';
+                      const isCurrent = idx === faCode.length && faCode.length < 6;
+                      const isFilled = Boolean(char);
 
-                      const isVerified = await verifyTOTPCode(faSecret, faCode);
-                      setIsVerifyingFA(false);
-
-                      if (!isVerified) {
-                        setFaError('Invalid verification code. Please check your authenticator app.');
-                        return;
+                      let boxBorderAndBg = '';
+                      if (faVerifyState === 'valid') {
+                        boxBorderAndBg = 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-500 dark:border-emerald-500 text-emerald-600 dark:text-emerald-400 ring-2 ring-emerald-500/30 shadow-md scale-105';
+                      } else if (faVerifyState === 'invalid') {
+                        boxBorderAndBg = 'bg-red-50 dark:bg-red-950/50 border-red-500 dark:border-red-500 text-red-600 dark:text-red-400 ring-2 ring-red-500/30 animate-shake';
+                      } else if (faVerifyState === 'checking') {
+                        boxBorderAndBg = 'bg-amber-50/50 dark:bg-amber-950/30 border-amber-500 dark:border-amber-400 text-amber-600 dark:text-amber-400 ring-2 ring-amber-500/20 animate-pulse';
+                      } else if (isFilled) {
+                        boxBorderAndBg = 'bg-white dark:bg-gray-800 border-gray-900 dark:border-white text-gray-900 dark:text-white shadow-xs';
+                      } else if (isCurrent) {
+                        boxBorderAndBg = 'bg-white dark:bg-gray-900 border-gray-900 dark:border-white ring-2 ring-gray-900/10 dark:ring-white/10';
+                      } else {
+                        boxBorderAndBg = 'bg-gray-50 dark:bg-gray-800/60 border-gray-200 dark:border-gray-700 text-gray-400';
                       }
 
-                      const codes = [
-                        `PX-${Math.floor(1000 + Math.random() * 9000)}-${Math.floor(1000 + Math.random() * 9000)}`,
-                        `PX-${Math.floor(1000 + Math.random() * 9000)}-${Math.floor(1000 + Math.random() * 9000)}`,
-                        `PX-${Math.floor(1000 + Math.random() * 9000)}-${Math.floor(1000 + Math.random() * 9000)}`,
-                        `PX-${Math.floor(1000 + Math.random() * 9000)}-${Math.floor(1000 + Math.random() * 9000)}`
-                      ];
-                      setFaBackupCodes(codes);
-                      setTwoStepEnabled(true);
-                      localStorage.setItem('pref_twoStep', 'true');
-                      localStorage.setItem('paperx_2fa_method', 'totp');
-                      localStorage.setItem('paperx_2fa_secret', faSecret);
-                      localStorage.setItem('paperx_2fa_backup_codes', JSON.stringify(codes));
-                      if (user?.uid) {
-                        updateUserInFirestore(user.uid, { 
-                          twoFactorEnabled: true, 
-                          twoFactorMethod: 'totp',
-                          twoFactorSecret: faSecret,
-                          twoFactorBackupCodes: codes
-                        });
-                      }
-                      setFaStep(3);
-                    }}
-                    className="flex-2 py-3 bg-black text-white dark:bg-white dark:text-black font-bold rounded-xl text-xs hover:opacity-90 transition-opacity shadow-sm cursor-pointer disabled:opacity-50 flex items-center justify-center gap-2"
-                  >
-                    {isVerifyingFA ? 'Verifying...' : 'Verify & Enable 2FA'}
-                  </button>
+                      return (
+                        <div 
+                          key={idx}
+                          className={`w-11 h-14 sm:w-12 sm:h-14 rounded-2xl border flex items-center justify-center text-2xl font-mono font-bold transition-all duration-200 ${boxBorderAndBg}`}
+                        >
+                          {char || (isCurrent && faVerifyState === 'idle' ? <span className="w-0.5 h-6 bg-gray-900 dark:bg-white animate-pulse" /> : '')}
+                        </div>
+                      );
+                    })}
+
+                    {/* Hidden overlay input for full touch & auto-detection */}
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      pattern="[0-9]*"
+                      autoComplete="one-time-code"
+                      autoFocus
+                      disabled={faVerifyState === 'valid' || isVerifyingFA}
+                      maxLength={6}
+                      value={faCode}
+                      onChange={(e) => {
+                        const val = e.target.value.replace(/\D/g, '').slice(0, 6);
+                        setFaCode(val);
+                        if (faVerifyState !== 'idle' && faVerifyState !== 'checking') {
+                          setFaVerifyState('idle');
+                        }
+                        setFaError(null);
+                        if (val.length === 6 && faVerifyState !== 'checking' && faVerifyState !== 'valid') {
+                          handleAutoVerifyProfile2FA(val);
+                        }
+                      }}
+                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer text-center font-mono text-xl z-10"
+                    />
+                  </div>
+
+                  {/* Status & Feedback */}
+                  {faVerifyState === 'checking' && (
+                    <div className="flex items-center justify-center gap-2 mt-3 text-xs text-amber-600 dark:text-amber-400 font-bold animate-pulse">
+                      <RefreshCw size={14} className="animate-spin" />
+                      <span>Verifying authenticator code...</span>
+                    </div>
+                  )}
+
+                  {faVerifyState === 'valid' && (
+                    <div className="flex items-center justify-center gap-1.5 mt-3 text-xs text-emerald-600 dark:text-emerald-400 font-bold">
+                      <CheckCircle2 size={16} />
+                      <span>Code verified! Enabling 2FA...</span>
+                    </div>
+                  )}
+
+                  {faError && (
+                    <p className="text-xs text-red-500 mt-3 font-bold flex items-center justify-center gap-1">
+                      <AlertTriangle size={14} />
+                      <span>{faError}</span>
+                    </p>
+                  )}
+
+                  {/* Navigation Helper Link */}
+                  <div className="mt-4 flex items-center justify-center gap-4 text-xs">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setFaStep(1);
+                        setFaCode('');
+                        setFaVerifyState('idle');
+                        setFaError(null);
+                      }}
+                      className="text-gray-500 hover:text-gray-900 dark:hover:text-white font-medium hover:underline transition cursor-pointer"
+                    >
+                      ← Rescan QR Code
+                    </button>
+                  </div>
                 </div>
               </div>
             )}
@@ -3313,7 +3512,8 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
                         setSelectedOrderForTicket(null);
                         setTicketFeedback(null);
                       }}
-                      className="w-8 h-8 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-500 hover:text-black dark:hover:text-white flex items-center justify-center font-bold text-sm cursor-pointer"
+                      className="w-8 h-8 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-500 hover:text-black dark:hover:text-white flex items-center justify-center font-bold text-sm cursor-pointer shrink-0 ml-auto"
+                      aria-label="Close modal"
                     >
                       ✕
                     </button>

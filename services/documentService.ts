@@ -562,7 +562,7 @@ export const DocumentService = {
         const totalPages = pdf.numPages;
         const compressedPdf = await PDFDocument.create();
 
-        const qualityPreference = options?.pdfQuality || localStorage.getItem('pref_pdfQuality') || 'standard';
+        const qualityPreference = options?.pdfQuality || localStorage.getItem('pref_pdfQuality') || 'high';
         let scale = 2.0;
         let quality = 0.75;
         if (qualityPreference === 'compact') {
@@ -719,11 +719,21 @@ export const DocumentService = {
       updateStatus('Extracting text content...', 30);
       const text = await this.extractTextFromPDF(file);
       
+      const autoCopy = localStorage.getItem('pref_autoCopyText') !== 'false';
+      if (autoCopy && navigator.clipboard) {
+          try {
+              await navigator.clipboard.writeText(text);
+          } catch (e) {
+              console.warn("Auto-copy failed", e);
+          }
+      }
+
       updateStatus('Finalizing text file...', 90);
       const blob = new Blob([text], { type: 'text/plain;charset=utf-8;' });
       return {
           blob: blob,
-          filename: file.name.replace(/\.[^/.]+$/, "") + ".txt"
+          filename: file.name.replace(/\.[^/.]+$/, "") + ".txt",
+          extractedText: text
       };
   },
 

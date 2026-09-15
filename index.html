@@ -8,34 +8,42 @@
         // Intercept and handle internal SDK assertion edge cases in Firebase Auth popup handler
         var origConsoleError = console.error;
         console.error = function() {
-          var args = Array.prototype.slice.call(arguments);
-          var firstArg = args[0] ? String(args[0]) : '';
-          if (
-            firstArg.indexOf('Pending promise was never set') !== -1 ||
-            (firstArg.indexOf('@firebase/auth') !== -1 && firstArg.indexOf('INTERNAL ASSERTION FAILED') !== -1)
-          ) {
-            if (console.warn) console.warn.apply(console, ['[Firebase Auth Assertion Handled]:'].concat(args));
-            return;
-          }
-          origConsoleError.apply(console, args);
+          try {
+            var args = Array.prototype.slice.call(arguments);
+            var firstArg = args && args[0] != null ? String(args[0]) : '';
+            if (
+              firstArg && (
+                firstArg.indexOf('Pending promise was never set') !== -1 ||
+                (firstArg.indexOf('@firebase/auth') !== -1 && firstArg.indexOf('INTERNAL ASSERTION FAILED') !== -1)
+              )
+            ) {
+              if (console.warn) console.warn.apply(console, ['[Firebase Auth Assertion Handled]:'].concat(args));
+              return;
+            }
+          } catch (_) {}
+          origConsoleError.apply(console, arguments);
         };
 
         window.addEventListener('unhandledrejection', function(event) {
-          var reason = event.reason;
-          var msg = typeof reason === 'string' ? reason : (reason && reason.message ? reason.message : '');
-          if (typeof msg === "string" && msg.indexOf('Pending promise was never set') !== -1 || typeof msg === "string" && msg.indexOf('INTERNAL ASSERTION FAILED') !== -1) {
-            event.preventDefault();
-            event.stopImmediatePropagation && event.stopImmediatePropagation();
-            console.warn('[Firebase Auth Handled Assertion]:', msg);
-          }
+          try {
+            var reason = event ? event.reason : null;
+            var msg = typeof reason === 'string' ? reason : (reason && reason.message ? String(reason.message) : '');
+            if (typeof msg === "string" && (msg.indexOf('Pending promise was never set') !== -1 || msg.indexOf('INTERNAL ASSERTION FAILED') !== -1)) {
+              event.preventDefault();
+              if (event.stopImmediatePropagation) event.stopImmediatePropagation();
+              console.warn('[Firebase Auth Handled Assertion]:', msg);
+            }
+          } catch (_) {}
         }, true);
         window.addEventListener('error', function(event) {
-          var msg = event.message || '';
-          if (typeof msg === "string" && msg.indexOf('Pending promise was never set') !== -1 || typeof msg === "string" && msg.indexOf('INTERNAL ASSERTION FAILED') !== -1) {
-            event.preventDefault();
-            event.stopImmediatePropagation && event.stopImmediatePropagation();
-            console.warn('[Firebase Auth Handled Assertion]:', msg);
-          }
+          try {
+            var msg = (event && event.message) ? String(event.message) : '';
+            if (typeof msg === "string" && (msg.indexOf('Pending promise was never set') !== -1 || msg.indexOf('INTERNAL ASSERTION FAILED') !== -1)) {
+              event.preventDefault();
+              if (event.stopImmediatePropagation) event.stopImmediatePropagation();
+              console.warn('[Firebase Auth Handled Assertion]:', msg);
+            }
+          } catch (_) {}
         }, true);
 
         try {
@@ -67,7 +75,6 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800;900&family=Inter:wght@300;400;500;600;700;800;900&family=Permanent+Marker&display=swap" rel="stylesheet">
-    <script src="https://docs.opencv.org/4.7.0/opencv.js" async></script>
     <style>
       :root {
         --foreground-rgb: 43, 43, 43; /* #2B2B2B */

@@ -11,27 +11,23 @@ import {
   Bot, 
   Check, 
   CheckCheck,
-  Search,
-  ChevronRight,
-  Zap,
-  CreditCard,
-  FileText,
-  UserCheck,
-  Home,
-  BookOpen,
-  Mail,
-  ShieldCheck,
-  Clock,
-  RefreshCw,
-  AlertCircle,
-  PlusCircle,
-  Lock,
-  Paperclip,
-  ImagePlus,
-  Smile,
-  Shield,
-  HelpCircle,
-  Info
+  Search, 
+  ChevronRight, 
+  ChevronDown,
+  Zap, 
+  CreditCard, 
+  FileText, 
+  UserCheck, 
+  Mail, 
+  ShieldCheck, 
+  Clock, 
+  AlertCircle, 
+  PlusCircle, 
+  Paperclip, 
+  Smile, 
+  RotateCcw,
+  ExternalLink,
+  LifeBuoy
 } from 'lucide-react';
 import { doc, onSnapshot, setDoc, updateDoc, arrayUnion } from 'firebase/firestore';
 import { db } from '../services/firebase';
@@ -80,44 +76,43 @@ const INACTIVITY_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 const QUICK_TOPICS: QuickTopic[] = [
   {
     id: 'payment_approval',
-    icon: <CreditCard size={18} className="text-stone-900 dark:text-white" />,
+    icon: <CreditCard size={15} className="text-amber-500" />,
     category: 'Billing & Plans',
-    title: 'Membership & UTR Verification',
-    subtitle: 'Verify UPI payment or check approval status',
-    query: 'I completed my payment via UPI/QR code. Please verify my 12-digit UTR and approve my Pro membership.',
-    botAnswer: '⚡ **Payment & Membership Status**\n\n• Thank you! Your payment verification request has been queued with highest priority.\n• If you submitted your 12-digit bank UTR reference, PaperX Team verifies it within 10 minutes.\n• Once confirmed, your account tier upgrades automatically across all devices.\n\n💬 Feel free to paste your 12-digit UTR reference or Order ID here if you want us to double-check!'
+    title: 'Verify 12-Digit UTR',
+    subtitle: 'Check UPI approval or speed up verification',
+    query: 'I completed payment via UPI QR code. Please verify my 12-digit UTR reference and approve my membership.',
+    botAnswer: '⚡ **Payment & Membership Verification**\n\n• Thank you for subscribing! Your verification request is queued with priority.\n• The PaperX verification desk matches your 12-digit bank UTR reference within 5–10 minutes.\n• Once verified, your account tier upgrades automatically across all your devices.\n\n💬 Feel free to paste your 12-digit UTR number or attach the transaction receipt here!'
   },
   {
     id: 'limits_files',
-    icon: <Zap size={18} className="text-stone-900 dark:text-white" />,
+    icon: <Zap size={15} className="text-blue-500" />,
     category: 'Limits & Performance',
-    title: 'File Size Limits & Speed',
-    subtitle: 'Page counts, 500MB batch limit & upload rules',
+    title: 'File & Page Limits',
+    subtitle: '500MB batch limit & upload rules',
     query: 'What are the file size and page limits for conversions and batch processing?',
-    botAnswer: '📄 **PaperX Processing Guidelines**\n\n• **Free / Basic Plan**: Up to 50MB per file, 100 pages per conversion.\n• **Plus & Max Plans**: Up to 500MB per file, unlimited pages & priority high-speed queue.\n• **Quick Tip**: Ensure your document is not password-encrypted before converting.'
+    botAnswer: '📄 **PaperX Processing Limits**\n\n• **Free Tier**: Up to 50MB per file, 100 pages per conversion.\n• **Plus & Max Plans**: Up to 500MB per file, unlimited pages & priority high-speed parallel queues.\n• **Tip**: Make sure your file is not password-encrypted before converting.'
   },
   {
     id: 'ocr_tools',
-    icon: <FileText size={18} className="text-stone-900 dark:text-white" />,
+    icon: <FileText size={15} className="text-emerald-500" />,
     category: 'Features',
-    title: 'OCR & Multi-Language Extraction',
-    subtitle: 'Scanned document text & translation tips',
-    query: 'How can I extract text from scanned images or translate PDFs accurately?',
-    botAnswer: '🔍 **OCR & Text Extraction Guide**\n\n• Use our **OCR / Extract Text** tool for image and PDF scans.\n• For best results, use clean scans at 300 DPI with standard orientation.\n• PaperX supports 40+ global languages with auto script detection.'
+    title: 'OCR & Text Extraction',
+    subtitle: 'Extract text from scanned PDFs & images',
+    query: 'How do I extract text from scanned documents or translate PDFs accurately?',
+    botAnswer: '🔍 **OCR & Text Extraction Guide**\n\n• Use our **OCR / Extract Text** tool for image and PDF scans.\n• For sharpest precision, upload clean scans at 300 DPI with standard orientation.\n• PaperX supports 40+ global languages with automated script detection.'
   },
   {
     id: 'human_officer',
-    icon: <UserCheck size={18} className="text-stone-900 dark:text-white" />,
+    icon: <UserCheck size={15} className="text-purple-500" />,
     category: 'Live Support',
-    title: 'Connect with a Live Specialist',
-    subtitle: 'Talk directly to our human operations team',
-    query: 'I need assistance from a live customer support officer.',
-    botAnswer: '👨‍💼 **Live Specialist Dispatched**\n\n• A notification has been sent directly to our on-duty support team.\n• PaperX Team will review your account history and respond in this chat shortly.\n• You can close this window at any time — replies are saved and you will receive a notification!'
+    title: 'Talk to Live Specialist',
+    subtitle: 'Connect directly with on-duty operations team',
+    query: 'I need assistance from a live customer support specialist.',
+    botAnswer: '👨‍💼 **Live Specialist Dispatched**\n\n• A direct priority notification has been sent to our on-duty support operations desk.\n• PaperX Team will review your account details and reply in this thread shortly.\n• Replies are saved in real-time — feel free to write down any specific questions!'
   }
 ];
 
 const FAQS = [
-  // 1. Billing & Subscriptions
   {
     category: "Billing & Plans",
     q: "How do I upgrade or activate my subscription?",
@@ -153,8 +148,6 @@ const FAQS = [
     q: "What is your refund policy?",
     a: "We offer a 100% full refund within 48 hours of purchase if you experience technical issues that our support team cannot resolve. Contact us via chat or email paperx.assist@gmail.com with your Order ID."
   },
-
-  // 2. File Processing & Limits
   {
     category: "File Processing",
     q: "What file formats does PaperX support?",
@@ -181,13 +174,6 @@ const FAQS = [
     a: "Yes. Use our Unlock PDF tool and enter your document password when prompted. Once unlocked, you can freely convert, merge, split, or edit your document."
   },
   {
-    category: "File Processing",
-    q: "How do I merge or reorder PDF pages?",
-    a: "Use the Organize PDF / Merge tool. Drag and drop thumbnails to rearrange pages, delete unwanted pages, rotate orientations, or split documents by custom page ranges."
-  },
-
-  // 3. OCR & Advanced Tools
-  {
     category: "OCR & Tools",
     q: "How does Optical Character Recognition (OCR) work?",
     a: "Our neural OCR engine inspects pixel data inside scanned documents or photos, accurately recognizing letters, tables, and formatting to output fully searchable and editable text (TXT, DOCX, or searchable PDF)."
@@ -203,13 +189,6 @@ const FAQS = [
     a: "Yes! Use the Sign & Protect tool to draw or upload your signature, or add custom text and image watermarks with controllable opacity, font style, and angle."
   },
   {
-    category: "OCR & Tools",
-    q: "How does the Camera Scanner feature work?",
-    a: "The Camera Scanner utilizes your device webcam or phone camera with automatic edge detection, perspective correction, contrast enhancement, and multi-page PDF generation."
-  },
-
-  // 4. Security & Privacy
-  {
     category: "Security & Privacy",
     q: "Are my uploaded documents secure and confidential?",
     a: "Yes. All data transmissions are encrypted with TLS 1.3, and data at rest uses AES-256 enterprise encryption. We adhere strictly to zero-knowledge processing standards."
@@ -224,8 +203,6 @@ const FAQS = [
     q: "Does PaperX train AI models on user documents?",
     a: "No. PaperX never uses, scans, sells, or trains public AI models on any of your uploaded files or confidential documents."
   },
-
-  // 5. Troubleshooting & Support
   {
     category: "Troubleshooting",
     q: "What should I do if a conversion fails or gets stuck?",
@@ -233,23 +210,44 @@ const FAQS = [
   },
   {
     category: "Troubleshooting",
-    q: "Why is OCR text formatting slightly misaligned?",
-    a: "OCR precision depends on scan quality and contrast. For optimal results, ensure images are well-lit, at least 300 DPI, correctly oriented, and free from heavy motion blur or shadows."
-  },
-  {
-    category: "Troubleshooting",
-    q: "How does the live chat session work?",
-    a: "Our support system connects directly to PaperX Team. If a chat is inactive for 10 minutes with no response, it automatically closes to keep support queues fresh. You can start a new chat anytime by tapping 'Start New Chat'."
-  },
-  {
-    category: "Troubleshooting",
     q: "How do I reach a human support specialist?",
-    a: "Open the Messages tab and send your query, or select 'Connect with a Live Specialist'. You can also email paperx.assist@gmail.com for priority email support."
+    a: "Open the Live Chat tab and send your query, or select 'Talk to Live Specialist'. You can also email paperx.assist@gmail.com for priority email support."
   }
 ];
 
-export const SupportChat: React.FC<SupportChatProps> = ({ isOpen, onClose, user, initialTopic, onSessionStatusChange }) => {
-  const [activeTab, setActiveTab] = useState<'home' | 'messages' | 'help'>('home');
+// Helper to render text with bold and bullet highlights cleanly
+const formatMessageText = (text: string) => {
+  if (!text) return null;
+  const lines = text.split('\n');
+  return lines.map((line, idx) => {
+    const parts = line.split(/(\*\*.*?\*\*)/g);
+    return (
+      <span key={idx} className="block leading-relaxed">
+        {parts.map((part, pIdx) => {
+          if (part.startsWith('**') && part.endsWith('**')) {
+            return (
+              <strong key={pIdx} className="font-semibold text-stone-900 dark:text-white">
+                {part.slice(2, -2)}
+              </strong>
+            );
+          }
+          return part;
+        })}
+      </span>
+    );
+  });
+};
+
+const EMOJIS = ['👋', '⚡', '👍', '🙏', '📄', '✅', '❤️', '🔥', '😊', '💳'];
+
+export const SupportChat: React.FC<SupportChatProps> = ({ 
+  isOpen, 
+  onClose, 
+  user, 
+  initialTopic, 
+  onSessionStatusChange 
+}) => {
+  const [activeTab, setActiveTab] = useState<'chat' | 'faqs'>('chat');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputValue, setInputValue] = useState('');
   const [isTyping, setIsTyping] = useState(false);
@@ -339,17 +337,13 @@ export const SupportChat: React.FC<SupportChatProps> = ({ isOpen, onClose, user,
       currentSession = null;
     }
 
-    // REQUIREMENT: "When users open chat support it will get new chat when previous chat closed"
     if (!currentSession) {
       currentSession = generateNewSession('initial');
     } else if (currentSession.status === 'closed') {
-      // Previous chat was closed -> automatically generate a fresh new chat session!
       currentSession = generateNewSession('previous_closed');
     } else {
-      // Check 10-minute inactivity on resume
       const elapsed = Date.now() - (currentSession.lastUserActivity || currentSession.createdAt || 0);
       if (elapsed >= INACTIVITY_TIMEOUT_MS) {
-        // Mark closed due to 10m inactivity
         currentSession.status = 'closed';
         currentSession.closedReason = 'inactivity_timeout';
         currentSession.closedAt = Date.now();
@@ -362,7 +356,6 @@ export const SupportChat: React.FC<SupportChatProps> = ({ isOpen, onClose, user,
         setClosedReason('inactivity_timeout');
         setLastUserActivityTime(currentSession.lastUserActivity || Date.now());
       } else {
-        // Active session resumed
         setChatSession(currentSession);
         setIsClosed(false);
         setClosedReason(null);
@@ -389,7 +382,6 @@ export const SupportChat: React.FC<SupportChatProps> = ({ isOpen, onClose, user,
       if (snapshot.exists()) {
         const data = snapshot.data();
         
-        // If remote status was updated to closed
         if (data?.status === 'closed' && !isClosed) {
           setIsClosed(true);
           setClosedReason(data?.closedReason || 'admin_resolved');
@@ -404,12 +396,12 @@ export const SupportChat: React.FC<SupportChatProps> = ({ isOpen, onClose, user,
               ? new Date(m.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) 
               : new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
             timestamp: m.timestamp || Date.now(),
-            isSystemNotice: m.sender === 'system' || m.isSystemNotice === true
+            isSystemNotice: m.sender === 'system' || m.isSystemNotice === true,
+            attachment: m.attachment
           }));
 
           setMessages(formatted);
 
-          // Update last activity from user messages
           const userMsgs = data.messages.filter((m: any) => m.sender === 'user');
           if (userMsgs.length > 0) {
             const lastUserMsg = userMsgs[userMsgs.length - 1];
@@ -418,7 +410,6 @@ export const SupportChat: React.FC<SupportChatProps> = ({ isOpen, onClose, user,
             }
           }
 
-          // If the last message is from bot or admin, clear the client-side typing indicator
           const lastMsg = data.messages[data.messages.length - 1];
           if (lastMsg && (lastMsg.sender === 'bot' || lastMsg.sender === 'admin')) {
             setIsTyping(false);
@@ -436,7 +427,6 @@ export const SupportChat: React.FC<SupportChatProps> = ({ isOpen, onClose, user,
     return () => unsubscribe();
   }, [isOpen, chatSession?.chatId, isClosed]);
 
-  // REQUIREMENT: "when users doesn't respond with in 10min and show chat has been closed"
   // Real-time 10-minute Inactivity Detection Interval
   useEffect(() => {
     if (!isOpen || isClosed || !chatSession || messages.length === 0) return;
@@ -446,7 +436,6 @@ export const SupportChat: React.FC<SupportChatProps> = ({ isOpen, onClose, user,
       const elapsed = now - lastUserActivityTime;
 
       if (elapsed >= INACTIVITY_TIMEOUT_MS) {
-        // Trigger chat closed due to 10m inactivity
         setIsClosed(true);
         setClosedReason('inactivity_timeout');
 
@@ -462,7 +451,6 @@ export const SupportChat: React.FC<SupportChatProps> = ({ isOpen, onClose, user,
           localStorage.setItem(getStorageKey(), JSON.stringify(updatedSession));
         } catch (e) {}
 
-        // Add system message and update Firestore
         const systemNoticeMsg = {
           id: `msg_sys_${now}`,
           sender: 'system',
@@ -497,18 +485,17 @@ export const SupportChat: React.FC<SupportChatProps> = ({ isOpen, onClose, user,
           });
         }
       }
-    }, 5000); // Check every 5 seconds
+    }, 5000);
 
     return () => clearInterval(interval);
   }, [isOpen, isClosed, chatSession, lastUserActivityTime, messages.length, getStorageKey]);
 
   useEffect(() => {
-    if (isOpen && activeTab === 'messages') {
+    if (isOpen && activeTab === 'chat') {
       scrollToBottom();
     }
   }, [messages, isTyping, isOpen, activeTab]);
 
-  // Dispatch background notification to Telegram bot
   const notifyAdmin = async (queryText: string, targetChatId: string, hasBotAnswer: boolean = false) => {
     try {
       await fetch('/api/admin/support/notify', {
@@ -528,70 +515,15 @@ export const SupportChat: React.FC<SupportChatProps> = ({ isOpen, onClose, user,
     }
   };
 
-  // Start a fresh new chat session manually
   const handleStartNewChat = () => {
     generateNewSession('manual_new');
-    setActiveTab('messages');
-  };
-
-  // Close the current chat session manually
-  const handleManualCloseChat = async () => {
-    if (isClosed || !chatSession) return;
-
-    const now = Date.now();
-    setIsClosed(true);
-    setClosedReason('user_closed');
-
-    const updatedSession: SupportSessionData = {
-      ...chatSession,
-      status: 'closed',
-      closedReason: 'user_closed',
-      closedAt: now
-    };
-    setChatSession(updatedSession);
-
-    try {
-      localStorage.setItem(getStorageKey(), JSON.stringify(updatedSession));
-    } catch (e) {}
-
-    const closeMsg = {
-      id: `msg_sys_closed_${now}`,
-      sender: 'system',
-      senderName: 'System Notice',
-      text: '🔒 This chat session has been closed. Thank you for contacting PaperX Support!',
-      timestamp: now,
-      isSystemNotice: true
-    };
-
-    setMessages(prev => [
-      ...prev,
-      {
-        id: closeMsg.id,
-        type: 'system',
-        text: closeMsg.text,
-        time: new Date(now).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        timestamp: now,
-        isSystemNotice: true
-      }
-    ]);
-
-    if (chatSession.chatId) {
-      const chatRef = doc(db, 'support_chats', chatSession.chatId);
-      updateDoc(chatRef, {
-        status: 'closed',
-        closedReason: 'user_closed',
-        closedAt: now,
-        messages: arrayUnion(closeMsg),
-        lastMessage: 'Chat closed by user'
-      }).catch(() => {});
-    }
+    setActiveTab('chat');
   };
 
   const handleSendMessage = async (textToSend?: string, predefinedBotAnswer?: string) => {
     const text = (textToSend || inputValue).trim();
     if (!text && !attachmentData) return;
 
-    // If chat was closed, automatically start a new chat before sending!
     let targetSession = chatSession;
     if (isClosed || !targetSession || targetSession.status === 'closed') {
       targetSession = generateNewSession('send_message_reset');
@@ -604,7 +536,6 @@ export const SupportChat: React.FC<SupportChatProps> = ({ isOpen, onClose, user,
     setAttachmentData(null);
     setLastUserActivityTime(now);
 
-    // Update active session metadata in storage
     if (targetSession) {
       const updated = {
         ...targetSession,
@@ -617,8 +548,8 @@ export const SupportChat: React.FC<SupportChatProps> = ({ isOpen, onClose, user,
       } catch (e) {}
     }
     
-    if (activeTab !== 'messages') {
-      setActiveTab('messages');
+    if (activeTab !== 'chat') {
+      setActiveTab('chat');
     }
 
     if (textareaRef.current) {
@@ -650,7 +581,6 @@ export const SupportChat: React.FC<SupportChatProps> = ({ isOpen, onClose, user,
 
     const destinationChatId = targetSession?.chatId || activeChatId;
 
-    // Dispatch background notify to Telegram bot
     notifyAdmin(text + (attachmentToSent ? ' [Attachment sent]' : ''), destinationChatId, !!predefinedBotAnswer);
     if (!predefinedBotAnswer) {
       setIsTyping(true);
@@ -747,8 +677,6 @@ export const SupportChat: React.FC<SupportChatProps> = ({ isOpen, onClose, user,
     return matchesCategory && matchesSearch;
   });
 
-  const lastMessage = messages[messages.length - 1];
-
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -774,313 +702,239 @@ export const SupportChat: React.FC<SupportChatProps> = ({ isOpen, onClose, user,
     <AnimatePresence>
       <div 
         id="support-chat-backdrop"
-        className="fixed inset-0 z-[85] bg-black/50 backdrop-blur-xs sm:bg-transparent sm:backdrop-blur-none flex items-end sm:items-auto justify-center sm:justify-end"
+        className="fixed inset-0 z-[90] bg-stone-950/40 backdrop-blur-xs flex items-end sm:items-auto justify-center sm:justify-end"
         onClick={onClose}
       >
         <motion.div
           id="support-chat-container"
-          initial={{ opacity: 0, y: 40, scale: 0.96 }}
+          initial={{ opacity: 0, y: 25, scale: 0.98 }}
           animate={{ opacity: 1, y: 0, scale: 1 }}
-          exit={{ opacity: 0, y: 40, scale: 0.96 }}
-          transition={{ duration: 0.24, ease: [0.16, 1, 0.3, 1] }}
+          exit={{ opacity: 0, y: 25, scale: 0.98 }}
+          transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
           onClick={(e) => e.stopPropagation()}
-          className="fixed inset-x-0 bottom-0 sm:inset-auto sm:bottom-6 sm:right-6 w-full sm:w-[420px] h-[92dvh] sm:h-[650px] sm:max-h-[85vh] bg-white dark:bg-stone-900 rounded-t-[28px] sm:rounded-[24px] shadow-[0_25px_70px_-15px_rgba(0,0,0,0.35)] ring-1 ring-black/10 dark:ring-white/10 flex flex-col overflow-hidden select-text border border-stone-200/80 dark:border-stone-800"
+          className="fixed inset-x-0 bottom-0 sm:inset-auto sm:bottom-6 sm:right-6 w-full sm:w-[440px] h-[92dvh] sm:h-[680px] sm:max-h-[88vh] bg-white dark:bg-stone-900 rounded-t-[28px] sm:rounded-3xl shadow-[0_25px_80px_-15px_rgba(0,0,0,0.4)] border border-stone-200/90 dark:border-stone-800 flex flex-col overflow-hidden select-text"
         >
-          {/* Top Header Bar */}
-          <div className="relative px-4 sm:px-5 py-3.5 bg-white dark:bg-stone-900 text-stone-900 dark:text-white flex items-center justify-between border-b border-stone-200/80 dark:border-stone-800 flex-shrink-0">
+          {/* ================= HEADER BAR ================= */}
+          <div className="relative px-5 py-3.5 bg-white dark:bg-stone-900 border-b border-stone-200/80 dark:border-stone-800 flex items-center justify-between flex-shrink-0 z-10">
             <div className="flex items-center gap-3">
-              {activeTab !== 'home' && (
-                <button
-                  id="support-back-btn"
-                  onClick={() => setActiveTab('home')}
-                  className="p-1.5 -ml-1.5 text-stone-500 hover:text-stone-900 dark:text-stone-400 dark:hover:text-white rounded-lg hover:bg-stone-100 dark:hover:bg-stone-800 transition cursor-pointer"
-                  aria-label="Back to support home"
-                >
-                  <ArrowLeft size={18} />
-                </button>
-              )}
-              
-              <div className="w-8 h-8 rounded-xl bg-black text-white dark:bg-white dark:text-black flex items-center justify-center font-black text-xs font-heading shadow-xs">
-                PX
+              <div className="relative">
+                <div className="w-9 h-9 rounded-2xl bg-stone-900 text-white dark:bg-white dark:text-stone-900 flex items-center justify-center font-heading font-black text-xs shadow-xs tracking-tighter">
+                  P<span className="text-amber-400 dark:text-amber-500">X</span>
+                </div>
+                <span className="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full bg-emerald-500 ring-2 ring-white dark:ring-stone-900" />
               </div>
-
+              
               <div>
-                <h3 className="font-heading font-black text-sm text-stone-900 dark:text-white tracking-tight">PaperX Support</h3>
+                <div className="flex items-center gap-2">
+                  <h3 className="font-heading font-black text-sm text-stone-900 dark:text-white tracking-tight">PaperX Support</h3>
+                  <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                    Live
+                  </span>
+                </div>
+                <p className="text-[11px] text-stone-400 font-medium">Operations desk • ~5 min response</p>
               </div>
             </div>
 
-            {/* Header Right Actions */}
+            {/* Header Right Actions & Tab Switcher */}
             <div className="flex items-center gap-1.5">
+              <div className="flex items-center p-0.5 bg-stone-100 dark:bg-stone-800 rounded-xl border border-stone-200/60 dark:border-stone-700/60 mr-1">
+                <button
+                  id="tab-chat-btn"
+                  onClick={() => setActiveTab('chat')}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                    activeTab === 'chat'
+                      ? 'bg-white dark:bg-stone-900 text-stone-900 dark:text-white shadow-2xs'
+                      : 'text-stone-500 hover:text-stone-900 dark:text-stone-400 dark:hover:text-white'
+                  }`}
+                >
+                  <MessageSquare size={13} />
+                  <span>Chat</span>
+                </button>
+                <button
+                  id="tab-faqs-btn"
+                  onClick={() => setActiveTab('faqs')}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                    activeTab === 'faqs'
+                      ? 'bg-white dark:bg-stone-900 text-stone-900 dark:text-white shadow-2xs'
+                      : 'text-stone-500 hover:text-stone-900 dark:text-stone-400 dark:hover:text-white'
+                  }`}
+                >
+                  <LifeBuoy size={13} />
+                  <span>FAQs</span>
+                </button>
+              </div>
+
+              <button
+                id="support-new-session-header-btn"
+                onClick={handleStartNewChat}
+                title="Restart chat session"
+                className="p-1.5 text-stone-400 hover:text-stone-900 dark:hover:text-white hover:bg-stone-100 dark:hover:bg-stone-800 rounded-xl transition cursor-pointer"
+              >
+                <RotateCcw size={16} />
+              </button>
+
               <button
                 id="support-close-btn"
                 onClick={onClose}
-                className="p-1.5 text-stone-400 hover:text-stone-900 dark:hover:text-white hover:bg-stone-100 dark:hover:bg-stone-800 rounded-lg transition cursor-pointer"
-                aria-label="Close support messenger"
+                aria-label="Close support"
+                className="p-1.5 text-stone-400 hover:text-stone-900 dark:hover:text-white hover:bg-stone-100 dark:hover:bg-stone-800 rounded-xl transition cursor-pointer"
               >
                 <X size={18} />
               </button>
             </div>
           </div>
 
-          {/* Main Body View Switcher */}
+          {/* ================= VIEW CONTAINER ================= */}
           <div className="flex-1 min-h-0 flex flex-col bg-stone-50/50 dark:bg-stone-950">
-            {/* ================= VIEW 1: HOME DASHBOARD ================= */}
-            {activeTab === 'home' && (
-              <div className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-4 custom-scrollbar">
-                {/* Hero Card */}
-                <div className="relative overflow-hidden p-5 rounded-2xl md:rounded-3xl bg-stone-900 text-white dark:bg-stone-800 shadow-md border border-stone-800">
-                  <div className="relative z-10 space-y-1">
-                    <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md text-[10px] font-bold bg-white/10 text-stone-200 border border-white/20">
-                      <Sparkles size={11} /> 24/7 Support Desk
-                    </span>
-                    <h2 className="text-lg font-black font-heading tracking-tight text-white">
-                      Hello, how can we help?
-                    </h2>
-                    <p className="text-xs text-stone-300 leading-relaxed max-w-[300px]">
-                      Ask any question about your account, subscription, or PDF tools. Our support team responds promptly.
-                    </p>
-                  </div>
-                </div>
-
-                {/* Primary Conversation Launcher Card */}
-                <div className="p-4 rounded-2xl md:rounded-3xl bg-white dark:bg-stone-900 border border-stone-200/80 dark:border-stone-800 shadow-xs space-y-3">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <MessageSquare size={16} className="text-stone-900 dark:text-white" />
-                      <span className="text-xs font-bold font-heading text-stone-900 dark:text-white uppercase tracking-wider text-[11px]">
-                        Support Session
-                      </span>
-                    </div>
-                    {isClosed ? (
-                      <span className="text-[10px] font-bold text-stone-600 dark:text-stone-300 bg-stone-100 dark:bg-stone-800 px-2 py-0.5 rounded border border-stone-200 dark:border-stone-700 flex items-center gap-1">
-                        <Clock size={10} /> Closed
-                      </span>
-                    ) : messages.length > 0 ? (
-                      <span className="text-[10px] font-bold text-stone-900 dark:text-white bg-stone-100 dark:bg-stone-800 px-2 py-0.5 rounded border border-stone-200 dark:border-stone-700 flex items-center gap-1">
-                        <span className="w-1.5 h-1.5 rounded-full bg-stone-900 dark:bg-white animate-pulse" /> Active
-                      </span>
-                    ) : null}
-                  </div>
-
-                  {messages.length > 0 && !isClosed ? (
+            {activeTab === 'chat' ? (
+              <div className="flex-1 flex flex-col min-h-0">
+                {/* Horizontal Quick Suggestions Rail */}
+                <div className="px-4 py-2.5 bg-white dark:bg-stone-900 border-b border-stone-200/60 dark:border-stone-800/80 flex items-center gap-2 overflow-x-auto no-scrollbar flex-shrink-0">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-stone-400 flex items-center gap-1 shrink-0">
+                    <Sparkles size={11} className="text-amber-500" /> Prompts:
+                  </span>
+                  {QUICK_TOPICS.map((topic) => (
                     <button
-                      id="resume-conversation-btn"
-                      onClick={() => setActiveTab('messages')}
-                      className="w-full text-left p-3 rounded-xl bg-stone-50 dark:bg-stone-800/60 hover:bg-stone-100 dark:hover:bg-stone-800 border border-stone-200/60 dark:border-stone-700/60 transition group flex items-center justify-between gap-3 cursor-pointer"
+                      key={topic.id}
+                      onClick={() => handleSendMessage(topic.query, topic.botAnswer)}
+                      className="shrink-0 px-2.5 py-1 rounded-xl bg-stone-100 dark:bg-stone-800 hover:bg-stone-200 dark:hover:bg-stone-700 text-stone-800 dark:text-stone-200 text-xs font-semibold border border-stone-200/70 dark:border-stone-700/70 transition flex items-center gap-1.5 cursor-pointer shadow-2xs active:scale-95"
                     >
-                      <div className="min-w-0 flex-1">
-                        <p className="text-xs font-semibold text-stone-900 dark:text-stone-100 truncate">
-                          {lastMessage?.type === 'user' ? 'You: ' : 'Support: '}
-                          {lastMessage?.text}
-                        </p>
-                        <p className="text-[10px] text-stone-400 mt-0.5 flex items-center gap-1">
-                          <Clock size={10} /> Active thread • {lastMessage?.time}
-                        </p>
-                      </div>
-                      <ChevronRight size={16} className="text-stone-400 group-hover:translate-x-0.5 transition-transform flex-shrink-0" />
+                      {topic.icon}
+                      <span>{topic.title}</span>
                     </button>
-                  ) : (
-                    <button
-                      id="start-new-chat-btn"
-                      onClick={handleStartNewChat}
-                      className="w-full py-3 px-4 rounded-xl bg-stone-900 hover:bg-black dark:bg-white dark:hover:bg-stone-100 text-white dark:text-stone-900 font-bold text-xs transition flex items-center justify-center gap-2 shadow-xs cursor-pointer"
-                    >
-                      <Send size={14} />
-                      <span>Start a new conversation</span>
-                    </button>
-                  )}
+                  ))}
                 </div>
 
-                {/* Instant Quick Questions */}
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between px-1">
-                    <span className="text-[11px] font-bold uppercase tracking-wider text-stone-400 dark:text-stone-500">
-                      Popular Questions
-                    </span>
-                  </div>
-
-                  <div className="space-y-2">
-                    {QUICK_TOPICS.map((topic) => (
-                      <button
-                        key={topic.id}
-                        id={`home-topic-${topic.id}`}
-                        onClick={() => handleSendMessage(topic.query, topic.botAnswer)}
-                        className="w-full p-3 rounded-2xl bg-white dark:bg-stone-900 hover:bg-stone-50 dark:hover:bg-stone-800/80 border border-stone-200/80 dark:border-stone-800 text-left transition flex items-center justify-between gap-3 group shadow-2xs"
-                      >
-                        <div className="flex items-center gap-3 min-w-0">
-                          <div className="w-9 h-9 rounded-xl bg-stone-100 dark:bg-stone-800 flex items-center justify-center flex-shrink-0">
-                            {topic.icon}
-                          </div>
-                          <div className="min-w-0">
-                            <span className="block text-xs font-bold text-stone-900 dark:text-stone-100 group-hover:text-emerald-600 dark:group-hover:text-emerald-400 transition-colors truncate">
-                              {topic.title}
-                            </span>
-                            <span className="block text-[11px] text-stone-400 truncate">
-                              {topic.subtitle}
-                            </span>
-                          </div>
-                        </div>
-                        <ChevronRight size={15} className="text-stone-400 group-hover:translate-x-0.5 transition-transform flex-shrink-0" />
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Email Helpdesk Card */}
-                <div className="p-4 rounded-2xl bg-stone-100/80 dark:bg-stone-900/60 border border-stone-200/80 dark:border-stone-800 space-y-2">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-1.5">
-                      <Mail size={14} className="text-orange-500" />
-                      <span className="text-xs font-bold text-stone-800 dark:text-stone-200">
-                        Official Email Helpdesk
-                      </span>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center justify-between bg-white dark:bg-stone-950 p-2.5 rounded-xl border border-stone-200/60 dark:border-stone-800 text-xs">
-                    <span className="font-mono text-stone-700 dark:text-stone-300 text-[11px]">
-                      paperx.assist@gmail.com
-                    </span>
-                    <div className="flex items-center gap-1.5">
-                      <button
-                        onClick={copyEmail}
-                        className="px-2 py-1 bg-stone-100 dark:bg-stone-800 hover:bg-stone-200 dark:hover:bg-stone-700 rounded-lg text-stone-700 dark:text-stone-300 text-[10px] font-semibold flex items-center gap-1 transition"
-                      >
-                        {copiedEmail ? (
-                          <>
-                            <Check size={12} className="text-emerald-500" />
-                            <span className="text-emerald-600">Copied</span>
-                          </>
-                        ) : (
-                          <>
-                            <Copy size={12} />
-                            <span>Copy</span>
-                          </>
-                        )}
-                      </button>
-                      <a
-                        href={`mailto:paperx.assist@gmail.com?subject=PaperX%20Support%20(${encodeURIComponent(currentUserName)})`}
-                        className="px-2 py-1 bg-stone-900 dark:bg-white text-white dark:text-stone-900 rounded-lg text-[10px] font-semibold hover:bg-stone-800 dark:hover:bg-stone-100 transition"
-                      >
-                        Compose
-                      </a>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* ================= VIEW 2: MESSAGES / LIVE CHAT STREAM ================= */}
-            {activeTab === 'messages' && (
-              <div className="flex-1 flex flex-col min-h-0 bg-white dark:bg-stone-950">
-                {/* Chat Feed */}
-                <div className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-3.5 custom-scrollbar">
-                  {/* Status Banner */}
-                  <div className="text-center my-0.5">
-                    <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-medium bg-stone-100 dark:bg-stone-900 text-stone-500 dark:text-stone-400 border border-stone-200/60 dark:border-stone-800">
+                {/* Main Message Stream */}
+                <div className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-4 custom-scrollbar">
+                  {/* Security Notice Pill */}
+                  <div className="text-center my-1">
+                    <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-medium bg-white dark:bg-stone-900 text-stone-500 dark:text-stone-400 border border-stone-200/80 dark:border-stone-800 shadow-2xs">
                       <ShieldCheck size={12} className="text-emerald-500" />
-                      Encrypted Live Session • Connected to PaperX Team
+                      PaperX Support Desk • End-to-End Encrypted
                     </span>
                   </div>
 
-                  {messages.length === 0 ? (
-                    <div className="py-8 text-center">
-                      <div className="w-12 h-12 rounded-2xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-100 dark:border-emerald-900 flex items-center justify-center mx-auto mb-3 text-emerald-600 dark:text-emerald-400">
-                        <MessageSquare size={22} />
+                  {/* Empty Welcome Card */}
+                  {messages.length === 0 && (
+                    <div className="p-5 rounded-2xl bg-white dark:bg-stone-900 border border-stone-200/80 dark:border-stone-800 shadow-2xs text-center space-y-3 my-auto">
+                      <div className="w-12 h-12 rounded-2xl bg-stone-100 dark:bg-stone-800 flex items-center justify-center mx-auto text-stone-900 dark:text-white shadow-xs">
+                        <Headset size={22} className="text-stone-800 dark:text-stone-200" />
                       </div>
-                      <h4 className="text-sm font-bold text-stone-900 dark:text-white mb-1">
-                        Send a message to PaperX Team
-                      </h4>
-                      <p className="text-xs text-stone-500 dark:text-stone-400 max-w-xs mx-auto mb-4 leading-relaxed">
-                        Ask any question regarding your UPI payments, UTR verification, or file conversion tools.
-                      </p>
-                      
-                      {/* Suggestion Chips */}
-                      <div className="flex flex-wrap justify-center gap-1.5 max-w-xs mx-auto">
-                        {QUICK_TOPICS.map((t) => (
-                          <button
-                            key={t.id}
-                            onClick={() => handleSendMessage(t.query, t.botAnswer)}
-                            className="px-2.5 py-1.5 rounded-xl bg-stone-100 hover:bg-stone-200 dark:bg-stone-900 dark:hover:bg-stone-800 text-stone-700 dark:text-stone-300 text-[11px] font-medium transition"
-                          >
-                            {t.title}
-                          </button>
-                        ))}
+                      <div>
+                        <h4 className="font-heading font-black text-sm text-stone-900 dark:text-white">
+                          How can we assist you today?
+                        </h4>
+                        <p className="text-xs text-stone-500 dark:text-stone-400 max-w-xs mx-auto mt-1 leading-relaxed">
+                          Ask about UPI payment verification, 12-digit UTR matching, file conversion limits, or get live assistance.
+                        </p>
+                      </div>
+
+                      {/* Official Email Copy Box */}
+                      <div className="pt-2 border-t border-stone-100 dark:border-stone-800 flex items-center justify-between bg-stone-50 dark:bg-stone-950 p-2.5 rounded-xl text-xs">
+                        <span className="font-mono text-stone-600 dark:text-stone-400 text-[11px] truncate">
+                          paperx.assist@gmail.com
+                        </span>
+                        <button
+                          onClick={copyEmail}
+                          className="px-2.5 py-1 bg-white dark:bg-stone-800 hover:bg-stone-100 dark:hover:bg-stone-700 text-stone-800 dark:text-stone-200 rounded-lg text-[10px] font-bold flex items-center gap-1 border border-stone-200 dark:border-stone-700 transition cursor-pointer"
+                        >
+                          {copiedEmail ? (
+                            <>
+                              <Check size={11} className="text-emerald-500" />
+                              <span className="text-emerald-600">Copied</span>
+                            </>
+                          ) : (
+                            <>
+                              <Copy size={11} />
+                              <span>Copy</span>
+                            </>
+                          )}
+                        </button>
                       </div>
                     </div>
-                  ) : (
-                    messages.map((msg, idx) => {
-                      const isUser = msg.type === 'user';
-                      const isSystem = msg.type === 'system' || msg.isSystemNotice;
+                  )}
 
-                      if (isSystem) {
-                        return (
-                          <div key={msg.id || idx} className="my-3 text-center animate-fade-in">
-                            <div className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-900/60 text-[11px] font-medium max-w-[90%] shadow-2xs">
-                              <AlertCircle size={13} className="shrink-0 text-amber-600 dark:text-amber-400" />
-                              <span>{msg.text}</span>
-                            </div>
-                          </div>
-                        );
-                      }
+                  {/* Render Message Feed */}
+                  {messages.map((msg, idx) => {
+                    const isUser = msg.type === 'user';
+                    const isSystem = msg.type === 'system' || msg.isSystemNotice;
 
+                    if (isSystem) {
                       return (
-                        <div
-                          key={msg.id || idx}
-                          className={`flex flex-col ${isUser ? 'items-end' : 'items-start'} group relative`}
-                        >
-                          <div className="flex items-end gap-2 max-w-[86%]">
-                            {!isUser && (
-                              <div className="w-6 h-6 rounded-full bg-stone-900 text-white dark:bg-white dark:text-stone-900 flex items-center justify-center flex-shrink-0 mb-1 shadow-xs">
-                                <Bot size={13} />
-                              </div>
-                            )}
-
-                            <div
-                              className={`px-4 py-2.5 text-xs sm:text-[13px] leading-relaxed whitespace-pre-wrap ${
-                                isUser
-                                  ? 'bg-stone-900 text-white dark:bg-white dark:text-stone-900 rounded-2xl rounded-br-xs shadow-xs font-normal'
-                                  : 'bg-stone-100 text-stone-900 dark:bg-stone-800/90 dark:text-stone-100 rounded-2xl rounded-bl-xs border border-stone-200/80 dark:border-stone-700/80'
-                              }`}
-                            >
-                              {msg.attachment && (
-                                <div className="mb-2">
-                                  <img src={msg.attachment} alt="attachment preview" className="max-w-[200px] sm:max-w-[240px] rounded-lg border border-stone-200 dark:border-stone-700 shadow-sm" />
-                                </div>
-                              )}
-                              {msg.text}
-                            </div>
-                          </div>
-
-                          <div className={`flex items-center gap-1 mt-1 px-1 text-[10px] text-stone-400 ${isUser ? 'mr-1' : 'ml-8'}`}>
-                            <span>{msg.time}</span>
-                            {isUser && (
-                              <CheckCheck size={12} className="text-stone-600 dark:text-stone-300 inline" />
-                            )}
-                            <button
-                              onClick={() => copyMessageText(msg.id || `${idx}`, msg.text)}
-                              className="opacity-0 group-hover:opacity-100 transition-opacity ml-1 hover:text-stone-700 dark:hover:text-stone-300 cursor-pointer"
-                              title="Copy message"
-                            >
-                              {copiedMsgId === (msg.id || `${idx}`) ? (
-                                <Check size={11} className="text-stone-900 dark:text-white" />
-                              ) : (
-                                <Copy size={11} />
-                              )}
-                            </button>
+                        <div key={msg.id || idx} className="my-2 text-center animate-fade-in">
+                          <div className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-stone-100 dark:bg-stone-900 text-stone-600 dark:text-stone-400 border border-stone-200 dark:border-stone-800 text-[11px] font-medium max-w-[90%] shadow-2xs">
+                            <AlertCircle size={13} className="shrink-0 text-stone-500" />
+                            <span>{msg.text}</span>
                           </div>
                         </div>
                       );
-                    })
-                  )}
+                    }
+
+                    return (
+                      <div
+                        key={msg.id || idx}
+                        className={`flex flex-col ${isUser ? 'items-end' : 'items-start'} group relative`}
+                      >
+                        <div className="flex items-end gap-2 max-w-[88%]">
+                          {!isUser && (
+                            <div className="w-6 h-6 rounded-lg bg-stone-900 text-white dark:bg-white dark:text-stone-900 flex items-center justify-center shrink-0 mb-1 shadow-xs text-[10px] font-black font-heading">
+                              PX
+                            </div>
+                          )}
+
+                          <div
+                            className={`px-4 py-2.5 text-xs sm:text-[13px] leading-relaxed whitespace-pre-wrap ${
+                              isUser
+                                ? 'bg-stone-900 text-white dark:bg-white dark:text-stone-900 rounded-2xl rounded-br-xs shadow-xs font-normal'
+                                : 'bg-white text-stone-900 dark:bg-stone-900 dark:text-stone-100 rounded-2xl rounded-bl-xs border border-stone-200/80 dark:border-stone-800 shadow-2xs'
+                            }`}
+                          >
+                            {msg.attachment && (
+                              <div className="mb-2">
+                                <img 
+                                  src={msg.attachment} 
+                                  alt="attachment" 
+                                  className="max-w-[200px] sm:max-w-[240px] rounded-xl border border-stone-200 dark:border-stone-700 shadow-xs" 
+                                />
+                              </div>
+                            )}
+                            <div>
+                              {formatMessageText(msg.text)}
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Timestamp and action icons */}
+                        <div className={`flex items-center gap-1 mt-1 px-1 text-[10px] text-stone-400 ${isUser ? 'mr-1' : 'ml-8'}`}>
+                          <span>{msg.time}</span>
+                          {isUser && (
+                            <CheckCheck size={12} className="text-stone-400 inline ml-0.5" />
+                          )}
+                          <button
+                            onClick={() => copyMessageText(msg.id || `${idx}`, msg.text)}
+                            className="opacity-0 group-hover:opacity-100 transition-opacity ml-1.5 hover:text-stone-700 dark:hover:text-stone-300 cursor-pointer"
+                            title="Copy message text"
+                          >
+                            {copiedMsgId === (msg.id || `${idx}`) ? (
+                              <Check size={11} className="text-emerald-500" />
+                            ) : (
+                              <Copy size={11} />
+                            )}
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
 
                   {/* Typing Indicator */}
                   {isTyping && (
                     <div className="flex items-end gap-2 max-w-[85%] animate-fade-in">
-                      <div className="w-6 h-6 rounded-full bg-stone-900 text-white dark:bg-white dark:text-stone-900 flex items-center justify-center flex-shrink-0 mb-1">
-                        <Bot size={13} />
+                      <div className="w-6 h-6 rounded-lg bg-stone-900 text-white dark:bg-white dark:text-stone-900 flex items-center justify-center shrink-0 mb-1 text-[10px] font-black font-heading">
+                        PX
                       </div>
-                      <div className="px-3.5 py-2 bg-stone-100 dark:bg-stone-900 rounded-2xl rounded-bl-xs border border-stone-200/60 dark:border-stone-800 flex items-center gap-1.5 h-8">
+                      <div className="px-3.5 py-2 bg-white dark:bg-stone-900 rounded-2xl rounded-bl-xs border border-stone-200/80 dark:border-stone-800 flex items-center gap-1.5 h-8 shadow-2xs">
                         <span className="w-1.5 h-1.5 bg-stone-900 dark:bg-white rounded-full animate-bounce" />
                         <span className="w-1.5 h-1.5 bg-stone-900 dark:bg-white rounded-full animate-bounce [animation-delay:0.15s]" />
                         <span className="w-1.5 h-1.5 bg-stone-900 dark:bg-white rounded-full animate-bounce [animation-delay:0.3s]" />
@@ -1091,30 +945,15 @@ export const SupportChat: React.FC<SupportChatProps> = ({ isOpen, onClose, user,
                   <div ref={messagesEndRef} />
                 </div>
 
-                {/* Quick Topic Pills Bar (when active) */}
-                {messages.length > 0 && !isClosed && (
-                  <div className="px-3 py-1.5 bg-stone-50/90 dark:bg-stone-900/60 border-t border-stone-200/60 dark:border-stone-800 flex items-center gap-1.5 overflow-x-auto no-scrollbar flex-shrink-0">
-                    {QUICK_TOPICS.map((topic) => (
-                      <button
-                        key={topic.id}
-                        onClick={() => handleSendMessage(topic.query, topic.botAnswer)}
-                        className="flex-shrink-0 px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-white dark:bg-stone-900 hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-700 dark:text-stone-300 border border-stone-200/80 dark:border-stone-700/80 transition flex items-center gap-1 shadow-2xs cursor-pointer"
-                      >
-                        {topic.icon}
-                        <span>{topic.title}</span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-
-                {/* Emoji Quick Bar Popover */}
-                {showEmojiPicker && !isClosed && (
-                  <div className="px-3 py-2 bg-stone-100 dark:bg-stone-900 border-t border-stone-200 dark:border-stone-800 flex items-center gap-2 overflow-x-auto no-scrollbar flex-shrink-0 animate-scale-in">
-                    {['👍', '🙏', '💳', '📄', '⚡', '✨', '😊', '🔍', '🚀', '✅'].map((emoji) => (
+                {/* Emoji Quick Picker Popup */}
+                {showEmojiPicker && (
+                  <div className="p-2 bg-white dark:bg-stone-900 border-t border-stone-200 dark:border-stone-800 flex items-center gap-1.5 overflow-x-auto flex-shrink-0 animate-fade-in">
+                    {EMOJIS.map((emoji) => (
                       <button
                         key={emoji}
+                        type="button"
                         onClick={() => insertEmoji(emoji)}
-                        className="p-1.5 hover:bg-white dark:hover:bg-stone-800 rounded-lg text-sm transition transform hover:scale-125 cursor-pointer"
+                        className="p-1.5 hover:bg-stone-100 dark:hover:bg-stone-800 rounded-lg text-base transition cursor-pointer"
                       >
                         {emoji}
                       </button>
@@ -1122,45 +961,44 @@ export const SupportChat: React.FC<SupportChatProps> = ({ isOpen, onClose, user,
                   </div>
                 )}
 
-                {/* Bottom Input Area / Closed Session Handler */}
+                {/* Chat Input Container */}
                 {isClosed ? (
-                  /* REQUIREMENT: "when users doesn't respond with in 10min and show chat has been closed" */
-                  <div className="p-4 bg-stone-50 dark:bg-stone-900/90 border-t border-stone-200/90 dark:border-stone-800 flex-shrink-0 space-y-2.5">
-                    <div className="flex items-start gap-2.5 p-3 rounded-xl bg-stone-100 dark:bg-stone-800 border border-stone-200 dark:border-stone-700 text-stone-800 dark:text-stone-200 text-xs">
-                      <Clock size={16} className="text-stone-500 dark:text-stone-400 shrink-0 mt-0.5" />
+                  <div className="p-3.5 bg-white dark:bg-stone-900 border-t border-stone-200/90 dark:border-stone-800 flex-shrink-0 space-y-2.5">
+                    <div className="flex items-start gap-2.5 p-3 rounded-xl bg-stone-50 dark:bg-stone-950 border border-stone-200 dark:border-stone-800 text-stone-800 dark:text-stone-200 text-xs">
+                      <Clock size={16} className="text-stone-400 shrink-0 mt-0.5" />
                       <div className="flex-1 min-w-0">
-                        <p className="font-bold text-[12px] font-heading">Chat has been closed</p>
-                        <p className="text-[11px] opacity-90 mt-0.5">
+                        <p className="font-bold text-[12px] font-heading text-stone-900 dark:text-white">Chat Session Closed</p>
+                        <p className="text-[11px] text-stone-500 dark:text-stone-400 mt-0.5">
                           {closedReason === 'inactivity_timeout'
-                            ? 'This session was automatically closed due to inactivity.'
-                            : 'This support conversation has ended.'}
+                            ? 'This session was closed due to 10 minutes of inactivity.'
+                            : 'This conversation has been closed.'}
                         </p>
                       </div>
                     </div>
 
                     <button
-                      id="support-start-new-chat-bottom-btn"
+                      id="support-restart-chat-btn"
                       onClick={handleStartNewChat}
-                      className="w-full py-3 px-4 rounded-xl bg-stone-900 hover:bg-black dark:bg-white dark:hover:bg-stone-100 text-white dark:text-stone-900 font-bold text-xs transition flex items-center justify-center gap-2 shadow-sm cursor-pointer"
+                      className="w-full py-2.5 px-4 rounded-xl bg-stone-900 hover:bg-black dark:bg-white dark:hover:bg-stone-100 text-white dark:text-stone-900 font-bold text-xs transition flex items-center justify-center gap-2 shadow-xs cursor-pointer"
                     >
                       <PlusCircle size={15} />
-                      <span>Start New Chat</span>
+                      <span>Start New Conversation</span>
                     </button>
                   </div>
                 ) : (
-                  <div className="p-3 bg-white dark:bg-stone-950 border-t border-stone-200/80 dark:border-stone-800 flex-shrink-0">
+                  <div className="p-3 bg-white dark:bg-stone-900 border-t border-stone-200/80 dark:border-stone-800 flex-shrink-0">
                     {attachmentData && (
                       <div className="mb-2 relative inline-block">
                         <img src={attachmentData} alt="attachment" className="h-16 w-16 object-cover rounded-xl border border-stone-200 dark:border-stone-700 shadow-sm" />
                         <button
                           onClick={clearAttachment}
-                          className="absolute -top-1.5 -right-1.5 bg-red-500 text-white p-0.5 rounded-full hover:bg-red-600 transition"
+                          className="absolute -top-1.5 -right-1.5 bg-stone-900 text-white p-0.5 rounded-full hover:bg-black transition"
                         >
                           <X size={12} />
                         </button>
                       </div>
                     )}
-                    <div className="flex items-end gap-2 bg-stone-100 dark:bg-stone-900 rounded-2xl p-1.5 border border-stone-200 dark:border-stone-800 focus-within:border-stone-900 dark:focus-within:border-stone-100 transition">
+                    <div className="flex items-end gap-1.5 bg-stone-100/90 dark:bg-stone-950 rounded-2xl p-1.5 border border-stone-200/90 dark:border-stone-800 focus-within:border-stone-900 dark:focus-within:border-stone-100 transition">
                       <input
                         type="file"
                         accept="image/*"
@@ -1172,9 +1010,9 @@ export const SupportChat: React.FC<SupportChatProps> = ({ isOpen, onClose, user,
                         type="button"
                         onClick={() => fileInputRef.current?.click()}
                         className="p-2 text-stone-400 hover:text-stone-600 dark:hover:text-stone-200 transition rounded-xl cursor-pointer"
-                        title="Attach proof"
+                        title="Attach image or receipt proof"
                       >
-                        <Paperclip size={18} />
+                        <Paperclip size={17} />
                       </button>
                       
                       <button
@@ -1183,7 +1021,7 @@ export const SupportChat: React.FC<SupportChatProps> = ({ isOpen, onClose, user,
                         className="p-2 text-stone-400 hover:text-stone-600 dark:hover:text-stone-200 transition rounded-xl cursor-pointer"
                         title="Insert emoji"
                       >
-                        <Smile size={18} />
+                        <Smile size={17} />
                       </button>
 
                       <textarea
@@ -1192,7 +1030,7 @@ export const SupportChat: React.FC<SupportChatProps> = ({ isOpen, onClose, user,
                         value={inputValue}
                         onChange={handleTextareaInput}
                         onKeyDown={handleKeyDown}
-                        placeholder="Write your message..."
+                        placeholder="Write a message..."
                         rows={1}
                         className="flex-1 bg-transparent py-2 text-xs sm:text-sm text-stone-900 dark:text-white placeholder:text-stone-400 resize-none outline-none max-h-24 custom-scrollbar leading-relaxed"
                       />
@@ -1201,44 +1039,33 @@ export const SupportChat: React.FC<SupportChatProps> = ({ isOpen, onClose, user,
                         id="support-chat-send-btn"
                         onClick={() => handleSendMessage()}
                         disabled={!inputValue.trim() && !attachmentData}
-                        className="w-9 h-9 rounded-xl bg-stone-900 hover:bg-black dark:bg-white dark:hover:bg-stone-100 text-white dark:text-stone-900 disabled:opacity-30 disabled:cursor-not-allowed transition flex items-center justify-center flex-shrink-0 shadow-sm cursor-pointer"
-                        title="Send message (Enter)"
+                        className="w-8 h-8 rounded-xl bg-stone-900 hover:bg-black dark:bg-white dark:hover:bg-stone-100 text-white dark:text-stone-900 disabled:opacity-20 disabled:cursor-not-allowed transition flex items-center justify-center shrink-0 shadow-xs cursor-pointer"
+                        title="Send message"
                       >
-                        <Send size={15} />
+                        <Send size={14} />
                       </button>
                     </div>
                   </div>
                 )}
               </div>
-            )}
-
-            {/* ================= VIEW 3: HELP & ARTICLES / FAQS ================= */}
-            {activeTab === 'help' && (
-              <div className="flex-1 flex flex-col min-h-0 bg-white dark:bg-stone-950 p-4 sm:p-5 overflow-y-auto custom-scrollbar">
-                <div className="mb-3">
-                  <h4 className="text-base font-bold text-stone-900 dark:text-white mb-0.5">
-                    Help & Knowledge Base
-                  </h4>
-                  <p className="text-xs text-stone-500 dark:text-stone-400">
-                    Search instant guides for subscriptions, UTR verification, file limits, and OCR tools.
-                  </p>
-                </div>
-
+            ) : (
+              /* ================= VIEW: FAQS & KNOWLEDGE BASE ================= */
+              <div className="flex-1 flex flex-col min-h-0 bg-stone-50/40 dark:bg-stone-950 p-4 sm:p-5 overflow-y-auto custom-scrollbar">
                 {/* Search Bar */}
-                <div className="relative mb-2.5 flex-shrink-0">
-                  <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-stone-400" />
+                <div className="relative mb-3 flex-shrink-0">
+                  <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-stone-400" />
                   <input
                     id="support-faq-search"
                     type="text"
                     value={faqSearch}
                     onChange={(e) => setFaqSearch(e.target.value)}
-                    placeholder="Search articles & FAQs..."
-                    className="w-full pl-9 pr-3 py-2 bg-stone-50 dark:bg-stone-900 rounded-xl border border-stone-200 dark:border-stone-800 text-xs text-stone-900 dark:text-white placeholder:text-stone-400 focus:outline-none focus:border-emerald-500 transition"
+                    placeholder="Search articles & questions..."
+                    className="w-full pl-9 pr-3.5 py-2.5 bg-white dark:bg-stone-900 rounded-xl border border-stone-200/90 dark:border-stone-800 text-xs text-stone-900 dark:text-white placeholder:text-stone-400 focus:outline-none focus:border-stone-900 dark:focus:border-stone-100 transition shadow-2xs"
                   />
                 </div>
 
-                {/* Category Filter Pills */}
-                <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-2.5 mb-1 flex-shrink-0">
+                {/* Category Pills */}
+                <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-2.5 mb-2 flex-shrink-0">
                   {faqCategories.map((cat) => (
                     <button
                       key={cat}
@@ -1246,10 +1073,10 @@ export const SupportChat: React.FC<SupportChatProps> = ({ isOpen, onClose, user,
                         setSelectedFaqCategory(cat);
                         setExpandedFaq(null);
                       }}
-                      className={`flex-shrink-0 px-2.5 py-1 rounded-lg text-[11px] font-semibold transition ${
+                      className={`shrink-0 px-2.5 py-1 rounded-lg text-[11px] font-bold transition cursor-pointer ${
                         selectedFaqCategory === cat
                           ? 'bg-stone-900 text-white dark:bg-white dark:text-stone-900 shadow-2xs'
-                          : 'bg-stone-100 dark:bg-stone-800/80 text-stone-600 dark:text-stone-400 hover:bg-stone-200 dark:hover:bg-stone-700/80'
+                          : 'bg-white dark:bg-stone-900 text-stone-600 dark:text-stone-400 hover:bg-stone-100 dark:hover:bg-stone-800 border border-stone-200/60 dark:border-stone-800'
                       }`}
                     >
                       {cat}
@@ -1261,7 +1088,7 @@ export const SupportChat: React.FC<SupportChatProps> = ({ isOpen, onClose, user,
                 <div className="space-y-2 flex-1 overflow-y-auto custom-scrollbar">
                   {filteredFaqs.length === 0 ? (
                     <div className="py-8 text-center text-xs text-stone-400">
-                      No matching articles found. You can ask directly in the chat tab.
+                      No matching questions found.
                     </div>
                   ) : (
                     filteredFaqs.map((faq, idx) => {
@@ -1269,35 +1096,35 @@ export const SupportChat: React.FC<SupportChatProps> = ({ isOpen, onClose, user,
                       return (
                         <div
                           key={idx}
-                          className="rounded-xl border border-stone-200/80 dark:border-stone-800 bg-stone-50/50 dark:bg-stone-900/40 overflow-hidden"
+                          className="rounded-2xl border border-stone-200/80 dark:border-stone-800 bg-white dark:bg-stone-900 shadow-2xs overflow-hidden"
                         >
                           <button
                             onClick={() => setExpandedFaq(isItemOpen ? null : idx)}
-                            className="w-full p-3 text-left flex items-start justify-between gap-2 text-xs font-semibold text-stone-800 dark:text-stone-200 hover:text-emerald-600 dark:hover:text-emerald-400 transition"
+                            className="w-full p-3.5 text-left flex items-start justify-between gap-2 text-xs font-semibold text-stone-800 dark:text-stone-200 hover:text-stone-900 dark:hover:text-white transition cursor-pointer"
                           >
                             <div className="flex-1 min-w-0 pr-1">
-                              <span className="block">{faq.q}</span>
-                              <span className="inline-block mt-1 px-1.5 py-0.5 rounded text-[9px] font-semibold uppercase tracking-wider bg-stone-200/70 dark:bg-stone-800 text-stone-600 dark:text-stone-400">
+                              <span className="block font-bold">{faq.q}</span>
+                              <span className="inline-block mt-1 px-1.5 py-0.5 rounded text-[9px] font-semibold uppercase tracking-wider bg-stone-100 dark:bg-stone-800 text-stone-500 dark:text-stone-400">
                                 {faq.category}
                               </span>
                             </div>
-                            <ChevronRight
-                              size={14}
-                              className={`text-stone-400 transition-transform flex-shrink-0 mt-0.5 ${isItemOpen ? 'rotate-90' : ''}`}
+                            <ChevronDown
+                              size={15}
+                              className={`text-stone-400 transition-transform shrink-0 mt-0.5 ${isItemOpen ? 'rotate-180' : ''}`}
                             />
                           </button>
 
                           {isItemOpen && (
-                            <div className="px-3 pb-3 text-xs text-stone-600 dark:text-stone-400 leading-relaxed border-t border-stone-200/40 dark:border-stone-800/60 pt-2.5 bg-white/50 dark:bg-stone-950/50">
+                            <div className="px-3.5 pb-3.5 text-xs text-stone-600 dark:text-stone-400 leading-relaxed border-t border-stone-100 dark:border-stone-800/80 pt-3 bg-stone-50/50 dark:bg-stone-950/50">
                               <p className="whitespace-pre-line">{faq.a}</p>
                               <button
                                 onClick={() => {
                                   handleSendMessage(faq.q, faq.a);
-                                  setActiveTab('messages');
+                                  setActiveTab('chat');
                                 }}
-                                className="mt-2.5 text-[11px] font-semibold text-emerald-600 dark:text-emerald-400 hover:underline flex items-center gap-1 cursor-pointer"
+                                className="mt-3 text-[11px] font-bold text-stone-900 dark:text-white hover:underline flex items-center gap-1 cursor-pointer"
                               >
-                                Ask more about this in chat <ArrowLeft size={11} className="rotate-180" />
+                                Ask in Live Chat <ArrowLeft size={11} className="rotate-180" />
                               </button>
                             </div>
                           )}
@@ -1307,68 +1134,21 @@ export const SupportChat: React.FC<SupportChatProps> = ({ isOpen, onClose, user,
                   )}
                 </div>
 
-                {/* Bottom Assistance Prompt */}
-                <div className="mt-3 p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-100 dark:border-emerald-900 flex items-center justify-between text-xs flex-shrink-0">
+                {/* Direct Live Help Banner */}
+                <div className="mt-3 p-3 rounded-2xl bg-stone-900 text-white dark:bg-stone-800 flex items-center justify-between text-xs shrink-0 shadow-sm">
                   <div>
-                    <span className="font-bold text-emerald-900 dark:text-emerald-200 block">Can't find what you need?</span>
-                    <span className="text-[11px] text-emerald-700 dark:text-emerald-400">Our live team is ready to assist.</span>
+                    <span className="font-bold block font-heading">Have a custom question?</span>
+                    <span className="text-[11px] text-stone-300">Talk directly with our team.</span>
                   </div>
                   <button
-                    onClick={() => setActiveTab('messages')}
-                    className="px-3 py-1.5 rounded-lg bg-emerald-600 text-white font-semibold hover:bg-emerald-700 transition cursor-pointer"
+                    onClick={() => setActiveTab('chat')}
+                    className="px-3 py-1.5 rounded-xl bg-white text-stone-900 dark:bg-white dark:text-stone-900 font-bold hover:bg-stone-100 transition cursor-pointer shadow-xs"
                   >
                     Open Chat
                   </button>
                 </div>
               </div>
             )}
-          </div>
-
-          {/* Bottom App Navigation Bar (Intercom / Crisp style) */}
-          <div className="px-4 py-2 bg-white dark:bg-stone-950 border-t border-stone-200/80 dark:border-stone-800 flex items-center justify-around flex-shrink-0 select-none">
-            <button
-              id="bottom-tab-home"
-              onClick={() => setActiveTab('home')}
-              className={`flex flex-col items-center gap-1 py-1 px-4 rounded-xl transition cursor-pointer ${
-                activeTab === 'home'
-                  ? 'text-stone-900 dark:text-white font-bold'
-                  : 'text-stone-400 hover:text-stone-600 dark:hover:text-stone-300'
-              }`}
-            >
-              <Home size={18} />
-              <span className="text-[10px]">Home</span>
-            </button>
-
-            <button
-              id="bottom-tab-messages"
-              onClick={() => setActiveTab('messages')}
-              className={`relative flex flex-col items-center gap-1 py-1 px-4 rounded-xl transition cursor-pointer ${
-                activeTab === 'messages'
-                  ? 'text-stone-900 dark:text-white font-bold'
-                  : 'text-stone-400 hover:text-stone-600 dark:hover:text-stone-300'
-              }`}
-            >
-              <div className="relative">
-                <MessageSquare size={18} />
-                {messages.length > 0 && !isClosed && (
-                  <span className="absolute -top-1 -right-1.5 w-2 h-2 rounded-full bg-emerald-500 ring-2 ring-white dark:ring-stone-950" />
-                )}
-              </div>
-              <span className="text-[10px]">Messages</span>
-            </button>
-
-            <button
-              id="bottom-tab-help"
-              onClick={() => setActiveTab('help')}
-              className={`flex flex-col items-center gap-1 py-1 px-4 rounded-xl transition cursor-pointer ${
-                activeTab === 'help'
-                  ? 'text-stone-900 dark:text-white font-bold'
-                  : 'text-stone-400 hover:text-stone-600 dark:hover:text-stone-300'
-              }`}
-            >
-              <BookOpen size={18} />
-              <span className="text-[10px]">Help</span>
-            </button>
           </div>
         </motion.div>
       </div>

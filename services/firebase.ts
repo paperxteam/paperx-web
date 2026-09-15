@@ -13,6 +13,7 @@ import {
   updateProfile,
   setPersistence,
   browserLocalPersistence,
+  browserSessionPersistence,
   indexedDBLocalPersistence,
   User as FirebaseUser
 } from 'firebase/auth';
@@ -31,7 +32,8 @@ import {
   getDocs,
   query,
   orderBy,
-  limit
+  limit,
+  writeBatch
 } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
 import { User, UserSession } from '../types';
@@ -56,8 +58,16 @@ try {
 // Initialize Firebase App
 const app = !getApps().length ? initializeApp(firebaseAppConfig) : getApp();
 
-// Initialize Auth (default persistence is browserLocalPersistence / indexedDBLocalPersistence automatically)
+// Initialize Auth
 export const auth = getAuth(app);
+
+// Apply initial session persistence setting (Auto-Restore Session preference)
+try {
+  if (typeof window !== 'undefined') {
+    const isAutoRestore = localStorage.getItem('pref_autoRestoreSession') !== 'false';
+    setPersistence(auth, isAutoRestore ? browserLocalPersistence : browserSessionPersistence).catch(() => {});
+  }
+} catch (_) {}
 
 // Initialize Firestore with long-polling resilience across Node.js & browser environments
 const dbId = firebaseConfig.firestoreDatabaseId && firebaseConfig.firestoreDatabaseId !== '(default)'
@@ -194,6 +204,8 @@ export const getAuthErrorMessage = (error: any, provider?: 'email' | 'google'): 
       return 'Network error. Please check your internet connection.';
     case 'auth/user-disabled':
       return 'This user account has been disabled.';
+    case 'auth/internal-error':
+      return 'An internal authentication error occurred. Please ensure Apple and Google providers are correctly configured in Firebase Console.';
     default:
       return error.message || 'Authentication failed. Please try again.';
   }
@@ -440,17 +452,26 @@ export const checkDeviceLimit = async (uid: string) => {
   if (!uid || typeof window === 'undefined') return;
   const deviceId = getDeviceId();
   const sessionsRef = collection(db, 'users', uid, 'sessions');
-  const snapshot = await getDocs(sessionsRef);
+  let snapshot;
+  try {
+    snapshot = await getDocs(sessionsRef);
+  } catch (e: any) {
+    // If offline, allow execution gracefully
+    console.warn("checkDeviceLimit offline notice:", e?.message || e);
+    return;
+  }
   
-  if (snapshot.size >= 5) {
-    const isAlreadyActive = snapshot.docs.some(doc => doc.id === deviceId);
+  const activeDocs = snapshot.docs.filter(docSnap => docSnap.data()?.revoked !== true);
+
+  if (activeDocs.length >= 5) {
+    const isAlreadyActive = activeDocs.some(doc => doc.id === deviceId);
     if (!isAlreadyActive) {
       const now = Date.now();
       const SevenDaysMs = 7 * 24 * 60 * 60 * 1000;
       let cleanedCount = 0;
 
       // 1. Auto-clean stale sessions older than 7 days
-      for (const sessionDoc of snapshot.docs) {
+      for (const sessionDoc of activeDocs) {
         const data = sessionDoc.data();
         const lastActiveTime = data.lastActive ? new Date(data.lastActive).getTime() : 0;
         if (!lastActiveTime || (now - lastActiveTime > SevenDaysMs)) {
@@ -462,13 +483,16 @@ export const checkDeviceLimit = async (uid: string) => {
       }
 
       if (cleanedCount > 0) {
-        const freshSnap = await getDocs(sessionsRef);
-        if (freshSnap.size < 5) return;
+        try {
+          const freshSnap = await getDocs(sessionsRef);
+          const freshActive = freshSnap.docs.filter(docSnap => docSnap.data()?.revoked !== true);
+          if (freshActive.length < 5) return;
+        } catch (_) {}
       }
 
       // 2. Auto-clean oldest inactive sessions if inactive > 24 hours
       const OneDayMs = 24 * 60 * 60 * 1000;
-      const sortedDocs = [...snapshot.docs].sort((a, b) => {
+      const sortedDocs = [...activeDocs].sort((a, b) => {
         const timeA = a.data().lastActive ? new Date(a.data().lastActive).getTime() : 0;
         const timeB = b.data().lastActive ? new Date(b.data().lastActive).getTime() : 0;
         return timeA - timeB;
@@ -520,26 +544,28 @@ export const registerWithEmail = async (
       code === 'auth/operation-not-allowed' || 
       msg.includes('operation-not-allowed') ||
       code.includes('api-key-not-valid') ||
-      msg.includes('api-key-not-valid') ||
-      code === 'auth/network-request-failed'
+      msg.includes('api-key-not-valid')
     ) {
-      console.info('[PaperX Auth] Seamlessly completing registration via resilient local fallback...');
-      const localUser = {
-        uid: 'usr_' + Date.now(),
-        email: email.trim(),
-        name: `${firstName} ${lastName}`.trim() || email.split('@')[0],
-        role: 'user',
-        plan: 'free',
-        dailyScansRemaining: 5,
-        createdAt: Date.now(),
-        getIdToken: async () => 'mock-token'
-      } as unknown as User;
-      
-      localStorage.setItem('paperx_user', JSON.stringify(localUser));
-      localStorage.setItem('paperx_auth_state', JSON.stringify({ isAuthenticated: true, user: localUser }));
-      
-      dispatchPaperXAuthChange(localUser);
-      return localUser;
+      console.info('[PaperX Auth] Seamlessly completing registration via resilient server fallback...');
+      const response = await fetch('/api/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: email.trim(),
+          password: pass,
+          firstName: firstName.trim(),
+          lastName: lastName.trim()
+        })
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to create account. Please try again.');
+      }
+
+                  await checkDeviceLimit(data.user.uid);
+      dispatchPaperXAuthChange(data.user);
+      return data.user;
     }
 
     throw firebaseErr;
@@ -563,34 +589,26 @@ export const loginWithEmail = async (email: string, pass: string): Promise<User>
       code === 'auth/operation-not-allowed' || 
       msg.includes('operation-not-allowed') ||
       code.includes('api-key-not-valid') ||
-      msg.includes('api-key-not-valid') ||
-      code === 'auth/network-request-failed'
+      msg.includes('api-key-not-valid')
     ) {
-      console.info('[PaperX Auth] Seamlessly logging in via resilient local fallback...');
-      const savedUserStr = localStorage.getItem('paperx_user');
-      let localUser: any = null;
-      
-      if (savedUserStr) {
-        localUser = JSON.parse(savedUserStr);
-        localUser.getIdToken = async () => 'mock-token';
-      } else {
-        localUser = {
-          uid: 'usr_' + Date.now(),
+      console.info('[PaperX Auth] Seamlessly logging in via resilient server fallback...');
+      const response = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
           email: email.trim(),
-          name: email.split('@')[0],
-          role: 'user',
-          plan: 'free',
-          dailyScansRemaining: 5,
-          createdAt: Date.now(),
-          getIdToken: async () => 'mock-token'
-        };
-        localStorage.setItem('paperx_user', JSON.stringify(localUser));
+          password: pass
+        })
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || 'Invalid email or password. Please check your credentials.');
       }
 
-      localStorage.setItem('paperx_auth_state', JSON.stringify({ isAuthenticated: true, user: localUser }));
-      
-      dispatchPaperXAuthChange(localUser as unknown as User);
-      return localUser as unknown as User;
+      await checkDeviceLimit(data.user.uid || data.user.id);
+      dispatchPaperXAuthChange(data.user);
+      return data.user;
     }
 
     throw firebaseErr;
@@ -771,20 +789,31 @@ export const confirmResetPassword = async (code: string, newPassword: string): P
  * Real Logout
  */
 export const logoutUser = async (): Promise<void> => {
+  console.log("logoutUser: starting...");
   const currentUid = auth.currentUser?.uid || getLocalSession()?.uid || getLocalSession()?.id;
+  
+  // Non-blocking cleanup: trigger it but do not await it
   if (currentUid && typeof window !== 'undefined') {
     const deviceId = getDeviceId();
-    try {
-      await deleteDoc(doc(db, 'users', currentUid, 'sessions', deviceId));
-    } catch (e) {
-      console.warn('Session delete error on logout:', e);
-    }
+    console.log("logoutUser: triggering background session cleanup...");
+    deleteDoc(doc(db, 'users', currentUid, 'sessions', deviceId)).then(() => {
+      console.log("logoutUser: background session cleanup successful");
+    }).catch(e => {
+      console.warn('logoutUser: background session cleanup failed (benign):', e);
+    });
   }
+  
+  console.log("logoutUser: clearing local session and dispatching null auth change...");
+  clearLocalSession();
   dispatchPaperXAuthChange(null);
+  
   try {
+    console.log("logoutUser: signing out...");
     await signOut(auth);
+    console.log("logoutUser: signed out successfully");
   } catch (e) {
-    console.warn('Sign out notice:', e);
+    console.error('Sign out notice:', e);
+    throw new Error('Sign out failed');
   }
 };
 
@@ -819,24 +848,43 @@ export const updateUserInFirestore = async (uid: string, data: Partial<User>): P
 };
 
 /**
- * Sync Documents from Firestore
+ * Sync Documents from Firestore with Instant Real-Time onSnapshot & Retention Sync
  */
 export const subscribeToUserDocuments = (uid: string, callback: (docs: any[]) => void) => {
+  if (!uid) return () => {};
   try {
-    const q = query(
-      collection(db, 'users', uid, 'documents'),
-      orderBy('timestamp', 'desc'),
-      limit(10000)
-    );
-    return onSnapshot(q, (snapshot) => {
+    const colRef = collection(db, 'users', uid, 'documents');
+
+    const parseDocs = (snapshot: any) => {
       const docs: any[] = [];
-      snapshot.forEach(docSnap => {
-        docs.push({ id: docSnap.id, ...docSnap.data() });
+      snapshot.forEach((docSnap: any) => {
+        const data = docSnap.data();
+        const timestamp = typeof data.timestamp === 'number' && !isNaN(data.timestamp)
+          ? data.timestamp
+          : (data.createdAt ? new Date(data.createdAt).getTime() : (data.date ? new Date(data.date).getTime() : Date.now()));
+        docs.push({
+          id: docSnap.id,
+          ...data,
+          timestamp,
+          retentionYears: data.retentionYears || 5,
+          retentionDaysRecent: data.retentionDaysRecent || 30,
+          isArchived5Years: true
+        });
       });
+      docs.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+      return docs;
+    };
+
+    const unsubscribe = onSnapshot(colRef, (snapshot) => {
+      const docs = parseDocs(snapshot);
       callback(docs);
     }, (error) => {
-      console.warn('Firestore offline / connection notice for documents:', error.message);
+      console.warn('Firestore documents subscription notice:', error.message);
     });
+
+    return () => {
+      if (unsubscribe) unsubscribe();
+    };
   } catch (err) {
     console.warn('Firestore subscribe notice:', err);
     return () => {};
@@ -844,22 +892,42 @@ export const subscribeToUserDocuments = (uid: string, callback: (docs: any[]) =>
 };
 
 /**
- * Add a document to Firestore
+ * Add / Update a document in Firestore with real-time sync and 30-day recent & 5-year preservation
  */
 export const addDocumentToFirestore = async (uid: string, docData: any): Promise<void> => {
+  if (!uid || !docData) return;
   try {
-    const docRef = doc(db, 'users', uid, 'documents', docData.id);
+    const docId = docData.id || `doc_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+    const docRef = doc(db, 'users', uid, 'documents', docId);
     const safeDocData = { ...docData };
-    
-    // Firestore has a 1MB limit. Only strip dataUrl if it is too large.
+
+    const timestamp = typeof safeDocData.timestamp === 'number' && !isNaN(safeDocData.timestamp)
+      ? safeDocData.timestamp
+      : Date.now();
+    const fiveYearsMs = 5 * 365.25 * 24 * 60 * 60 * 1000;
+    const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
+    const expiresAt = safeDocData.expiresAt || new Date(timestamp + fiveYearsMs).toISOString();
+    const recentUntil = safeDocData.recentUntil || new Date(timestamp + thirtyDaysMs).toISOString();
+
+    // Firestore has a 1MB limit. Only strip dataUrl if it exceeds ~750KB
     if (safeDocData.dataUrl && safeDocData.dataUrl.length > 750000) {
-        delete safeDocData.dataUrl;
+      delete safeDocData.dataUrl;
     }
 
-    await setDoc(docRef, {
+    const payload = {
       ...safeDocData,
-      createdAt: new Date().toISOString()
-    });
+      id: docId,
+      timestamp,
+      retentionYears: 5,
+      isArchived5Years: true,
+      retentionDaysRecent: 30,
+      recentUntil,
+      expiresAt,
+      createdAt: safeDocData.createdAt || new Date(timestamp).toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+
+    await setDoc(docRef, payload, { merge: true });
   } catch (err) {
     console.warn('Firestore add document notice (offline/unavailable):', err);
   }
@@ -869,6 +937,7 @@ export const addDocumentToFirestore = async (uid: string, docData: any): Promise
  * Delete a document from Firestore
  */
 export const deleteDocumentFromFirestore = async (uid: string, docId: string): Promise<void> => {
+  if (!uid || !docId) return;
   try {
     const docRef = doc(db, 'users', uid, 'documents', docId);
     await deleteDoc(docRef);
@@ -978,34 +1047,25 @@ export const recordUserSession = async (userId: string) => {
   if (!userId || typeof window === 'undefined') return;
   const deviceId = getDeviceId();
   
-  const deviceInfo = await getDeviceName();
-  const now = new Date().toISOString();
-
-  const sessionRef = doc(db, 'users', userId, 'sessions', deviceId);
   try {
-    const sessionDoc = await getDoc(sessionRef);
-    if (!sessionDoc.exists()) {
-      await setDoc(sessionRef, {
-        id: deviceId,
-        userId,
-        deviceName: deviceInfo.name,
-        deviceType: deviceInfo.type,
-        browser: deviceInfo.browser,
-        os: deviceInfo.os,
-        lastActive: now,
-        loginTime: now
-      });
-    } else {
-      await updateDoc(sessionRef, {
-        lastActive: now,
-        browser: deviceInfo.browser,
-        os: deviceInfo.os,
-        deviceName: deviceInfo.name,
-        deviceType: deviceInfo.type
-      });
-    }
-  } catch (e) {
-    console.error("Failed to record session", e);
+    const deviceInfo = await getDeviceName();
+    const now = new Date().toISOString();
+    const sessionRef = doc(db, 'users', userId, 'sessions', deviceId);
+
+    // Using setDoc with { merge: true } creates or updates without requiring getDoc server roundtrip
+    await setDoc(sessionRef, {
+      id: deviceId,
+      userId,
+      deviceName: deviceInfo.name,
+      deviceType: deviceInfo.type,
+      browser: deviceInfo.browser,
+      os: deviceInfo.os,
+      lastActive: now,
+      loginTime: now
+    }, { merge: true });
+  } catch (e: any) {
+    // Silently ignore offline network/cache errors so app execution is never interrupted
+    console.warn("Session recording offline notice:", e?.message || e);
   }
 };
 
@@ -1013,7 +1073,8 @@ export const subscribeToUserSessions = (userId: string, callback: (sessions: Use
   if (!userId) return () => {};
   const sessionsRef = collection(db, 'users', userId, 'sessions');
   return onSnapshot(sessionsRef, (snapshot) => {
-    const sessions = snapshot.docs.map(doc => doc.data() as UserSession);
+    const rawSessions = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id }) as UserSession);
+    const sessions = rawSessions.filter(s => s.revoked !== true);
     const deviceId = getDeviceId();
     const formattedSessions = sessions.map(s => ({
       ...s,
@@ -1036,7 +1097,11 @@ export const monitorCurrentSession = (userId: string, onRevoked: () => void) => 
   
   let isInitial = true;
   return onSnapshot(sessionRef, (snapshot) => {
-    if (!snapshot.exists() && !isInitial) {
+    const data = snapshot.data();
+    // Trigger revocation if:
+    // 1. The session document is deleted
+    // 2. The session document explicitly has a 'revoked' flag set to true
+    if (!isInitial && (!snapshot.exists() || data?.revoked === true)) {
       onRevoked();
     }
     isInitial = false;
@@ -1046,17 +1111,49 @@ export const monitorCurrentSession = (userId: string, onRevoked: () => void) => 
 export const removeAllOtherSessions = async (userId: string) => {
   if (!userId) return;
   const deviceId = getDeviceId();
+  console.log('removeAllOtherSessions: starting for userId:', userId, 'deviceId:', deviceId);
   try {
     const sessionsRef = collection(db, 'users', userId, 'sessions');
+    console.log('removeAllOtherSessions: fetching all sessions...');
     const snapshot = await getDocs(sessionsRef);
-    const batch = snapshot.docs.map(async (docSnap) => {
-      if (docSnap.id !== deviceId) {
-        await deleteDoc(doc(db, 'users', userId, 'sessions', docSnap.id));
-      }
-    });
-    await Promise.all(batch);
+    console.log('removeAllOtherSessions: fetched', snapshot.size, 'sessions');
+    
+    if (snapshot.empty) {
+      console.log('removeAllOtherSessions: no sessions to update');
+      return;
+    }
+
+    const sessionsToUpdate = snapshot.docs.filter(docSnap => 
+      docSnap.id !== deviceId && docSnap.data().revoked !== true
+    );
+    if (sessionsToUpdate.length === 0) {
+      console.log('removeAllOtherSessions: no other sessions to update');
+      return;
+    }
+
+    console.log('removeAllOtherSessions: updating', sessionsToUpdate.length, 'sessions in batches of 500');
+
+    // Firestore write batch limit is 500
+    const BATCH_SIZE = 500;
+    const batchPromises = [];
+    for (let i = 0; i < sessionsToUpdate.length; i += BATCH_SIZE) {
+      const batch = writeBatch(db);
+      const batchDocs = sessionsToUpdate.slice(i, i + BATCH_SIZE);
+      
+      batchDocs.forEach((docSnap) => {
+        batch.delete(doc(db, 'users', userId, 'sessions', docSnap.id));
+      });
+
+      console.log(`removeAllOtherSessions: committing batch ${Math.floor(i / BATCH_SIZE) + 1}...`);
+      batchPromises.push(batch.commit());
+    }
+    
+    await Promise.all(batchPromises);
+
+    console.log(`Successfully set revoked flag for ${sessionsToUpdate.length} other sessions.`);
   } catch (e) {
-    console.error("Failed to remove other sessions", e);
+    console.error("Failed to update other sessions", e);
+    throw e; // Re-throw to handle in UI
   }
 };
 
