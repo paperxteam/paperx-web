@@ -79,7 +79,7 @@ export const GuestToolView: React.FC<GuestToolViewProps> = ({
     <div className="min-h-screen bg-stone-50 dark:bg-gray-950 text-gray-900 dark:text-gray-100 flex flex-col selection:bg-stone-300 selection:text-stone-900">
       {/* Top Announcement Banner if active */}
       {appSettings?.bannerActive && appSettings?.bannerText && (
-        <div className="bg-gradient-to-r from-[#FF671F] via-amber-500 to-[#046A38] text-white text-xs sm:text-sm font-semibold py-2 px-4 text-center z-50 shadow-md">
+        <div className="bg-gradient-to-r from-indigo-600 via-sky-500 to-indigo-600 text-white text-xs sm:text-sm font-semibold py-2 px-4 text-center z-50 shadow-md">
           {appSettings.bannerText}
         </div>
       )}
@@ -229,7 +229,19 @@ export const GuestToolView: React.FC<GuestToolViewProps> = ({
         <div className="w-full bg-white dark:bg-gray-900 rounded-3xl border border-stone-200/80 dark:border-stone-800 shadow-xl overflow-hidden p-6 sm:p-8 md:p-10 mb-12">
           {activeToolId === 'voice-to-pdf' ? (
             <VoiceWorkspace onComplete={onProcessedFile} />
-          ) : activeToolId === 'create-pdf' || activeToolId === 'text-to-pdf' || activeToolId === 'summarize-pdf' || activeToolId === 'rewrite-pdf' || activeToolId === 'translate-pdf' ? (
+          ) : [
+            'create-document',
+            'create-pdf',
+            'text-to-pdf',
+            'resume-builder',
+            'letter-templates',
+            'invoice-creator',
+            'certificate-creator',
+            'form-creator',
+            'summarize-pdf',
+            'rewrite-pdf',
+            'translate-pdf'
+          ].includes(activeToolId || '') ? (
             <TextWorkspace toolId={activeToolId} socket={socket} docId="guest-doc" onComplete={onProcessedFile} />
           ) : (
             <div className="space-y-6">

@@ -1,12 +1,12 @@
 {
-  "projectId": "robotic-opus-s0bnn",
-  "appId": "1:468428996134:web:b1a86924b6f21bbc05b0e7",
-  "apiKey": "AIzaSyA3_012L7AqK5B14TJwtrQO4Va2dmbn-G8",
-  "authDomain": "robotic-opus-s0bnn.firebaseapp.com",
+  "projectId": "paper-x-a541a",
+  "appId": "1:853704922437:web:f5ebd6746b8c52e6955a2c",
+  "apiKey": "AIzaSyCZJjyfbFKsoIW2CKlDo3mhsPWD7yaD0ao",
+  "authDomain": "paper-x-a541a.firebaseapp.com",
   "firestoreDatabaseId": "ai-studio-paperx-adca40c8-0091-490e-965a-88dd1201f6e4",
-  "storageBucket": "robotic-opus-s0bnn.firebasestorage.app",
-  "messagingSenderId": "468428996134",
+  "storageBucket": "paper-x-a541a.firebasestorage.app",
+  "messagingSenderId": "853704922437",
   "measurementId": "",
-  "oAuthClientId": "468428996134-fh6h1ummtdg7soefqg20vu4fsk23vr7e.apps.googleusercontent.com",
+  "oAuthClientId": "853704922437-rpva1rn3ftq263fqmskov0eatqplplkf.apps.googleusercontent.com",
   "recaptchaSiteKey": ""
 }

@@ -9,13 +9,13 @@ const BASE32_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
  * Decodes a Base32 string into a Uint8Array
  */
 function base32ToBytes(base32: string): Uint8Array {
-  const clean = base32.toUpperCase().replace(/=/g, '').replace(/\s+/g, '');
+  const clean = (typeof base32 === 'string' ? base32 : '').toUpperCase().replace(/=/g, '').replace(/\s+/g, '');
   let bits = 0;
   let value = 0;
   const bytes: number[] = [];
 
   for (let i = 0; i < clean.length; i++) {
-    const idx = BASE32_ALPHABET.indexOf(clean[i]);
+    const idx = BASE32_ALPHABET ? BASE32_ALPHABET.indexOf(clean[i]) : -1;
     if (idx === -1) continue;
     value = (value << 5) | idx;
     bits += 5;

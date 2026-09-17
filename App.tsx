@@ -206,6 +206,35 @@ import { ToastNotificationItem, BatchProcessResult } from './types';
 import { getTranslation, useAppTranslation, translateTool } from './translations';
 import { motion, AnimatePresence } from 'motion/react';
 
+// --- Professional Specular Brand Logo ---
+export const BrandLogo = ({ className = "text-xl sm:text-2xl" }: { className?: string }) => {
+  return (
+    <motion.span
+      className={`font-heading font-black tracking-tight select-none relative inline-block drop-shadow-sm ${className}`}
+      style={{
+        backgroundImage: "linear-gradient(115deg, #4338ca 0%, #4f46e5 25%, #6366f1 50%, #38bdf8 65%, #ffffff 70%, #38bdf8 75%, #6366f1 85%, #4338ca 100%)",
+        backgroundSize: "200% 100%",
+        WebkitBackgroundClip: "text",
+        WebkitTextFillColor: "transparent",
+        willChange: "background-position",
+        transform: "translateZ(0)",
+      }}
+      animate={{
+        backgroundPosition: ["200% 0%", "0% 0%"],
+      }}
+      transition={{
+        duration: 3.2,
+        repeat: Infinity,
+        ease: "easeInOut",
+      }}
+      whileHover={{ scale: 1.03, transition: { type: "spring", stiffness: 400, damping: 22 } }}
+      whileTap={{ scale: 0.96 }}
+    >
+      {APP_NAME}
+    </motion.span>
+  );
+};
+
 // --- Local IndexedDB for Large File Blobs ---
 const DB_NAME = 'PaperXFilesDB';
 const STORE_NAME = 'files';
@@ -455,7 +484,7 @@ const executeDirectAppDownload = async (
   let targetPlatform = validPlatform || 'Android';
   let ext = 'apk';
 
-  if (!validPlatform && userAgent) {
+  if (!validPlatform && userAgent && typeof userAgent.indexOf === 'function') {
     if (userAgent.indexOf("Mac") !== -1) {
       targetPlatform = 'macOS';
       ext = 'dmg';
@@ -929,6 +958,7 @@ const PdfSinglePageCanvas = ({ pdfDoc, pageNum, totalPages }: { pdfDoc: any; pag
 
     useEffect(() => {
         let isCancelled = false;
+        let renderTask: any = null;
         (async () => {
             try {
                 const page = await pdfDoc.getPage(pageNum);
@@ -942,14 +972,20 @@ const PdfSinglePageCanvas = ({ pdfDoc, pageNum, totalPages }: { pdfDoc: any; pag
                 canvas.height = viewport.height;
                 canvas.width = viewport.width;
 
-                await page.render({ canvasContext: context, viewport }).promise;
-            } catch (err) {
-                console.warn(`Error rendering PDF page ${pageNum}:`, err);
+                renderTask = page.render({ canvasContext: context, viewport });
+                await renderTask.promise;
+            } catch (err: any) {
+                if (err?.name !== 'RenderingCancelledException') {
+                    console.warn(`Error rendering PDF page ${pageNum}:`, err);
+                }
             }
         })();
 
         return () => {
             isCancelled = true;
+            if (renderTask && typeof renderTask.cancel === 'function') {
+                try { renderTask.cancel(); } catch (_) {}
+            }
         };
     }, [pdfDoc, pageNum]);
 
@@ -988,6 +1024,7 @@ const DocumentPreviewModal = ({
     useEffect(() => {
         if (!isOpen || !file) return;
         let isMounted = true;
+        let createdBlobUrl: string | null = null;
         setIsLoading(true);
         setFileUrl(null);
         setImageDataUrl(null);
@@ -995,15 +1032,18 @@ const DocumentPreviewModal = ({
 
         (async () => {
             try {
-                // 1. Check if raw dataUrl exists in IndexedDB
-                const storedDataUrl = await LocalFileStore.get(file.id);
+                // 1. Check if raw dataUrl exists in IndexedDB or on file directly
+                const storedDataUrl = (await LocalFileStore.get(file.id)) || file.dataUrl;
                 if (storedDataUrl && isMounted) {
-                    if (storedDataUrl.startsWith('data:image/')) {
+                    // Cache to local store if not already stored
+                    LocalFileStore.save(file.id, storedDataUrl);
+
+                    if (storedDataUrl.startsWith('data:image/') || file.type === 'IMAGE') {
                         setImageDataUrl(storedDataUrl);
                         setFileUrl(storedDataUrl);
                         setIsLoading(false);
                         return;
-                    } else if (storedDataUrl.startsWith('data:application/pdf')) {
+                    } else if (storedDataUrl.startsWith('data:application/pdf') || storedDataUrl.startsWith('data:application/octet-stream')) {
                         setFileUrl(storedDataUrl);
                         setIsLoading(false);
                         return;
@@ -1013,6 +1053,7 @@ const DocumentPreviewModal = ({
                 // 2. Fetch/create standard PDF blob
                 const blob = await getDocumentBlob(file, LocalFileStore.get);
                 const url = URL.createObjectURL(blob);
+                createdBlobUrl = url;
                 if (isMounted) {
                     setFileUrl(url);
                     setIsLoading(false);
@@ -1027,6 +1068,9 @@ const DocumentPreviewModal = ({
 
         return () => {
             isMounted = false;
+            if (createdBlobUrl) {
+                try { URL.revokeObjectURL(createdBlobUrl); } catch (_) {}
+            }
         };
     }, [isOpen, file]);
 
@@ -1191,6 +1235,63 @@ const MONTH_NAMES: { [key: string]: string } = {
     '9': 'September', '10': 'October', '11': 'November', '12': 'December'
 };
 
+const getStoredDocTimestamp = (f: any): number => {
+    if (!f) return Date.now();
+    if (typeof f.timestamp === 'number' && !isNaN(f.timestamp) && f.timestamp > 0) {
+        return f.timestamp;
+    }
+    if (typeof f.timestamp === 'string') {
+        const parsed = new Date(f.timestamp).getTime();
+        if (!isNaN(parsed) && parsed > 0) return parsed;
+    }
+    if (f.timestamp && typeof f.timestamp === 'object') {
+        if (typeof f.timestamp.toMillis === 'function') {
+            try { return f.timestamp.toMillis(); } catch (e) {}
+        }
+        if (typeof f.timestamp.seconds === 'number' && f.timestamp.seconds > 0) {
+            return f.timestamp.seconds * 1000;
+        }
+        if (typeof f.timestamp._seconds === 'number' && f.timestamp._seconds > 0) {
+            return f.timestamp._seconds * 1000;
+        }
+    }
+    if (f.createdAt) {
+        if (typeof f.createdAt === 'number' && !isNaN(f.createdAt) && f.createdAt > 0) {
+            return f.createdAt;
+        }
+        if (typeof f.createdAt === 'object') {
+            if (typeof f.createdAt.toMillis === 'function') {
+                try { return f.createdAt.toMillis(); } catch (e) {}
+            }
+            if (typeof f.createdAt.seconds === 'number' && f.createdAt.seconds > 0) {
+                return f.createdAt.seconds * 1000;
+            }
+            if (typeof f.createdAt._seconds === 'number' && f.createdAt._seconds > 0) {
+                return f.createdAt._seconds * 1000;
+            }
+        }
+        const parsed = new Date(f.createdAt).getTime();
+        if (!isNaN(parsed) && parsed > 0) return parsed;
+    }
+    if (f.date) {
+        const parsed = new Date(f.date).getTime();
+        if (!isNaN(parsed) && parsed > 0) return parsed;
+    }
+    if (typeof f.id === 'string' && f.id.startsWith('doc_')) {
+        const parts = f.id.split('_');
+        if (parts.length >= 2) {
+            const parsedIdTs = parseInt(parts[1], 10);
+            if (!isNaN(parsedIdTs) && parsedIdTs > 1000000000000) {
+                return parsedIdTs;
+            }
+        }
+    }
+    if (!f._fallbackTs) {
+        f._fallbackTs = Date.now();
+    }
+    return f._fallbackTs;
+};
+
 const DocumentsView = ({ 
     files, 
     onDownload, 
@@ -1199,8 +1300,7 @@ const DocumentsView = ({
     onShare, 
     filter,
     onNavigateToDocuments,
-    onNavigateToRecent,
-    onSimulateAge
+    onNavigateToRecent
 }: { 
     files: StoredDocument[], 
     onDownload: (id: string, name: string) => void, 
@@ -1209,30 +1309,23 @@ const DocumentsView = ({
     onShare: (file: StoredDocument) => void, 
     filter?: 'recent',
     onNavigateToDocuments?: () => void,
-    onNavigateToRecent?: () => void,
-    onSimulateAge?: (id: string, daysAgo: number) => void
+    onNavigateToRecent?: () => void
 }) => {
     const [searchQuery, setSearchQuery] = useState('');
     const [searchYear, setSearchYear] = useState('');
     const [searchMonth, setSearchMonth] = useState('');
     const [searchDate, setSearchDate] = useState('');
 
-    const getDocTimestamp = (f: StoredDocument): number => {
-        if (typeof f.timestamp === 'number' && !isNaN(f.timestamp) && f.timestamp > 0) {
-            return f.timestamp;
-        }
-        if (f.date) {
-            const parsed = new Date(f.date).getTime();
-            if (!isNaN(parsed) && parsed > 0) return parsed;
-        }
-        if ((f as any).createdAt) {
-            const parsed = new Date((f as any).createdAt).getTime();
-            if (!isNaN(parsed) && parsed > 0) return parsed;
-        }
-        return Date.now();
-    };
+    const [now, setNow] = useState<number>(() => Date.now());
 
-    const now = Date.now();
+    useEffect(() => {
+        const interval = setInterval(() => {
+            setNow(Date.now());
+        }, 1000);
+        return () => clearInterval(interval);
+    }, []);
+
+    const getDocTimestamp = (f: StoredDocument): number => getStoredDocTimestamp(f);
     const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
     const fiveYearsMs = 5 * 365.25 * 24 * 60 * 60 * 1000;
     const thirtyDaysAgo = now - thirtyDaysMs;
@@ -1248,8 +1341,8 @@ const DocumentsView = ({
     // Files during their first 30 days of creation/activity
     const recentActivityFiles = allMappedFiles.filter(f => f.timestamp >= thirtyDaysAgo);
 
-    // All active documents preserved in the 5-Year Cloud Vault
-    const myDocumentsFiles = allMappedFiles.filter(f => f.timestamp >= fiveYearsAgo);
+    // Files that completed 30 days in Recent Activity, automatically saved in My Documents for 5 years
+    const myDocumentsFiles = allMappedFiles.filter(f => f.timestamp < thirtyDaysAgo && f.timestamp >= fiveYearsAgo);
 
     let displayFiles = filter === 'recent' ? recentActivityFiles : myDocumentsFiles;
 
@@ -1304,12 +1397,12 @@ const DocumentsView = ({
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 sm:gap-4 mb-6">
                 <div>
                     <h2 className="text-xl sm:text-2xl font-heading font-black tracking-tight">
-                        {filter === 'recent' ? 'Recent Activity (Last 30 Days)' : 'My Documents (Last 5 Years)'}
+                        {filter === 'recent' ? 'Recent Activity (Last 30 Days)' : 'My Documents (Last 5 years)'}
                     </h2>
                     <p className="text-xs text-stone-500 font-medium mt-0.5">
                         {filter === 'recent' 
                             ? 'Files created or processed in the last 30 days — synced to Cloud & saved for offline view & download.' 
-                            : 'All documents preserved in your 5-year cloud vault — offline view & instant download ready.'}
+                            : 'All saved documents — offline view & instant download ready.'}
                     </p>
                 </div>
                 <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 w-full sm:w-auto">
@@ -1416,10 +1509,10 @@ const DocumentsView = ({
                         </div>
                         <div>
                             <p className="text-xs sm:text-sm font-bold text-emerald-950 dark:text-emerald-200">
-                                {myDocumentsFiles.length} file{myDocumentsFiles.length > 1 ? 's' : ''} in My Documents (5-Year Cloud Vault)
+                                {myDocumentsFiles.length} file{myDocumentsFiles.length > 1 ? 's' : ''} in My Documents
                             </p>
                             <p className="text-[11px] sm:text-xs text-emerald-800/80 dark:text-emerald-400 font-medium">
-                                Files that completed 30 days in Recent Activity are safely stored in your 5-year cloud archive.
+                                Files that completed 30 days in Recent Activity are safely stored in My Documents.
                             </p>
                         </div>
                     </div>
@@ -1515,9 +1608,16 @@ const DocumentsView = ({
                             const fullDateStr = validDate
                                 ? validDate.toLocaleString([], { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' })
                                 : (file.date || 'Recent');
-                            const shortDateStr = validDate
-                                ? validDate.toLocaleDateString([], { month: 'short', day: 'numeric' })
-                                : (file.date || 'Recent');
+                            
+                            const diffSec = validDate ? Math.floor(Math.max(0, now - file.timestamp) / 1000) : 99999;
+                            let relativeDateStr = 'Recent';
+                            if (validDate) {
+                                if (diffSec < 15) relativeDateStr = 'Just now';
+                                else if (diffSec < 60) relativeDateStr = `${diffSec}s ago`;
+                                else if (diffSec < 3600) relativeDateStr = `${Math.floor(diffSec / 60)}m ago`;
+                                else if (diffSec < 86400) relativeDateStr = `${Math.floor(diffSec / 3600)}h ago`;
+                                else relativeDateStr = validDate.toLocaleDateString([], { month: 'short', day: 'numeric' });
+                            }
 
                             const msPassed = Math.max(0, now - file.timestamp);
                             const msLeft = Math.max(0, (file.timestamp + thirtyDaysMs) - now);
@@ -1533,11 +1633,11 @@ const DocumentsView = ({
                                     <div className="min-w-0 flex-1 pr-1">
                                         <span className="font-bold text-gray-900 dark:text-white truncate text-xs sm:text-sm hover:underline block tracking-tight">{file.name}</span>
                                         <div className="flex items-center gap-1.5 text-[11px] text-stone-400 font-medium">
-                                            <span>{shortDateStr}</span>
+                                            <span title={fullDateStr}>{relativeDateStr}</span>
                                             {filter === 'recent' ? (
                                                 <span className="text-amber-600 dark:text-amber-400 font-bold">• In My Docs in {daysLeft}d</span>
                                             ) : (
-                                                <span className="text-emerald-600 dark:text-emerald-400 font-bold">• 5-Yr Vault</span>
+                                                <span className="text-emerald-600 dark:text-emerald-400 font-bold">• Saved</span>
                                             )}
                                         </div>
                                     </div>
@@ -1559,36 +1659,15 @@ const DocumentsView = ({
                                                 To My Docs in {daysLeft}d
                                             </span>
                                         ) : (
-                                            <span className="px-2 py-0.5 bg-emerald-100/90 dark:bg-emerald-950/70 text-emerald-800 dark:text-emerald-300 rounded text-[10px] font-bold flex items-center gap-1" title={`Preserved in My Documents 5-Year Vault until ${expireYear}`}>
+                                            <span className="px-2 py-0.5 bg-emerald-100/90 dark:bg-emerald-950/70 text-emerald-800 dark:text-emerald-300 rounded text-[10px] font-bold flex items-center gap-1" title="Saved Document in My Documents">
                                                 <ShieldCheck size={10} />
-                                                5-Yr Vault ({expireYear})
+                                                Saved
                                             </span>
                                         )}
                                     </div>
                                     {file.action && <span className="text-[10px] text-stone-400 font-medium truncate">{file.action}</span>}
                                 </div>
                                 <div className="col-span-5 sm:col-span-4 md:col-span-4 lg:col-span-2 flex items-center justify-end gap-1 sm:gap-1.5 shrink-0">
-                                    {/* Test Simulation Button: fast forward 31 days or reset to 0 days */}
-                                    {onSimulateAge && (
-                                        filter === 'recent' ? (
-                                            <button 
-                                                onClick={() => onSimulateAge(file.id, 31)} 
-                                                title="Test 30d Rule: Fast-forward 31 days to simulate move to My Documents" 
-                                                className="p-1.5 sm:p-2 text-amber-600 hover:text-amber-700 bg-amber-50 hover:bg-amber-100 dark:bg-amber-950/60 dark:text-amber-400 dark:hover:bg-amber-900/80 rounded-xl transition-all shadow-xs active:scale-95 cursor-pointer shrink-0"
-                                            >
-                                                <Clock size={14} className="sm:w-[15px] sm:h-[15px]" />
-                                            </button>
-                                        ) : (
-                                            <button 
-                                                onClick={() => onSimulateAge(file.id, 0)} 
-                                                title="Test 30d Rule: Reset to Recent Activity (0 days old)" 
-                                                className="p-1.5 sm:p-2 text-stone-600 hover:text-stone-900 bg-stone-100 hover:bg-stone-200 dark:bg-stone-800 dark:text-stone-300 dark:hover:bg-stone-700 rounded-xl transition-all shadow-xs active:scale-95 cursor-pointer shrink-0"
-                                            >
-                                                <History size={14} className="sm:w-[15px] sm:h-[15px]" />
-                                            </button>
-                                        )
-                                    )}
-
                                     {/* 1. Open File Preview In-App */}
                                     <button 
                                         onClick={() => onOpen(file)} 
@@ -2517,7 +2596,7 @@ const LandingView = ({
 
       {/* Dynamic Announcement Banner (e.g. Independence Day / Festival Mode) */}
       {appSettings.bannerActive && appSettings.bannerText && (
-        <div className="bg-gradient-to-r from-[#FF671F] via-amber-500 to-[#046A38] text-white text-xs sm:text-sm font-semibold py-2 px-4 text-center relative z-[60] shadow-md flex items-center justify-center gap-2">
+        <div className="bg-gradient-to-r from-indigo-600 via-sky-500 to-indigo-600 text-white text-xs sm:text-sm font-semibold py-2 px-4 text-center relative z-[60] shadow-md flex items-center justify-center gap-2">
           <span>{appSettings.bannerText}</span>
         </div>
       )}
@@ -2526,27 +2605,9 @@ const LandingView = ({
       <header className="fixed top-0 left-0 right-0 z-50 bg-transparent backdrop-blur-md border-b border-stone-200 dark:border-stone-800 transition-all duration-500">
         <div className="max-w-7xl mx-auto px-6 h-14 flex items-center justify-between">
           <div className="flex items-center gap-3 cursor-pointer group text-gray-900 dark:text-white" onClick={() => navigate('/')}>
-             <motion.div 
-                whileHover={{ scale: 1.05, rotateZ: -1 }}
-                whileTap={{ scale: 0.95 }}
-                className="relative inline-block"
-             >
-                <motion.span 
-                    style={{ 
-                        willChange: "background-position", 
-                        transform: "translateZ(0)",
-                        backgroundImage: "linear-gradient(to right, #FF671F, #e5e7eb, #046A38, #e5e7eb, #FF671F)",
-                        backgroundSize: "200% auto",
-                        WebkitBackgroundClip: "text",
-                        WebkitTextFillColor: "transparent"
-                    }}
-                    animate={{ backgroundPosition: ["0% center", "200% center"] }}
-                    transition={{ repeat: Infinity, duration: 4, ease: "linear" }}
-                    className="font-heading font-black text-2xl tracking-tighter drop-shadow-sm block"
-                >
-                    {APP_NAME}
-                </motion.span>
-             </motion.div>
+             <div className="relative inline-block">
+                <BrandLogo className="text-2xl tracking-tighter" />
+             </div>
           </div>
 
           <div className="hidden md:flex items-center gap-10">
@@ -2812,7 +2873,7 @@ const LandingView = ({
               <div className="flex flex-col md:flex-row justify-between items-center gap-4">
                   <div className="flex items-center gap-3 text-gray-900 dark:text-white">
                       <div className="flex items-center gap-2">
-                        <span className="font-heading font-black text-2xl tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-[#FF671F] via-gray-300 dark:via-gray-100 to-[#046A38] drop-shadow-sm">{APP_NAME}</span>
+                         <BrandLogo className="text-2xl tracking-tighter" />
                       </div>
                   </div>
                   <div className="flex items-center gap-6 text-sm text-gray-500 font-medium">
@@ -2900,7 +2961,7 @@ const SplashScreen = ({ onComplete }: { onComplete: () => void }) => {
           handleFinish();
         }}
         style={{ 
-          backgroundImage: "linear-gradient(90deg, #FF671F 0%, #d1d5db 25%, #046A38 50%, #d1d5db 75%, #FF671F 100%)",
+          backgroundImage: "linear-gradient(to right, #4f46e5, #0ea5e9, #6366f1, #0ea5e9, #4f46e5)",
           backgroundSize: "200% auto",
           WebkitBackgroundClip: "text",
           WebkitTextFillColor: "transparent",
@@ -3017,7 +3078,7 @@ const DashboardView = ({
             className="pb-6 w-full flex flex-col relative min-h-full"
         >
             {/* COMPACT HEADER - RESPONSIVE STICKY OFFSET */}
-            <div className={`sticky top-0 flex flex-col md:flex-row md:items-center justify-between border-b border-gray-100 dark:border-gray-800/80 pb-3 mb-5 bg-white/80 dark:bg-gray-900/85 backdrop-blur-2xl z-30 pt-3.5 px-4 sm:px-6 gap-3 transition-all duration-300 shadow-[0_10px_30px_rgba(0,0,0,0.02)] dark:shadow-[0_10px_30px_rgba(0,0,0,0.25)] ${isHeaderHidden ? '-translate-y-[120%] opacity-0 pointer-events-none' : 'translate-y-0 opacity-100'}`}>
+            <div className={`sticky top-0 flex flex-col md:flex-row md:items-center justify-between border-b border-black/[0.06] dark:border-white/[0.08] pb-3 mb-5 ios-glass-drawer z-30 pt-3.5 px-4 sm:px-6 gap-3 transition-all duration-300 ${isHeaderHidden ? '-translate-y-[120%] opacity-0 pointer-events-none' : 'translate-y-0 opacity-100'}`}>
                  <div className="flex items-center gap-3.5">
                      <h1 className="text-xl sm:text-2xl font-heading font-black text-gray-900 dark:text-white tracking-tight">{getGreeting()}, {displayUserName}</h1>
                     <div className="hidden sm:block h-4 w-px bg-gray-200 dark:bg-gray-800"></div>
@@ -3257,36 +3318,62 @@ const App: React.FC = () => {
 
   // Global Preference Sync Effect (Theme, Font Size & Accessibility)
   useEffect(() => {
-    // 1. Dark Mode Theme Sync
-    const savedDark = localStorage.getItem('pref_darkMode');
-    const isDark = user?.theme 
-      ? user.theme === 'dark'
-      : (savedDark !== null ? savedDark === 'true' : window.matchMedia('(prefers-color-scheme: dark)').matches);
+    const applyPreferences = () => {
+      // 1. Dark Mode Theme Sync
+      const savedDark = localStorage.getItem('pref_darkMode');
+      const isDark = savedDark !== null 
+        ? savedDark === 'true'
+        : (user?.theme ? user.theme === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches);
 
-    if (isDark) {
-      document.documentElement.classList.add('dark');
-    } else {
-      document.documentElement.classList.remove('dark');
-    }
+      if (isDark) {
+        document.documentElement.classList.add('dark');
+      } else {
+        document.documentElement.classList.remove('dark');
+      }
 
-    // 2. Font Size & Legibility
-    const fontSize = user?.fontSize || localStorage.getItem('pref_fontSize') || 'system';
-    const largerText = user?.largerTextEnabled !== undefined 
-      ? user.largerTextEnabled 
-      : (localStorage.getItem('pref_largerText') === 'true');
+      // 2. Font Size & Legibility
+      const fontSize = localStorage.getItem('pref_fontSize') || user?.fontSize || 'system';
+      const largerText = localStorage.getItem('pref_largerText') !== null
+        ? localStorage.getItem('pref_largerText') === 'true'
+        : (user?.largerTextEnabled !== undefined ? user.largerTextEnabled : false);
 
-    document.documentElement.setAttribute('data-font-size', fontSize);
-    document.documentElement.setAttribute('data-larger-text', String(largerText));
+      document.documentElement.setAttribute('data-font-size', fontSize);
+      document.documentElement.setAttribute('data-larger-text', String(largerText));
 
-    // 3. Scan & OCR Preferences Sync
-    if (user) {
-      if (user.autoSaveScan !== undefined) localStorage.setItem('pref_autoSaveScan', String(user.autoSaveScan));
-      if (user.autoCopyText !== undefined) localStorage.setItem('pref_autoCopyText', String(user.autoCopyText));
-      if (user.ocrLanguage) localStorage.setItem('pref_ocrLanguage', user.ocrLanguage);
-      if (user.pdfQuality) localStorage.setItem('pref_pdfQuality', user.pdfQuality);
-      if (user.namingPattern) localStorage.setItem('pref_namingPattern', user.namingPattern);
-    }
-  }, [user?.theme, user?.fontSize, user?.largerTextEnabled, user?.autoSaveScan, user?.autoCopyText, user?.ocrLanguage, user?.pdfQuality, user?.namingPattern]);
+      // 3. Scan & OCR Preferences Sync
+      if (user) {
+        if (user.autoSaveScan !== undefined && localStorage.getItem('pref_autoSaveScan') === null) {
+          localStorage.setItem('pref_autoSaveScan', String(user.autoSaveScan));
+        }
+        if (user.autoCopyText !== undefined && localStorage.getItem('pref_autoCopyText') === null) {
+          localStorage.setItem('pref_autoCopyText', String(user.autoCopyText));
+        }
+        if (user.ocrLanguage && localStorage.getItem('pref_ocrLanguage') === null) {
+          localStorage.setItem('pref_ocrLanguage', user.ocrLanguage);
+        }
+        if (user.pdfQuality && localStorage.getItem('pref_pdfQuality') === null) {
+          localStorage.setItem('pref_pdfQuality', user.pdfQuality);
+        }
+        if (user.namingPattern && localStorage.getItem('pref_namingPattern') === null) {
+          localStorage.setItem('pref_namingPattern', user.namingPattern);
+        }
+        if (user.pdfAutoCompress !== undefined && localStorage.getItem('pref_pdfAutoCompress') === null) {
+          localStorage.setItem('pref_pdfAutoCompress', String(user.pdfAutoCompress));
+        }
+        if (user.notificationSoundEnabled !== undefined && localStorage.getItem('pref_sound') === null) {
+          localStorage.setItem('pref_sound', String(user.notificationSoundEnabled));
+        }
+      }
+    };
+
+    applyPreferences();
+    window.addEventListener('paperx_preferences_changed', applyPreferences);
+    window.addEventListener('storage', applyPreferences);
+    return () => {
+      window.removeEventListener('paperx_preferences_changed', applyPreferences);
+      window.removeEventListener('storage', applyPreferences);
+    };
+  }, [user?.theme, user?.fontSize, user?.largerTextEnabled, user?.autoSaveScan, user?.autoCopyText, user?.ocrLanguage, user?.pdfQuality, user?.namingPattern, user?.pdfAutoCompress, user?.notificationSoundEnabled]);
 
   // Global Firebase Auth Listener with safety timeout
   useEffect(() => {
@@ -3533,7 +3620,7 @@ const App: React.FC = () => {
     const userAgent = typeof navUserAgent === 'string' ? navUserAgent : '';
     let targetPlatform = validPlatform || 'Android';
 
-    if (!validPlatform && userAgent) {
+    if (!validPlatform && userAgent && typeof userAgent.indexOf === 'function') {
       if (userAgent.indexOf("Mac") !== -1) {
         targetPlatform = 'macOS';
       } else if (userAgent.indexOf("Win") !== -1) {
@@ -3889,16 +3976,42 @@ const App: React.FC = () => {
     }
   });
 
+  // Cross-tab real-time sync for local files
+  useEffect(() => {
+    const handleStorage = (e: StorageEvent) => {
+      if (e.key === 'paperx_local_stored_files' && e.newValue) {
+        try {
+          const files = JSON.parse(e.newValue);
+          if (Array.isArray(files)) {
+            setStoredFiles(files);
+          }
+        } catch {}
+      }
+    };
+    const handleCustomUpdate = (e: any) => {
+      if (e.detail && Array.isArray(e.detail)) {
+        setStoredFiles(e.detail);
+      }
+    };
+    window.addEventListener('storage', handleStorage);
+    window.addEventListener('paperx-stored-files-updated', handleCustomUpdate);
+    return () => {
+      window.removeEventListener('storage', handleStorage);
+      window.removeEventListener('paperx-stored-files-updated', handleCustomUpdate);
+    };
+  }, []);
+
   // Save guest/local stored files to localStorage when updated
   useEffect(() => {
-    if (!user?.uid) {
+    const activeUid = user?.uid || (user as any)?.id || auth.currentUser?.uid;
+    if (!activeUid) {
       try {
         localStorage.setItem('paperx_local_stored_files', JSON.stringify(storedFiles));
       } catch (e) {
         console.warn('Failed to save local files:', e);
       }
     }
-  }, [storedFiles, user?.uid]);
+  }, [storedFiles, user?.uid, (user as any)?.id, auth.currentUser?.uid]);
 
   // Sync stored files with Firestore in real time when user is logged in
   useEffect(() => {
@@ -3934,12 +4047,16 @@ const App: React.FC = () => {
             return doc;
           });
 
-          // Keep pending local files that are very recently created (< 30s) and not yet reflected in the snapshot
-          const now = Date.now();
-          const pendingRecent = prev.filter(p => !syncedIds.has(p.id) && !recentlyDeletedIds.current.has(p.id) && (now - (p.timestamp || 0) < 30000));
+          // Keep pending local files that have not yet arrived in Firestore snapshot (never drop them!)
+          const pendingRecent = prev.filter(p => !syncedIds.has(p.id) && !recentlyDeletedIds.current.has(p.id));
+          if (pendingRecent.length > 0) {
+            pendingRecent.forEach(p => {
+              addDocumentToFirestore(activeUid, p).catch(console.error);
+            });
+          }
 
           const merged = [...pendingRecent, ...syncedDocs];
-          merged.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+          merged.sort((a, b) => getStoredDocTimestamp(b) - getStoredDocTimestamp(a));
           return merged as StoredDocument[];
         });
       });
@@ -3953,7 +4070,7 @@ const App: React.FC = () => {
       const fiveYearsMs = 5 * 365.25 * 24 * 60 * 60 * 1000;
       const cutoff = Date.now() - fiveYearsMs;
       setStoredFiles(prev => {
-        const expired = prev.filter(f => (f.timestamp || 0) < cutoff && (f.timestamp || 0) > 0);
+        const expired = prev.filter(f => getStoredDocTimestamp(f) < cutoff && getStoredDocTimestamp(f) > 0);
         if (expired.length === 0) return prev;
         expired.forEach(f => {
           LocalFileStore.remove(f.id);
@@ -3961,7 +4078,7 @@ const App: React.FC = () => {
             deleteDocumentFromFirestore(user.uid, f.id).catch(() => {});
           }
         });
-        return prev.filter(f => (f.timestamp || 0) >= cutoff || !f.timestamp);
+        return prev.filter(f => getStoredDocTimestamp(f) >= cutoff);
       });
       LocalFileStore.purgeExpired(fiveYearsMs);
     };
@@ -4087,52 +4204,76 @@ const App: React.FC = () => {
 
   const handleProcessedFile = async (blob: Blob, rawFilename: string) => {
       playCompletionChime();
+      const activeTool = TOOLS.find(t => t.id === activeToolId);
+      const actionName = activeTool?.name || 'Create Document';
+      const filename = generateUniqueFileName(rawFilename, storedFiles, actionName);
+      const newFileId = `doc_${Date.now()}_${Math.random().toString(36).substring(2,7)}`;
+      const formattedSize = `${(blob.size / 1024).toFixed(1)} KB`;
+
       const reader = new FileReader();
       reader.readAsDataURL(blob);
-      reader.onloadend = async () => {
-          const activeTool = TOOLS.find(t => t.id === activeToolId);
-          const filename = generateUniqueFileName(rawFilename, storedFiles, activeTool?.name || 'Editor');
-          
-          let generatedTags: string[] = [];
-          if (reader.result) {
-              generatedTags = await analyzeDocumentForTags(filename, reader.result as string);
-          } else {
-              generatedTags = await analyzeDocumentForTags(filename);
+      reader.onloadend = () => {
+          const dataUrlStr = (reader.result as string) || '';
+          if (dataUrlStr) {
+              LocalFileStore.save(newFileId, dataUrlStr);
           }
 
           const newFile: StoredDocument = {
-              id: `doc_${Date.now()}_${Math.random().toString(36).substring(2,7)}`,
+              id: newFileId,
               name: filename,
               date: new Date().toLocaleDateString(),
               timestamp: Date.now(),
-              size: `${(blob.size / 1024).toFixed(1)} KB`,
+              size: formattedSize,
               type: 'PDF',
-              action: 'Download',
-              tags: generatedTags
+              action: actionName,
+              dataUrl: dataUrlStr || undefined,
+              tags: [actionName, 'PDF']
           };
-          
-          if (reader.result) {
-              LocalFileStore.save(newFile.id, reader.result as string);
-          }
-          
+
+          // Update state immediately so Recent Activity shows it instantaneously (0ms)
           setStoredFiles(prev => [newFile, ...prev]);
+
+          // Dispatch event for instant cross-tab / window sync
+          try {
+              window.dispatchEvent(new CustomEvent('paperx-stored-files-updated', { 
+                  detail: [newFile, ...storedFiles] 
+              }));
+          } catch (_) {}
+
+          // Real-time Firestore sync
           const activeUid = user?.uid || (user as any)?.id || auth.currentUser?.uid;
           if (activeUid) {
               addDocumentToFirestore(activeUid, newFile).catch(console.error);
               recordFeatureUsage(user);
+          } else {
+              try {
+                  const saved = localStorage.getItem('paperx_local_stored_files');
+                  const currentList = saved ? JSON.parse(saved) : [];
+                  localStorage.setItem('paperx_local_stored_files', JSON.stringify([newFile, ...currentList]));
+              } catch (_) {}
           }
 
           addToast({
             type: 'success',
-            title: 'Document Ready',
-            message: `"${filename}" was processed and saved to your files.`,
-            toolName: 'Editor',
+            title: 'Document Saved in Recent Activity',
+            message: `"${filename}" was created and saved to your Recent Activity.`,
+            toolName: actionName,
             fileName: filename,
-            fileSize: `${(blob.size / 1024).toFixed(1)} KB`,
+            fileSize: formattedSize,
             downloadBlob: blob,
             downloadFileName: filename,
             duration: 5000
           });
+
+          // Enrich tags in background asynchronously without blocking UI
+          analyzeDocumentForTags(filename, dataUrlStr).then(aiTags => {
+              if (aiTags && aiTags.length > 0) {
+                  setStoredFiles(prev => prev.map(f => f.id === newFileId ? { ...f, tags: aiTags } : f));
+                  if (activeUid) {
+                      addDocumentToFirestore(activeUid, { ...newFile, tags: aiTags }).catch(console.error);
+                  }
+              }
+          }).catch(() => {});
       };
   };
 
@@ -4719,13 +4860,14 @@ const App: React.FC = () => {
         delete uploadIntervals.current[id];
     }
     setFiles(prev => {
-        const index = prev.findIndex(f => f.id === id);
+        const list = Array.isArray(prev) ? prev : [];
+        const index = list.findIndex(f => f?.id === id);
         if (index !== -1) {
-             const newRawFiles = [...rawFiles];
+             const newRawFiles = Array.isArray(rawFiles) ? [...rawFiles] : [];
              newRawFiles.splice(index, 1);
              setRawFiles(newRawFiles);
         }
-        return prev.filter(f => f.id !== id);
+        return list.filter(f => f?.id !== id);
     });
   };
 
@@ -4884,9 +5026,20 @@ const App: React.FC = () => {
 
         if (newStoredItems.length > 0) {
             setStoredFiles(prev => [...newStoredItems, ...prev]);
+            try {
+                window.dispatchEvent(new CustomEvent('paperx-stored-files-updated', { 
+                    detail: [...newStoredItems, ...storedFiles] 
+                }));
+            } catch (_) {}
             const activeUid = user?.uid || (user as any)?.id || auth.currentUser?.uid;
             if (activeUid) {
                 newStoredItems.forEach(item => addDocumentToFirestore(activeUid, item).catch(console.error));
+            } else {
+                try {
+                    const saved = localStorage.getItem('paperx_local_stored_files');
+                    const currentList = saved ? JSON.parse(saved) : [];
+                    localStorage.setItem('paperx_local_stored_files', JSON.stringify([...newStoredItems, ...currentList]));
+                } catch (_) {}
             }
         } else {
             let singleDataUrl = '';
@@ -4900,7 +5053,6 @@ const App: React.FC = () => {
             }
             
             const uniqueSingleName = generateUniqueFileName(result.filename, storedFiles, toolDisplayName);
-            const generatedTags = await analyzeDocumentForTags(uniqueSingleName, singleDataUrl);
             
             const newStoredDocument: StoredDocument = {
                 id: newFileId,
@@ -4910,13 +5062,35 @@ const App: React.FC = () => {
                 size: formattedFileSize,
                 type: result.filename.endsWith('.zip') ? 'ZIP' : 'PDF',
                 action: toolDisplayName,
-                tags: generatedTags
+                dataUrl: singleDataUrl || undefined,
+                tags: [toolDisplayName, result.filename.endsWith('.zip') ? 'ZIP' : 'PDF']
             };
             setStoredFiles(prev => [newStoredDocument, ...prev]);
+            try {
+                window.dispatchEvent(new CustomEvent('paperx-stored-files-updated', { 
+                    detail: [newStoredDocument, ...storedFiles] 
+                }));
+            } catch (_) {}
+
             const activeUid = user?.uid || (user as any)?.id || auth.currentUser?.uid;
             if (activeUid) {
                 addDocumentToFirestore(activeUid, newStoredDocument).catch(console.error);
+            } else {
+                try {
+                    const saved = localStorage.getItem('paperx_local_stored_files');
+                    const currentList = saved ? JSON.parse(saved) : [];
+                    localStorage.setItem('paperx_local_stored_files', JSON.stringify([newStoredDocument, ...currentList]));
+                } catch (_) {}
             }
+
+            analyzeDocumentForTags(uniqueSingleName, singleDataUrl).then(aiTags => {
+                if (aiTags && aiTags.length > 0) {
+                    setStoredFiles(prev => prev.map(f => f.id === newFileId ? { ...f, tags: aiTags } : f));
+                    if (activeUid) {
+                        addDocumentToFirestore(activeUid, { ...newStoredDocument, tags: aiTags }).catch(console.error);
+                    }
+                }
+            }).catch(() => {});
         }
         
         setFiles(prev => prev.map(f => 
@@ -5211,21 +5385,10 @@ const App: React.FC = () => {
   const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
   const fiveYearsMs = 5 * 365.25 * 24 * 60 * 60 * 1000;
   const nowTime = Date.now();
-  const getDocTimeHelper = (f: StoredDocument): number => {
-      if (typeof f.timestamp === 'number' && !isNaN(f.timestamp) && f.timestamp > 0) return f.timestamp;
-      if (f.date) {
-          const parsed = new Date(f.date).getTime();
-          if (!isNaN(parsed) && parsed > 0) return parsed;
-      }
-      if ((f as any).createdAt) {
-          const parsed = new Date((f as any).createdAt).getTime();
-          if (!isNaN(parsed) && parsed > 0) return parsed;
-      }
-      return nowTime;
-  };
+  const getDocTimeHelper = (f: StoredDocument): number => getStoredDocTimestamp(f);
 
   const recentDocsCount = storedFiles.filter(f => getDocTimeHelper(f) >= (nowTime - thirtyDaysMs)).length;
-  const myDocsCount = storedFiles.filter(f => getDocTimeHelper(f) >= (nowTime - fiveYearsMs)).length;
+  const myDocsCount = storedFiles.filter(f => getDocTimeHelper(f) < (nowTime - thirtyDaysMs) && getDocTimeHelper(f) >= (nowTime - fiveYearsMs)).length;
 
   return (
     <div className="flex flex-col h-[100dvh] w-full bg-gray-50 text-gray-900 font-sans selection:bg-black selection:text-white relative overflow-hidden">
@@ -5440,25 +5603,11 @@ const App: React.FC = () => {
       </AnimatePresence>
 
       {/* Sidebar - Desktop & Mobile Drawer */}
-      <aside className={`fixed lg:static inset-y-0 left-0 z-50 w-72 sm:w-80 lg:w-64 ios-glass-drawer flex flex-col transition-transform duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] rounded-r-3xl lg:rounded-none ${isMobileMenuOpen ? 'translate-x-0 shadow-2xl' : '-translate-x-full lg:translate-x-0'}`}>
+      <aside className={`fixed lg:static inset-y-0 left-0 z-50 w-64 sm:w-[280px] lg:w-64 ios-glass-drawer flex flex-col transition-transform duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] rounded-r-3xl lg:rounded-none overflow-hidden ${isMobileMenuOpen ? 'translate-x-0 shadow-2xl' : '-translate-x-full lg:translate-x-0'}`}>
          {/* Logo Area */}
          <div className="h-12 flex items-center justify-center px-4 border-b border-black/[0.06] dark:border-white/[0.08] relative shrink-0">
              <div className="flex items-center justify-center cursor-pointer text-gray-900 dark:text-white" onClick={(e) => handleNavigation('dashboard', e)}>
-                 <motion.span 
-                     style={{ 
-                         willChange: "background-position", 
-                         transform: "translateZ(0)",
-                         backgroundImage: "linear-gradient(to right, #4f46e5, #0ea5e9, #6366f1, #0ea5e9, #4f46e5)",
-                         backgroundSize: "200% auto",
-                         WebkitBackgroundClip: "text",
-                         WebkitTextFillColor: "transparent"
-                     }}
-                     animate={{ backgroundPosition: ["0% center", "100% center", "0% center"] }}
-                     transition={{ repeat: Infinity, duration: 6, ease: "easeInOut" }}
-                     className="font-heading font-black text-xl sm:text-2xl tracking-tight drop-shadow-sm text-center select-none"
-                 >
-                     {APP_NAME}
-                 </motion.span>
+                 <BrandLogo className="text-xl sm:text-2xl" />
              </div>
          </div>
 
@@ -5548,9 +5697,9 @@ const App: React.FC = () => {
          </div>
 
          {/* User Profile Snippet - iOS Liquid Capsule */}
-         <div className="p-3.5 border-t border-black/[0.06] dark:border-white/[0.08] shrink-0">
+         <div className="p-1.5 border-t border-black/[0.04] dark:border-white/[0.05] shrink-0">
              <div 
-                className={`flex items-center gap-3.5 p-3 rounded-2xl cursor-pointer transition-all duration-200 active:scale-[0.98] ${
+                className={`flex items-center gap-3 p-2 rounded-2xl cursor-pointer transition-all duration-200 active:scale-[0.98] ${
                     user.plan === 'Max Plan' 
                         ? 'bg-amber-500/15 dark:bg-amber-400/15 border border-amber-500/30 hover:border-amber-500/45 shadow-xs' 
                         : user.plan === 'Plus Plan'
@@ -5564,10 +5713,10 @@ const App: React.FC = () => {
                     setIsProfileOpen(true);
                 }}
              >
-                 <img src={user.avatarUrl} alt={user.name} className="w-10 h-10 rounded-full ring-2 ring-white/80 dark:ring-white/20 shadow-sm object-cover shrink-0" />
+                 <img src={user.avatarUrl} alt={user.name} className="w-9 h-9 rounded-full ring-2 ring-white/80 dark:ring-white/20 shadow-sm object-cover shrink-0" />
                  <div className="flex-1 min-w-0">
-                     <p className="text-base font-bold tracking-tight text-gray-900 dark:text-gray-100 truncate">{user.name}</p>
-                     <p className="text-xs text-gray-500 dark:text-gray-400 truncate font-bold mt-0.5">{user.plan}</p>
+                     <p className="text-sm font-bold tracking-tight text-gray-900 dark:text-gray-100 truncate">{user.name}</p>
+                     <p className="text-[10px] text-gray-500 dark:text-gray-400 truncate font-bold mt-0.5 uppercase tracking-wider">{user.plan}</p>
                  </div>
              </div>
          </div>
@@ -5577,27 +5726,13 @@ const App: React.FC = () => {
       <main className="flex-1 flex flex-col h-full overflow-hidden relative bg-transparent">
         
         {/* Mobile Header - Overlaying Content */}
-        <div className={`lg:hidden absolute top-0 left-0 w-full h-12 flex items-center justify-between px-4 ios-glass-header z-40 transition-all duration-300 ease-in-out ${isMobileMenuOpen ? '-translate-y-full opacity-0 pointer-events-none' : 'translate-y-0 opacity-100'}`}>
+        <div className={`lg:hidden absolute top-0 left-0 w-full h-12 flex items-center justify-between px-4 ios-glass-header z-30 transition-opacity duration-200 ${isMobileMenuOpen ? 'pointer-events-none opacity-40' : 'opacity-100'}`}>
             <div className="flex items-center gap-3 text-gray-900 dark:text-white">
                  <button onClick={() => setIsMobileMenuOpen(true)} className="p-2 -ml-2 text-gray-600 dark:text-gray-400 hover:bg-black/5 dark:hover:bg-white/5 rounded-full transition-colors">
                      <Menu size={24} />
                  </button>
                  <div className="flex items-center gap-2">
-                    <motion.span 
-                        style={{ 
-                            willChange: "background-position", 
-                            transform: "translateZ(0)",
-                            backgroundImage: "linear-gradient(to right, #4f46e5, #0ea5e9, #6366f1, #0ea5e9, #4f46e5)",
-                            backgroundSize: "200% auto",
-                            WebkitBackgroundClip: "text",
-                            WebkitTextFillColor: "transparent"
-                        }}
-                        animate={{ backgroundPosition: ["0% center", "100% center", "0% center"] }}
-                        transition={{ repeat: Infinity, duration: 6, ease: "easeInOut" }}
-                        className="font-heading font-black text-xl tracking-tight drop-shadow-sm block"
-                    >
-                        {APP_NAME}
-                    </motion.span>
+                    <BrandLogo className="text-xl block" />
                  </div>
             </div>
             <div className="flex items-center gap-2">
@@ -5670,7 +5805,6 @@ const App: React.FC = () => {
                         onOpen={handleOpenFilePreview} 
                         onShare={handleShareStoredFile}
                         onNavigateToRecent={() => navigate('/recent')}
-                        onSimulateAge={handleSimulateFileAge}
                     />
                  </motion.div>
              )}
@@ -5692,7 +5826,6 @@ const App: React.FC = () => {
                         onOpen={handleOpenFilePreview} 
                         onShare={handleShareStoredFile}
                         onNavigateToDocuments={() => navigate('/documents')}
-                        onSimulateAge={handleSimulateFileAge}
                     />
                  </motion.div>
              )}
@@ -5858,7 +5991,19 @@ const App: React.FC = () => {
                             >
                                 {activeToolId === 'voice-to-pdf' ? (
                                     <VoiceWorkspace onComplete={handleProcessedFile} />
-                                ) : activeToolId === 'create-pdf' || activeToolId === 'text-to-pdf' || activeToolId === 'summarize-pdf' || activeToolId === 'rewrite-pdf' || activeToolId === 'translate-pdf' ? (
+                                ) : [
+                                    'create-document',
+                                    'create-pdf',
+                                    'text-to-pdf',
+                                    'resume-builder',
+                                    'letter-templates',
+                                    'invoice-creator',
+                                    'certificate-creator',
+                                    'form-creator',
+                                    'summarize-pdf',
+                                    'rewrite-pdf',
+                                    'translate-pdf'
+                                ].includes(activeToolId || '') ? (
                                     <TextWorkspace toolId={activeToolId} socket={socket} docId="demo-doc" onComplete={handleProcessedFile} />
                                 ) : (
                                     // Generic File Upload Workspace for other tools

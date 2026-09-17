@@ -57,18 +57,31 @@ export const TextWorkspace: React.FC<TextWorkspaceProps> = ({ toolId, socket, do
   const getActionLabel = () => {
     if (isProcessing) return processingStatus || 'Processing...';
     switch (toolId) {
+      case 'create-document':
       case 'create-pdf':
       case 'text-to-pdf': return 'Generate PDF';
-      case 'summarize-pdf': return 'Summarize Text';
-      case 'rewrite-pdf': return 'Rewrite Content';
+      case 'resume-builder': return 'Generate Resume PDF';
+      case 'letter-templates': return 'Generate Template PDF';
+      case 'invoice-creator': return 'Generate Invoice PDF';
+      case 'certificate-creator': return 'Generate Certificate PDF';
+      case 'form-creator': return 'Generate Form PDF';
+      case 'summarize-pdf': return 'Summarize & Save';
+      case 'rewrite-pdf': return 'Rewrite & Save';
       case 'translate-pdf': return 'Translate to Spanish';
-      default: return 'Process';
+      default: return 'Generate Document';
     }
   };
 
   const getIcon = () => {
      switch (toolId) {
-        case 'create-pdf': return Type;
+        case 'create-document':
+        case 'create-pdf':
+        case 'text-to-pdf':
+        case 'resume-builder':
+        case 'letter-templates':
+        case 'invoice-creator':
+        case 'certificate-creator':
+        case 'form-creator': return Type;
         case 'summarize-pdf': return Sparkles;
         case 'rewrite-pdf': return Wand2;
         case 'translate-pdf': return Languages;
@@ -85,26 +98,49 @@ export const TextWorkspace: React.FC<TextWorkspaceProps> = ({ toolId, socket, do
     setGeneratedBlob(null);
 
     try {
-      if (toolId === 'create-pdf' || toolId === 'text-to-pdf') {
+      const isCreateType = [
+        'create-document',
+        'create-pdf',
+        'text-to-pdf',
+        'resume-builder',
+        'letter-templates',
+        'invoice-creator',
+        'certificate-creator',
+        'form-creator'
+      ].includes(toolId);
+
+      if (isCreateType) {
         const { blob, filename } = await DocumentService.textToPDF(text, (status: string) => {
             setProcessingStatus(status);
         });
         setGeneratedBlob(blob);
         setGeneratedFilename(filename);
-        setResult("PDF Generated Successfully. Your professional document is ready for download.");
+        setResult("PDF Generated Successfully. Your document is saved to Recent Activity and ready for download.");
         if (onComplete) onComplete(blob, filename);
       } else if (toolId === 'summarize-pdf') {
         setProcessingStatus('AI Analyzing text...');
         const res = await summarizeText(text);
         setResult(res);
+        const { blob, filename } = await DocumentService.textToPDF(res || text, () => {});
+        setGeneratedBlob(blob);
+        setGeneratedFilename(filename);
+        if (onComplete) onComplete(blob, filename);
       } else if (toolId === 'rewrite-pdf') {
         setProcessingStatus('Refining content...');
         const res = await rewriteText(text);
         setResult(res);
+        const { blob, filename } = await DocumentService.textToPDF(res || text, () => {});
+        setGeneratedBlob(blob);
+        setGeneratedFilename(filename);
+        if (onComplete) onComplete(blob, filename);
       } else if (toolId === 'translate-pdf') {
         setProcessingStatus('Translating document...');
         const res = await translateText(text, 'Spanish');
         setResult(res);
+        const { blob, filename } = await DocumentService.textToPDF(res || text, () => {});
+        setGeneratedBlob(blob);
+        setGeneratedFilename(filename);
+        if (onComplete) onComplete(blob, filename);
       }
     } catch (e) {
       setResult("An error occurred processing your request. Please try again.");

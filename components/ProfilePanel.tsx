@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { X, User as UserIcon, Settings, CreditCard, LogOut, ChevronRight, ChevronLeft, MapPin, Phone, FileText, Crown, Shield, ShieldCheck, Bell, Trash2, Smartphone, Moon, Sun, Zap, Check, Edit2, AlertTriangle, Key, Mail, ArrowRight, Lock, LifeBuoy, Globe, ChevronDown, CheckCircle2, History, Clock, AlertCircle, Type, Volume2, VolumeX, Maximize2, RefreshCw, Info, Laptop, ExternalLink, Database, Sparkles, Layers, Ticket, XCircle, Camera, Cpu, Copy, FileCheck, Sliders, Printer, DownloadCloud, Activity, Wifi, Tablet, Monitor, Code, Eye, FileDown, CheckCircle, Undo2 } from 'lucide-react';
+import { X, User as UserIcon, Settings, CreditCard, LogOut, ChevronRight, ChevronLeft, MapPin, Phone, FileText, Crown, Shield, ShieldCheck, Bell, Trash2, Smartphone, Moon, Sun, Zap, Check, Edit2, AlertTriangle, Key, Mail, ArrowRight, Lock, LifeBuoy, Globe, ChevronDown, CheckCircle2, History, Clock, AlertCircle, Type, Volume2, VolumeX, Maximize2, Minimize2, RotateCcw, RefreshCw, Info, Laptop, ExternalLink, Database, Sparkles, Layers, Ticket, XCircle, Camera, Cpu, Copy, FileCheck, Sliders, Printer, DownloadCloud, Activity, Wifi, Tablet, Monitor, Code, Eye, FileDown, CheckCircle, Undo2 } from 'lucide-react';
 import { User, UserSession, getUserPurchasedTier, isBillingCycleCovered, BILLING_CYCLE_LABELS, BillingCycleType, READYMADE_TICKET_REASONS, isOrderAwaitingLongTime, getOrderWaitMinutes, getOrderTimestamp, ReadyMadeTicketReason, getPlanCreditValue } from '../types';
 import { Button } from './Button';
 import { GlassPillButton } from './GlassPillButton';
@@ -194,6 +194,15 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
             setNamingPattern(expected);
           }
         }
+        if (user.notificationSoundEnabled !== undefined && user.notificationSoundEnabled !== soundEffects) {
+          setSoundEffects(user.notificationSoundEnabled);
+        }
+        if (user.autoRestoreSession !== undefined && user.autoRestoreSession !== autoRestoreSession) {
+          setAutoRestoreSession(user.autoRestoreSession);
+        }
+        if (user.pdfAutoCompress !== undefined && user.pdfAutoCompress !== pdfAutoCompress) {
+          setPdfAutoCompress(user.pdfAutoCompress);
+        }
     }
   }, [
     user?.theme,
@@ -205,15 +214,9 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
     user?.autoCopyText,
     user?.pdfQuality,
     user?.namingPattern,
-    darkMode,
-    fontSize,
-    largerText,
-    language,
-    autoSaveScan,
-    ocrLanguage,
-    autoCopyText,
-    pdfQuality,
-    namingPattern
+    user?.notificationSoundEnabled,
+    user?.autoRestoreSession,
+    user?.pdfAutoCompress
   ]);
 
   // 6. Trusted Devices / Active Sessions State
@@ -537,7 +540,7 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
     setFontSize('system');
     setLargerText(false);
     setPdfQuality('high');
-    setNamingPattern('paperx_date');
+    setNamingPattern('simple');
     setAutoSaveScan(true);
     setOcrLanguage('English');
     setAutoCopyText(false);
@@ -549,6 +552,23 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
     setLanguage('English');
     setResetPreferencesSuccess(true);
     setTimeout(() => setResetPreferencesSuccess(false), 3000);
+
+    if (user?.uid) {
+      updateUserInFirestore(user.uid, {
+        fontSize: 'system',
+        largerTextEnabled: false,
+        pdfQuality: 'high',
+        namingPattern: 'paperx_date',
+        autoSaveScan: true,
+        ocrLanguage: 'English',
+        autoCopyText: false,
+        pdfAutoCompress: true,
+        notificationSoundEnabled: true,
+        autoRestoreSession: true,
+        language: 'English'
+      });
+    }
+    window.dispatchEvent(new CustomEvent('paperx_preferences_changed'));
   };
 
   const handleRequestAccountDeletion = async () => {
@@ -770,6 +790,7 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
     } else {
       document.documentElement.classList.remove('dark');
     }
+    window.dispatchEvent(new CustomEvent('paperx_preferences_changed', { detail: { darkMode } }));
   }, [darkMode]);
 
   // 1. Apply Font Size
@@ -778,6 +799,7 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
     if (document.documentElement.getAttribute('data-font-size') !== fontSize) {
       document.documentElement.setAttribute('data-font-size', fontSize);
     }
+    window.dispatchEvent(new CustomEvent('paperx_preferences_changed', { detail: { fontSize } }));
   }, [fontSize]);
 
   // 2. Apply Larger Text Scale (Accessibility)
@@ -786,6 +808,7 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
     if (document.documentElement.getAttribute('data-larger-text') !== String(largerText)) {
       document.documentElement.setAttribute('data-larger-text', String(largerText));
     }
+    window.dispatchEvent(new CustomEvent('paperx_preferences_changed', { detail: { largerText } }));
   }, [largerText]);
 
   // 3. Sound Effects Sync
@@ -794,12 +817,14 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
     if (user?.uid && user.notificationSoundEnabled !== soundEffects) {
       updateUserInFirestore(user.uid, { notificationSoundEnabled: soundEffects });
     }
+    window.dispatchEvent(new CustomEvent('paperx_preferences_changed', { detail: { soundEffects } }));
   }, [soundEffects, user?.uid, user?.notificationSoundEnabled]);
 
   // 4. Language Sync
   useEffect(() => {
     localStorage.setItem('pref_language', language);
     window.dispatchEvent(new CustomEvent('paperx_language_changed', { detail: language }));
+    window.dispatchEvent(new CustomEvent('paperx_preferences_changed', { detail: { language } }));
     if (user?.uid && user.language !== language) {
       updateUserInFirestore(user.uid, { language });
     }
@@ -822,14 +847,18 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
     if (user?.uid && user.pdfQuality !== pdfQuality) {
       updateUserInFirestore(user.uid, { pdfQuality });
     }
+    window.dispatchEvent(new CustomEvent('paperx_preferences_changed', { detail: { pdfQuality } }));
   }, [pdfQuality, user?.uid, user?.pdfQuality]);
 
   useEffect(() => {
     localStorage.setItem('pref_namingPattern', namingPattern);
     const normalizedUserPattern = user?.namingPattern === 'paperx_date' ? 'paperx' : user?.namingPattern;
     if (user?.uid && normalizedUserPattern !== namingPattern) {
-      updateUserInFirestore(user.uid, { namingPattern });
+      const firestorePattern: 'paperx_date' | 'original_processed' | 'timestamp' = 
+        namingPattern === 'paperx' ? 'paperx_date' : namingPattern === 'simple' ? 'original_processed' : 'timestamp';
+      updateUserInFirestore(user.uid, { namingPattern: firestorePattern });
     }
+    window.dispatchEvent(new CustomEvent('paperx_preferences_changed', { detail: { namingPattern } }));
   }, [namingPattern, user?.uid, user?.namingPattern]);
 
   useEffect(() => {
@@ -837,6 +866,7 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
     if (user?.uid && user.autoSaveScan !== autoSaveScan) {
       updateUserInFirestore(user.uid, { autoSaveScan });
     }
+    window.dispatchEvent(new CustomEvent('paperx_preferences_changed', { detail: { autoSaveScan } }));
   }, [autoSaveScan, user?.uid, user?.autoSaveScan]);
 
   useEffect(() => {
@@ -844,6 +874,7 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
     if (user?.uid && user.ocrLanguage !== ocrLanguage) {
       updateUserInFirestore(user.uid, { ocrLanguage });
     }
+    window.dispatchEvent(new CustomEvent('paperx_preferences_changed', { detail: { ocrLanguage } }));
   }, [ocrLanguage, user?.uid, user?.ocrLanguage]);
 
   useEffect(() => {
@@ -851,6 +882,7 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
     if (user?.uid && user.autoCopyText !== autoCopyText) {
       updateUserInFirestore(user.uid, { autoCopyText });
     }
+    window.dispatchEvent(new CustomEvent('paperx_preferences_changed', { detail: { autoCopyText } }));
   }, [autoCopyText, user?.uid, user?.autoCopyText]);
 
   useEffect(() => {
@@ -859,6 +891,7 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
     if (user?.uid && rawUserCompress !== pdfAutoCompress) {
       updateUserInFirestore(user.uid, { pdfAutoCompress });
     }
+    window.dispatchEvent(new CustomEvent('paperx_preferences_changed', { detail: { pdfAutoCompress } }));
   }, [pdfAutoCompress, user?.uid, (user as any)?.pdfAutoCompress]);
 
   // Test Sound Player
@@ -1138,7 +1171,7 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
   };
 
   const renderEmailChange = () => (
-      <div className="flex flex-col h-full animate-slide-in-right bg-white dark:bg-gray-900">
+      <div className="flex flex-col h-full animate-slide-in-right bg-white dark:bg-gray-900 relative">
           <div className="p-6 flex items-center justify-between border-b border-gray-50 dark:border-gray-800 bg-transparent relative">
             <button 
               type="button"
@@ -1154,7 +1187,7 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
             <div className="w-9 h-9" aria-hidden="true" />
           </div>
 
-          <div className="flex-1 overflow-y-auto p-6 md:p-8">
+          <div className="flex-1 overflow-y-auto pt-[72px] sm:pt-[80px] px-6 pb-6 md:px-8 md:pb-8">
               {/* Step Progress */}
               <div className="flex items-center justify-center mb-8 gap-2">
                   {[0, 1, 2].map(s => (
@@ -1304,8 +1337,8 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
   );
 
   const renderMenu = () => (
-    <div className="flex flex-col h-full animate-fade-in-up bg-white dark:bg-gray-900">
-      <div className="p-6 flex items-center justify-center border-b border-gray-50 dark:border-gray-800 relative">
+    <div className="flex flex-col h-full animate-fade-in-up bg-white dark:bg-gray-900 relative">
+      <div className="absolute top-0 left-0 w-full p-4 sm:p-6 flex items-center justify-center ios-glass-header z-20">
         <h2 className="text-xl font-heading font-black tracking-tighter text-gray-900 dark:text-white text-center">Profile</h2>
         <button 
           onClick={onClose} 
@@ -1361,7 +1394,7 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-4 md:p-6">
+      <div className="flex-1 overflow-y-auto pt-[72px] sm:pt-[80px] px-4 pb-4 md:px-6 md:pb-6">
         <div className="space-y-3">
             {menuItems.map((item, idx) => (
                 <button 
@@ -1408,7 +1441,7 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
   );
 
   const renderHeader = (title: string) => (
-    <div className="px-4 py-2 sm:px-5 sm:py-2.5 flex items-center justify-between ios-glass-header sticky top-0 z-20 relative">
+    <div className="absolute top-0 left-0 w-full px-4 py-2 sm:px-5 sm:py-2.5 flex items-center justify-between ios-glass-drawer border-b border-black/[0.06] dark:border-white/[0.08] z-20">
         <button 
           type="button"
           onClick={() => {
@@ -1454,10 +1487,10 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
   );
 
   const renderPersonal = () => (
-    <div className="flex flex-col h-full animate-slide-in-right bg-white dark:bg-gray-900">
+    <div className="flex flex-col h-full animate-slide-in-right bg-white dark:bg-gray-900 relative">
         {renderHeader("Personal Information")}
         
-        <div className="flex-1 overflow-y-auto p-6 md:p-8">
+        <div className="flex-1 overflow-y-auto pt-[72px] sm:pt-[80px] px-6 pb-6 md:px-8 md:pb-8">
             {/* Identity Section */}
             <div className="mb-10 animate-fade-in-up">
                 <h3 className="text-xs font-bold text-gray-300 dark:text-gray-500 uppercase tracking-widest mb-6 pl-1 font-heading">Identity</h3>
@@ -1645,9 +1678,9 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
     );
 
     return (
-        <div className="flex flex-col h-full animate-slide-in-right bg-white dark:bg-gray-900">
+        <div className="flex flex-col h-full animate-slide-in-right bg-white dark:bg-gray-900 relative">
             {renderHeader("Subscription & Billing")}
-            <div className="flex-1 overflow-y-auto p-4 sm:p-6 bg-gray-50/50 dark:bg-gray-900/50">
+            <div className="flex-1 overflow-y-auto pt-[72px] sm:pt-[80px] px-4 pb-4 sm:px-6 sm:pb-6 bg-gray-50/50 dark:bg-gray-900/50">
                 <UpgradeView
                     onUpgrade={(plan, amount, cycle, resubmitId, upgradeFromId, oldAmount) => {
                         onUpgrade(plan, amount, cycle, resubmitId, upgradeFromId, oldAmount);
@@ -1689,9 +1722,9 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
     });
 
     return (
-      <div className="flex flex-col h-full animate-slide-in-right bg-white dark:bg-gray-900">
+      <div className="flex flex-col h-full animate-slide-in-right bg-white dark:bg-gray-900 relative">
         {renderHeader("Payment History")}
-        <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-5">
+        <div className="flex-1 overflow-y-auto pt-[72px] sm:pt-[80px] px-4 pb-4 md:px-6 md:pb-6 space-y-5">
           {/* Quick Metrics */}
           <div className="grid grid-cols-3 gap-2">
             <div className="p-3 bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-100 dark:border-emerald-900/40 rounded-2xl text-center">
@@ -2000,9 +2033,9 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
   };
 
   const renderPreferences = () => (
-    <div className="flex flex-col h-full animate-slide-in-right bg-white dark:bg-gray-900">
+    <div className="flex flex-col h-full animate-slide-in-right bg-white dark:bg-gray-900 relative">
       {renderHeader("Preferences")}
-      <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-7">
+      <div className="flex-1 overflow-y-auto pt-[72px] sm:pt-[80px] px-4 pb-4 sm:px-6 sm:pb-6 space-y-7">
         
         {/* 0. Document & PDF Studio Preferences */}
         <div className="space-y-3">
@@ -2113,7 +2146,7 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
                       </span>
                     )}
                   </div>
-                  <p className="text-xs text-stone-500 dark:text-stone-400 font-medium">Save scanned pages directly to "My Documents" (5-Year Archive)</p>
+                  <p className="text-xs text-stone-500 dark:text-stone-400 font-medium">Save scanned pages directly to "My Documents"</p>
                 </div>
               </div>
               <button
@@ -2188,6 +2221,57 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
                 </span>
                 <span>Auto-Copy: {autoCopyText ? 'ON' : 'OFF'}</span>
               </div>
+            </motion.div>
+
+            {/* PDF Auto-Compression */}
+            <motion.div 
+              whileHover={{ y: -1 }}
+              className="group flex items-center justify-between p-4 bg-stone-50/80 dark:bg-stone-900/60 hover:bg-white dark:hover:bg-stone-800/80 border border-stone-200/80 dark:border-stone-800/80 rounded-2xl md:rounded-3xl shadow-xs hover:shadow-md transition-all duration-300"
+            >
+              <div className="flex items-center gap-3.5">
+                <div className="w-10 h-10 rounded-2xl bg-white dark:bg-stone-800 text-stone-900 dark:text-stone-100 border border-stone-200/80 dark:border-stone-700/80 flex items-center justify-center shrink-0 shadow-xs group-hover:bg-black dark:group-hover:bg-white group-hover:text-white dark:group-hover:text-black transition-colors">
+                  <Minimize2 size={18} strokeWidth={2.2} />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <p className="font-heading font-black text-stone-900 dark:text-white text-sm tracking-tight">Intelligent Auto-Compress</p>
+                    {pdfAutoCompress && (
+                      <span className="px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 text-[10px] font-black flex items-center gap-1">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" /> Lossless
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xs text-stone-500 dark:text-stone-400 font-medium">Compress exported PDFs to optimize storage space</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={pdfAutoCompress}
+                aria-label="Toggle PDF Auto-Compression"
+                onClick={() => {
+                  const newValue = !pdfAutoCompress;
+                  setPdfAutoCompress(newValue);
+                  if (user?.uid) updateUserInFirestore(user.uid, { pdfAutoCompress: newValue });
+                }}
+                className={`relative w-12 h-7 rounded-full p-1 transition-colors duration-300 focus:outline-none focus:ring-2 focus:ring-black dark:focus:ring-white focus:ring-offset-2 dark:focus:ring-offset-gray-900 cursor-pointer shrink-0 ${
+                  pdfAutoCompress ? 'bg-black dark:bg-white' : 'bg-stone-200 dark:bg-stone-800'
+                }`}
+              >
+                <motion.div
+                  layout
+                  transition={{ type: "spring", stiffness: 600, damping: 30 }}
+                  className={`w-5 h-5 rounded-full shadow-sm flex items-center justify-center ${
+                    pdfAutoCompress ? 'ml-auto bg-white dark:bg-black text-black dark:text-white' : 'mr-auto bg-white dark:bg-stone-300'
+                  }`}
+                >
+                  {pdfAutoCompress && (
+                    <motion.div initial={{ scale: 0 }} animate={{ scale: 1 }} transition={{ duration: 0.15 }}>
+                      <Check size={10} strokeWidth={3.5} />
+                    </motion.div>
+                  )}
+                </motion.div>
+              </button>
             </motion.div>
           </div>
         </div>
@@ -2359,6 +2443,72 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
                   )}
                 </motion.div>
               </button>
+            </motion.div>
+
+            {/* Audio & Notification Chimes */}
+            <motion.div 
+              whileHover={{ y: -1 }}
+              className="group p-4 bg-stone-50/80 dark:bg-stone-900/60 hover:bg-white dark:hover:bg-stone-800/80 border border-stone-200/80 dark:border-stone-800/80 rounded-2xl md:rounded-3xl shadow-xs hover:shadow-md transition-all duration-300 space-y-3"
+            >
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3.5">
+                  <div className="w-10 h-10 rounded-2xl bg-white dark:bg-stone-800 text-stone-900 dark:text-stone-100 border border-stone-200/80 dark:border-stone-700/80 flex items-center justify-center shrink-0 shadow-xs group-hover:bg-black dark:group-hover:bg-white group-hover:text-white dark:group-hover:text-black transition-colors">
+                    {soundEffects ? <Volume2 size={18} strokeWidth={2.2} /> : <VolumeX size={18} strokeWidth={2.2} />}
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <p className="font-heading font-black text-stone-900 dark:text-white text-sm tracking-tight">Audio & Feedback Chimes</p>
+                      {soundEffects && (
+                        <span className="px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 text-[10px] font-black flex items-center gap-1">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" /> Active
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-xs text-stone-500 dark:text-stone-400 font-medium">Chimes on document processing and task completion</p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={soundEffects}
+                  aria-label="Toggle sound effects"
+                  onClick={() => {
+                    const newValue = !soundEffects;
+                    setSoundEffects(newValue);
+                    if (user?.uid) updateUserInFirestore(user.uid, { notificationSoundEnabled: newValue });
+                  }}
+                  className={`relative w-12 h-7 rounded-full p-1 transition-colors duration-300 focus:outline-none focus:ring-2 focus:ring-black dark:focus:ring-white focus:ring-offset-2 dark:focus:ring-offset-gray-900 cursor-pointer shrink-0 ${
+                    soundEffects ? 'bg-black dark:bg-white' : 'bg-stone-200 dark:bg-stone-800'
+                  }`}
+                >
+                  <motion.div
+                    layout
+                    transition={{ type: "spring", stiffness: 600, damping: 30 }}
+                    className={`w-5 h-5 rounded-full shadow-sm flex items-center justify-center ${
+                      soundEffects ? 'ml-auto bg-white dark:bg-black text-black dark:text-white' : 'mr-auto bg-white dark:bg-stone-300'
+                    }`}
+                  >
+                    {soundEffects && (
+                      <motion.div initial={{ scale: 0 }} animate={{ scale: 1 }} transition={{ duration: 0.15 }}>
+                        <Check size={10} strokeWidth={3.5} />
+                      </motion.div>
+                    )}
+                  </motion.div>
+                </button>
+              </div>
+
+              {/* Real-time sound test button */}
+              <div className="pt-1 flex items-center justify-between text-xs">
+                <span className="text-stone-500 dark:text-stone-400 text-[11px] font-medium">Test acoustic chime feedback</span>
+                <button
+                  type="button"
+                  onClick={playTestSound}
+                  className="py-1.5 px-3 rounded-xl bg-stone-100 hover:bg-stone-200 dark:bg-stone-800 dark:hover:bg-stone-700 text-stone-800 dark:text-stone-200 font-bold text-xs flex items-center gap-1.5 transition-colors cursor-pointer shadow-2xs active:scale-95"
+                >
+                  <Volume2 size={13} />
+                  <span>Play Sample Chime</span>
+                </button>
+              </div>
             </motion.div>
           </div>
         </div>
@@ -2685,6 +2835,42 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
               )}
             </motion.button>
           </motion.div>
+
+          {/* Reset All Preferences */}
+          <motion.div 
+            whileHover={{ y: -1 }}
+            className="group flex items-center justify-between p-4.5 bg-stone-50/80 dark:bg-stone-900/60 hover:bg-white dark:hover:bg-stone-800/80 border border-stone-200/80 dark:border-stone-800/80 rounded-2xl md:rounded-3xl shadow-xs hover:shadow-md transition-all duration-300"
+          >
+            <div className="flex items-center gap-3.5">
+              <div className="w-10 h-10 rounded-2xl bg-white dark:bg-stone-800 text-stone-900 dark:text-stone-100 border border-stone-200/80 dark:border-stone-700/80 flex items-center justify-center shrink-0 shadow-xs group-hover:bg-black dark:group-hover:bg-white group-hover:text-white dark:group-hover:text-black transition-colors">
+                <RotateCcw size={18} strokeWidth={2.2} />
+              </div>
+              <div>
+                <p className="font-heading font-black text-stone-900 dark:text-white text-sm tracking-tight">Reset Preferences to Default</p>
+                <p className="text-xs text-stone-500 dark:text-stone-400 font-medium">Restore standard defaults for PDF, theme & language</p>
+              </div>
+            </div>
+            <motion.button
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+              type="button"
+              onClick={handleResetPreferences}
+              className={`px-4 py-2.5 rounded-2xl text-xs font-bold transition-all cursor-pointer shadow-xs flex items-center gap-2 border ${
+                resetPreferencesSuccess
+                  ? 'bg-emerald-500 text-white border-emerald-500 dark:bg-emerald-600 dark:border-emerald-600'
+                  : 'bg-white dark:bg-stone-800 border-stone-200/80 dark:border-stone-700/80 hover:bg-black hover:text-white dark:hover:bg-white dark:hover:text-black text-stone-900 dark:text-white'
+              }`}
+            >
+              {resetPreferencesSuccess ? (
+                <>
+                  <Check size={13} strokeWidth={3} />
+                  <span>Restored Defaults</span>
+                </>
+              ) : (
+                <span>Reset Defaults</span>
+              )}
+            </motion.button>
+          </motion.div>
         </div>
 
         {/* 7. App Info & Legal */}
@@ -2803,9 +2989,9 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
   );
 
   const renderAbout = () => (
-    <div className="flex flex-col h-full animate-slide-in-right bg-white dark:bg-stone-900">
+    <div className="flex flex-col h-full animate-slide-in-right bg-white dark:bg-stone-900 relative">
       {renderHeader("About PaperX")}
-      <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-5">
+      <div className="flex-1 overflow-y-auto pt-[72px] sm:pt-[80px] px-4 pb-4 sm:px-6 sm:pb-6 space-y-5">
         
         {/* Logo & Header Card */}
         <div className="p-6 bg-stone-50/90 dark:bg-stone-800/60 border border-stone-200/80 dark:border-stone-800/80 rounded-2xl md:rounded-3xl text-center space-y-3">
@@ -2891,9 +3077,9 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
   );
 
   const renderTerms = () => (
-    <div className="flex flex-col h-full animate-slide-in-right bg-white dark:bg-stone-900">
+    <div className="flex flex-col h-full animate-slide-in-right bg-white dark:bg-stone-900 relative">
       {renderHeader("Terms of Service")}
-      <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-5">
+      <div className="flex-1 overflow-y-auto pt-[72px] sm:pt-[80px] px-4 pb-4 sm:px-6 sm:pb-6 space-y-5">
         
         {/* Header Summary Card */}
         <div className="p-4 bg-stone-50/90 dark:bg-stone-800/60 border border-stone-200/80 dark:border-stone-800/80 rounded-2xl md:rounded-3xl space-y-2">
@@ -2955,9 +3141,9 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
   );
 
   const renderPrivacy = () => (
-    <div className="flex flex-col h-full animate-slide-in-right bg-white dark:bg-stone-900">
+    <div className="flex flex-col h-full animate-slide-in-right bg-white dark:bg-stone-900 relative">
       {renderHeader("Privacy Policy")}
-      <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-5">
+      <div className="flex-1 overflow-y-auto pt-[72px] sm:pt-[80px] px-4 pb-4 sm:px-6 sm:pb-6 space-y-5">
         
         {/* Header Summary Card */}
         <div className="p-4 bg-stone-50/90 dark:bg-stone-800/60 border border-stone-200/80 dark:border-stone-800/80 rounded-2xl md:rounded-3xl space-y-2">
@@ -3003,7 +3189,7 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
               <h5 className="font-heading font-bold text-stone-900 dark:text-white text-xs">2. Storage & Retention Limits</h5>
             </div>
             <ul className="text-xs text-stone-600 dark:text-stone-300 space-y-1 pl-9 leading-relaxed">
-              <li>• <strong className="text-stone-900 dark:text-white">My Documents:</strong> Saved files are stored in your account archive for up to 5 years.</li>
+              <li>• <strong className="text-stone-900 dark:text-white">My Documents:</strong> Saved files are stored safely in your account archive.</li>
               <li>• <strong className="text-stone-900 dark:text-white">Recent Activity:</strong> Displays files created or modified within the last 30 days.</li>
               <li>• <strong className="text-stone-900 dark:text-white">User Deletion:</strong> You can delete any saved file from your archive at any time.</li>
             </ul>

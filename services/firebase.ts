@@ -79,6 +79,7 @@ try {
   // Try initializing with settings and databaseId
   firestoreInstance = initializeFirestore(app, {
     experimentalAutoDetectLongPolling: true,
+    ignoreUndefinedProperties: true,
   }, dbId);
 } catch (e: any) {
   // If already initialized or other error, fallback to getFirestore
@@ -180,7 +181,8 @@ export const getAuthErrorMessage = (error: any, provider?: 'email' | 'google'): 
     return `This sign-in provider is not enabled in Firebase project "${firebaseConfig.projectId}". Please enable Email/Password or Google in Firebase Console > Authentication > Sign-in method.`;
   }
   if (code === 'auth/unauthorized-domain' || msg.includes('unauthorized-domain')) {
-    return `This app domain is not in the authorized domains list for project "${firebaseConfig.projectId}". Please add this domain in Firebase Console > Authentication > Settings > Authorized Domains.`;
+    const currentDomain = typeof window !== 'undefined' ? window.location.hostname : 'this domain';
+    return `This domain ("${currentDomain}") is not in the authorized domains list for project "${firebaseConfig.projectId}". Please add "${currentDomain}" in Firebase Console > Authentication > Settings > Authorized Domains.`;
   }
 
   switch (code) {
@@ -857,11 +859,34 @@ export const subscribeToUserDocuments = (uid: string, callback: (docs: any[]) =>
 
     const parseDocs = (snapshot: any) => {
       const docs: any[] = [];
+      const parseVal = (val: any): number => {
+        if (typeof val === 'number' && !isNaN(val) && val > 0) return val;
+        if (!val) return 0;
+        if (typeof val.toMillis === 'function') {
+          try { const r = val.toMillis(); if (r > 0) return r; } catch (e) {}
+        }
+        if (typeof val.seconds === 'number' && val.seconds > 0) return val.seconds * 1000;
+        if (typeof val._seconds === 'number' && val._seconds > 0) return val._seconds * 1000;
+        if (typeof val === 'string') {
+          const p = new Date(val).getTime();
+          if (!isNaN(p) && p > 0) return p;
+        }
+        return 0;
+      };
+
       snapshot.forEach((docSnap: any) => {
         const data = docSnap.data();
-        const timestamp = typeof data.timestamp === 'number' && !isNaN(data.timestamp)
-          ? data.timestamp
-          : (data.createdAt ? new Date(data.createdAt).getTime() : (data.date ? new Date(data.date).getTime() : Date.now()));
+        let timestamp = parseVal(data.timestamp) || parseVal(data.createdAt) || parseVal(data.date);
+        if (!timestamp && typeof docSnap.id === 'string' && docSnap.id.startsWith('doc_')) {
+          const parts = docSnap.id.split('_');
+          if (parts.length >= 2) {
+            const parsedId = parseInt(parts[1], 10);
+            if (!isNaN(parsedId) && parsedId > 1000000000000) timestamp = parsedId;
+          }
+        }
+        if (!timestamp) {
+          timestamp = data._fallbackTs || Date.now();
+        }
         docs.push({
           id: docSnap.id,
           ...data,
@@ -901,9 +926,13 @@ export const addDocumentToFirestore = async (uid: string, docData: any): Promise
     const docRef = doc(db, 'users', uid, 'documents', docId);
     const safeDocData = { ...docData };
 
-    const timestamp = typeof safeDocData.timestamp === 'number' && !isNaN(safeDocData.timestamp)
-      ? safeDocData.timestamp
-      : Date.now();
+    let timestamp = Date.now();
+    if (typeof safeDocData.timestamp === 'number' && !isNaN(safeDocData.timestamp) && safeDocData.timestamp > 0) {
+      timestamp = safeDocData.timestamp;
+    } else if (typeof safeDocData.timestamp === 'string') {
+      const parsed = new Date(safeDocData.timestamp).getTime();
+      if (!isNaN(parsed) && parsed > 0) timestamp = parsed;
+    }
     const fiveYearsMs = 5 * 365.25 * 24 * 60 * 60 * 1000;
     const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
     const expiresAt = safeDocData.expiresAt || new Date(timestamp + fiveYearsMs).toISOString();
@@ -914,7 +943,7 @@ export const addDocumentToFirestore = async (uid: string, docData: any): Promise
       delete safeDocData.dataUrl;
     }
 
-    const payload = {
+    const payload: Record<string, any> = {
       ...safeDocData,
       id: docId,
       timestamp,
@@ -927,7 +956,14 @@ export const addDocumentToFirestore = async (uid: string, docData: any): Promise
       updatedAt: new Date().toISOString()
     };
 
-    await setDoc(docRef, payload, { merge: true });
+    const cleanPayload: Record<string, any> = {};
+    for (const [key, value] of Object.entries(payload)) {
+      if (value !== undefined) {
+        cleanPayload[key] = value;
+      }
+    }
+
+    await setDoc(docRef, cleanPayload, { merge: true });
   } catch (err) {
     console.warn('Firestore add document notice (offline/unavailable):', err);
   }

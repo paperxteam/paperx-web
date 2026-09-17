@@ -11,30 +11,32 @@ export interface FormatFileNameOptions {
 /**
  * Clean, simple, bug-free file naming utility.
  */
-export function generateFormattedFileName(options: FormatFileNameOptions): string {
+export function generateFormattedFileName(options?: FormatFileNameOptions): string {
   const {
     baseName = 'Document',
     toolName = 'Scan',
     pattern: inputPattern,
     existingCount = 1,
     extension: customExt
-  } = options;
+  } = options || {};
 
   const activePattern: string =
     inputPattern ||
-    localStorage.getItem('pref_namingPattern') ||
+    (typeof localStorage !== 'undefined' ? localStorage.getItem('pref_namingPattern') : null) ||
     'simple';
 
   // Clean rawBase and extract extension cleanly without duplication
-  let rawBase = baseName;
-  let ext = customExt || '.pdf';
+  let rawBase = typeof baseName === 'string' ? baseName : (baseName ? String(baseName) : 'Document');
+  let ext = typeof customExt === 'string' ? customExt : '.pdf';
 
-  if (rawBase.includes('.')) {
-    const lastDot = rawBase.lastIndexOf('.');
-    if (!customExt) {
-      ext = rawBase.substring(lastDot);
+  if (rawBase && typeof rawBase.includes === 'function' && rawBase.includes('.')) {
+    const lastDot = typeof rawBase.lastIndexOf === 'function' ? rawBase.lastIndexOf('.') : -1;
+    if (lastDot !== -1) {
+      if (!customExt) {
+        ext = rawBase.substring(lastDot);
+      }
+      rawBase = rawBase.substring(0, lastDot);
     }
-    rawBase = rawBase.substring(0, lastDot);
   }
 
   // Ensure extension starts with a single dot

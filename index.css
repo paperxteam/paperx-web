@@ -188,17 +188,17 @@ html[data-larger-text="true"] textarea {
 
 /* Glass Header Bar for Profile & Preference Sub-views */
 .ios-glass-header {
-  background: rgba(255, 255, 255, 0.45) !important;
-  backdrop-filter: blur(32px) saturate(240%) contrast(105%) !important;
-  -webkit-backdrop-filter: blur(32px) saturate(240%) contrast(105%) !important;
+  background: rgba(255, 255, 255, 0.18) !important;
+  backdrop-filter: blur(22px) saturate(240%) contrast(105%) !important;
+  -webkit-backdrop-filter: blur(22px) saturate(240%) contrast(105%) !important;
   border-bottom: 1px solid rgba(255, 255, 255, 0.45) !important;
   box-shadow: 0 4px 24px -2px rgba(0, 0, 0, 0.06) !important;
 }
 
 .dark .ios-glass-header {
-  background: rgba(12, 14, 20, 0.45) !important;
-  backdrop-filter: blur(32px) saturate(240%) contrast(105%) !important;
-  -webkit-backdrop-filter: blur(32px) saturate(240%) contrast(105%) !important;
+  background: rgba(12, 14, 20, 0.22) !important;
+  backdrop-filter: blur(22px) saturate(240%) contrast(105%) !important;
+  -webkit-backdrop-filter: blur(22px) saturate(240%) contrast(105%) !important;
   border-bottom: 1px solid rgba(255, 255, 255, 0.15) !important;
   box-shadow: 0 4px 24px -2px rgba(0, 0, 0, 0.45) !important;
 }

@@ -937,7 +937,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({ mode: initialMode, onAuthSuc
                                     )}
                                     {otpVerifyState === 'checking' && (
                                         <div className="flex items-center gap-1.5 text-xs font-semibold text-gray-500 dark:text-gray-400">
-                                            <Loader2 size={13} className="animate-spin text-[#FF671F]" />
+                                            <Loader2 size={13} className="animate-spin text-indigo-500" />
                                             <span>Verifying code...</span>
                                         </div>
                                     )}
