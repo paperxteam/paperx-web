@@ -1,274 +1,88 @@
-@import url('https://fonts.googleapis.com/css2?family=Permanent+Marker&display=swap');
-@import "tailwindcss";
-
-@variant dark (&:where(.dark, .dark *));
-
-@theme {
-  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
-  --font-heading: "Outfit", ui-sans-serif, system-ui, sans-serif;
-  --font-handwritten: "Permanent Marker", cursive;
-}
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
 
 @layer base {
+  * {
+    font-weight: 700 !important;
+  }
+
+  h1, h2, h3, h4, h5, h6, .font-black, .font-extrabold {
+    font-weight: 800 !important;
+  }
+
   body {
-    @apply bg-white text-gray-900 dark:bg-gray-950 dark:text-gray-100;
+    font-weight: 700 !important;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  p, span, label, input, select, textarea, button, h1, h2, h3, h4, h5, h6, option, table, th, td, div, a, li {
+    font-weight: 700 !important;
+  }
+
+  input, select, textarea {
+    font-weight: 700 !important;
+  }
+
+  input::placeholder, textarea::placeholder {
+    font-weight: 600 !important;
+    color: #4b5563 !important;
+    opacity: 0.9 !important;
+  }
+
+  .dark input::placeholder, .dark textarea::placeholder {
+    color: #9ca3af !important;
+    opacity: 0.9 !important;
   }
 }
 
-/* Font Size & Accessibility Larger Text / Enhanced Legibility System */
-html {
-  font-size: 16px;
-}
-
-/* Device Default (Auto-scales based on screen class and device type) */
-html[data-font-size="system"] {
-  font-size: 15px; /* Compact mobile screens */
-}
-@media (min-width: 640px) {
-  html[data-font-size="system"] {
-    font-size: 16px; /* Tablets & laptops */
+@layer utilities {
+  .ios-glass-drawer {
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
   }
-}
-@media (min-width: 1440px) {
-  html[data-font-size="system"] {
-    font-size: 16.5px; /* Large desktop displays */
+  .ios-glass-header {
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
   }
-}
-
-html[data-font-size="small"] {
-  font-size: 14px;
-}
-html[data-font-size="medium"] {
-  font-size: 16px;
-}
-html[data-font-size="large"] {
-  font-size: 18px;
-}
-
-/* Enhanced Legibility / Accessibility Text Scaling Overrides */
-html[data-larger-text="true"][data-font-size="system"] {
-  font-size: 17.5px;
-}
-@media (min-width: 640px) {
-  html[data-larger-text="true"][data-font-size="system"] {
-    font-size: 18.5px;
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
   }
 }
 
-/* Enhanced Legibility / Accessibility Text Scaling Overrides */
-html[data-larger-text="true"][data-font-size="small"] {
-  font-size: 16px;
-}
-html[data-larger-text="true"][data-font-size="medium"] {
-  font-size: 18.5px;
-}
-html[data-larger-text="true"][data-font-size="large"] {
-  font-size: 21px;
-}
-html[data-larger-text="true"] {
-  font-size: 18.5px;
-  letter-spacing: 0.012em;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-}
-
-html[data-larger-text="true"] body {
-  font-weight: 450;
-  line-height: 1.6;
-}
-
-html[data-larger-text="true"] p,
-html[data-larger-text="true"] span,
-html[data-larger-text="true"] label,
-html[data-larger-text="true"] button,
-html[data-larger-text="true"] input,
-html[data-larger-text="true"] select,
-html[data-larger-text="true"] textarea {
-  letter-spacing: 0.015em;
+@keyframes gpuSmoothBlurIn {
+  0% {
+    opacity: 0;
+    -webkit-filter: blur(16px);
+    filter: blur(16px);
+    transform: scale(0.99) translateZ(0);
+  }
+  35% {
+    opacity: 0.7;
+    -webkit-filter: blur(8px);
+    filter: blur(8px);
+  }
+  70% {
+    opacity: 0.95;
+    -webkit-filter: blur(2px);
+    filter: blur(2px);
+  }
+  100% {
+    opacity: 1;
+    -webkit-filter: blur(0px);
+    filter: blur(0px);
+    transform: scale(1) translateZ(0);
+  }
 }
 
-/* Removed Dark Mode Overrides that interfere with Tailwind dark: classes */
-
-@keyframes pulse-soft {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.8; transform: scale(0.98); }
+.animate-gpu-blur-in {
+  animation: gpuSmoothBlurIn 0.38s cubic-bezier(0.16, 1, 0.3, 1) both;
+  will-change: transform, opacity, filter;
+  transform: translateZ(0);
+  backface-visibility: hidden;
 }
-
-@keyframes shimmer {
-  100% { transform: translateX(100%); }
-}
-
-@keyframes scan-line {
-  0% { transform: translateY(0); }
-  100% { transform: translateY(1000%); } /* Adjust based on container height */
-}
-
-@keyframes fade-in {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
-
-@keyframes fade-in-up {
-  from { opacity: 0; transform: translateY(20px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
-@keyframes slide-in-right {
-  from { transform: translateX(100%); }
-  to { transform: translateX(0); }
-}
-
-@keyframes scale-in {
-  from { opacity: 0; transform: scale(0.95) translateY(10px); }
-  to { opacity: 1; transform: scale(1) translateY(0); }
-}
-
-.animate-scale-in {
-  animation: scale-in 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
-}
-
-.animate-pulse-soft {
-  animation: pulse-soft 3s ease-in-out infinite;
-}
-
-.animate-shimmer {
-  animation: shimmer 3s infinite;
-}
-
-.animate-scan-line {
-  animation: scan-line 2s linear infinite;
-}
-
-.animate-fade-in {
-  animation: fade-in 0.3s ease-out forwards;
-}
-
-.animate-fade-in-up {
-  animation: fade-in-up 0.5s ease-out forwards;
-}
-
-.animate-slide-in-right {
-  animation: slide-in-right 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
-}
-
-/* iOS 27 Liquid Glass / Ultra-HD Translucent App Drawer */
-.ios-glass-drawer {
-  background: rgba(255, 255, 255, 0.18) !important;
-  backdrop-filter: blur(22px) saturate(240%) contrast(105%) !important;
-  -webkit-backdrop-filter: blur(22px) saturate(240%) contrast(105%) !important;
-  border-right: 1px solid rgba(255, 255, 255, 0.50) !important;
-  box-shadow: 0 30px 90px -12px rgba(0, 0, 0, 0.08),
-              inset 0 1px 1.5px 0 rgba(255, 255, 255, 0.95),
-              inset 0 -1px 1px 0 rgba(0, 0, 0, 0.02),
-              inset 1px 0 0 0 rgba(255, 255, 255, 0.65) !important;
-}
-
-.dark .ios-glass-drawer {
-  background: rgba(12, 14, 20, 0.22) !important;
-  backdrop-filter: blur(22px) saturate(240%) contrast(105%) !important;
-  -webkit-backdrop-filter: blur(22px) saturate(240%) contrast(105%) !important;
-  border-right: 1px solid rgba(255, 255, 255, 0.14) !important;
-  box-shadow: 0 30px 90px -12px rgba(0, 0, 0, 0.50),
-              inset 0 1px 1.5px 0 rgba(255, 255, 255, 0.25),
-              inset 1px 0 0 0 rgba(255, 255, 255, 0.18) !important;
-}
-
-/* Liquid Pill Nav Items */
-.ios-nav-pill-active {
-  background: rgba(10, 10, 12, 0.92) !important;
-  color: #ffffff !important;
-  box-shadow: 0 6px 20px -2px rgba(0, 0, 0, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.15) !important;
-}
-
-.dark .ios-nav-pill-active {
-  background: rgba(255, 255, 255, 0.95) !important;
-  color: #09090b !important;
-  box-shadow: 0 6px 20px -2px rgba(255, 255, 255, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.4) !important;
-}
-
-/* Glass Header Bar for Profile & Preference Sub-views */
-.ios-glass-header {
-  background: rgba(255, 255, 255, 0.18) !important;
-  backdrop-filter: blur(22px) saturate(240%) contrast(105%) !important;
-  -webkit-backdrop-filter: blur(22px) saturate(240%) contrast(105%) !important;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.45) !important;
-  box-shadow: 0 4px 24px -2px rgba(0, 0, 0, 0.06) !important;
-}
-
-.dark .ios-glass-header {
-  background: rgba(12, 14, 20, 0.22) !important;
-  backdrop-filter: blur(22px) saturate(240%) contrast(105%) !important;
-  -webkit-backdrop-filter: blur(22px) saturate(240%) contrast(105%) !important;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.15) !important;
-  box-shadow: 0 4px 24px -2px rgba(0, 0, 0, 0.45) !important;
-}
-
-/* Water Drop Glass Pill Container */
-.ios-water-pill-container {
-  background: rgba(255, 255, 255, 0.15) !important;
-  backdrop-filter: blur(16px) saturate(180%) !important;
-  -webkit-backdrop-filter: blur(16px) saturate(180%) !important;
-  border: 1px solid rgba(255, 255, 255, 0.4) !important;
-  box-shadow: 
-    inset 0 1px 3px rgba(0, 0, 0, 0.05),
-    inset 0 -1px 2px rgba(255, 255, 255, 0.5),
-    0 2px 12px -2px rgba(0, 0, 0, 0.03) !important;
-  border-radius: 9999px !important;
-}
-
-.dark .ios-water-pill-container {
-  background: rgba(0, 0, 0, 0.25) !important;
-  backdrop-filter: blur(16px) saturate(180%) !important;
-  -webkit-backdrop-filter: blur(16px) saturate(180%) !important;
-  border: 1px solid rgba(255, 255, 255, 0.08) !important;
-  border-top-color: rgba(0, 0, 0, 0.4) !important;
-  box-shadow: 
-    inset 0 2px 6px rgba(0, 0, 0, 0.5),
-    inset 0 -1px 1px rgba(255, 255, 255, 0.05),
-    0 1px 0 rgba(255, 255, 255, 0.03) !important;
-  border-radius: 9999px !important;
-}
-
-@keyframes water-shimmer {
-  0% { background-position: 0% 50%; }
-  50% { background-position: 100% 50%; }
-  100% { background-position: 0% 50%; }
-}
-
-/* Water Drop Glass Active Item */
-.ios-water-pill-active {
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.9) 0%, rgba(255, 255, 255, 0.3) 50%, rgba(255, 255, 255, 0.9) 100%) !important;
-  background-size: 200% 200% !important;
-  animation: water-shimmer 4s ease-in-out infinite !important;
-  backdrop-filter: blur(8px) saturate(200%) !important;
-  -webkit-backdrop-filter: blur(8px) saturate(200%) !important;
-  border: 1px solid rgba(255, 255, 255, 0.6) !important;
-  border-top-color: rgba(255, 255, 255, 1) !important;
-  border-bottom-color: rgba(255, 255, 255, 0.2) !important;
-  box-shadow: 
-    inset 0 2px 4px rgba(255, 255, 255, 1),
-    inset 0 -2px 6px rgba(255, 255, 255, 0.5),
-    0 6px 12px -2px rgba(0, 0, 0, 0.12), 
-    0 2px 4px -1px rgba(0, 0, 0, 0.06) !important;
-  color: #000 !important;
-  border-radius: 9999px !important;
-}
-
-.dark .ios-water-pill-active {
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.25) 0%, rgba(255, 255, 255, 0.02) 50%, rgba(255, 255, 255, 0.25) 100%) !important;
-  background-size: 200% 200% !important;
-  animation: water-shimmer 4s ease-in-out infinite !important;
-  backdrop-filter: blur(12px) saturate(180%) !important;
-  -webkit-backdrop-filter: blur(12px) saturate(180%) !important;
-  border: 1px solid rgba(255, 255, 255, 0.15) !important;
-  border-top-color: rgba(255, 255, 255, 0.4) !important;
-  border-bottom-color: rgba(0, 0, 0, 0.5) !important;
-  box-shadow: 
-    inset 0 2px 3px rgba(255, 255, 255, 0.25),
-    inset 0 -2px 5px rgba(255, 255, 255, 0.05),
-    0 8px 16px -2px rgba(0, 0, 0, 0.5), 
-    0 4px 8px -2px rgba(0, 0, 0, 0.3) !important;
-  color: #fff !important;
-  border-radius: 9999px !important;
-}
-

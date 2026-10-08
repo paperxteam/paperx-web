@@ -1,0 +1,9 @@
+{
+  "ip_127_0_0_1": {
+    "operationsUsed": 1,
+    "completedOperations": [
+      "test_op_1"
+    ],
+    "lastActive": "2026-09-23T08:37:29.093Z"
+  }
+}

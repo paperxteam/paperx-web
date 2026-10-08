@@ -1,0 +1,144 @@
+{
+  "usr_c4f09a792f263a5c0ce8c834": {
+    "userName": "User",
+    "userEmail": "Guest",
+    "chatId": "usr_c4f09a792f263a5c0ce8c834",
+    "unreadByUser": true,
+    "updatedAt": 1789828380272,
+    "unreadByAdmin": false,
+    "userId": "usr_c4f09a792f263a5c0ce8c834",
+    "lastMessage": "Great news! Your payment for Pro Plan (Order PX-PAP-LKO7-NMD5D) has been VERIFIED & APPROVED. Your account has been upgraded with all premium perks immediately!",
+    "messages": [
+      {
+        "timestamp": 1789827464461,
+        "senderName": "PaperX Official Support",
+        "text": "Great news! Your payment for Pro Plan (Order PX-PAP-1XTG-Q5CZ2) has been VERIFIED & APPROVED. Your account has been upgraded with all premium perks immediately!",
+        "id": "msg_1789827464461",
+        "sender": "admin"
+      },
+      {
+        "timestamp": 1789827549483,
+        "sender": "admin",
+        "id": "msg_refund_1789827549483",
+        "senderName": "PaperX Official Support",
+        "text": "🔄 Simultaneous Upgrade Success! Your previous order (upgrade-from-plus-membership) has been automatically marked for REFUND as you've upgraded to Max Plan. The refund will be processed back to your original source within 3-5 business days."
+      },
+      {
+        "senderName": "PaperX Official Support",
+        "text": "Great news! Your payment for Max Plan (Order PX-PAP-3KFB-96KE5) has been VERIFIED & APPROVED. Your account has been upgraded with all premium perks immediately!",
+        "id": "msg_1789827549569",
+        "timestamp": 1789827549569,
+        "sender": "admin"
+      },
+      {
+        "sender": "admin",
+        "id": "msg_1789827689008",
+        "senderName": "PaperX Official Support",
+        "text": "❌ Your refund request (Ticket TICK-MU8H6IVI-IW24) was **REJECTED** due to wrong information (invalid UPI or Phone). Please update your details in Payment History.",
+        "timestamp": 1789827689008
+      },
+      {
+        "timestamp": 1789827737214,
+        "id": "msg_1789827737214",
+        "sender": "admin",
+        "senderName": "PaperX Official Support",
+        "text": "⏳ Your refund request (Ticket TICK-MU8H7LUB-5RKD) is now being **PROCESSED** by our finance team."
+      },
+      {
+        "timestamp": 1789827744677,
+        "senderName": "PaperX Official Support",
+        "text": "✅ Your refund for ticket TICK-MU8H7LUB-5RKD has been **COMPLETED & PAID** to your provided UPI ID. Please check your bank account.",
+        "sender": "admin",
+        "id": "msg_1789827744677"
+      },
+      {
+        "id": "msg_1789828380186",
+        "sender": "admin",
+        "senderName": "PaperX Official Support",
+        "text": "Great news! Your payment for Pro Plan (Order PX-PAP-LKO7-NMD5D) has been VERIFIED & APPROVED. Your account has been upgraded with all premium perks immediately!",
+        "timestamp": 1789828380186
+      }
+    ],
+    "id": "usr_c4f09a792f263a5c0ce8c834"
+  },
+  "user_asKlB4Aa5gS0zqLuubOLrZidSJr2_musiij6b_iqvp5": {
+    "messages": [
+      {
+        "id": "msg_bot_1791043885922",
+        "sender": "bot",
+        "senderName": "PaperX Assistant",
+        "text": "Hello Sayan! Welcome to PaperX Support. I am your dedicated AI assistant. What document tool, conversion, or account feature can I assist you with today?",
+        "timestamp": 1791043885922
+      },
+      {
+        "id": "msg_bot_1791043913831",
+        "sender": "bot",
+        "senderName": "PaperX Assistant",
+        "text": "Hello Sayan! Welcome to PaperX Support. I am your dedicated AI assistant. What document tool, conversion, or account feature can I assist you with today?",
+        "timestamp": 1791043913831
+      },
+      {
+        "id": "msg_bot_1791043933069",
+        "sender": "bot",
+        "senderName": "PaperX Assistant",
+        "text": "**UPI Payment & UTR Verification:**\n1. Scan the official UPI QR code in the Upgrade modal.\n2. Complete payment via GPay, PhonePe, Paytm, CRED, or BHIM.\n3. Enter the 12-digit UPI UTR transaction reference number in the box.\n4. Once submitted, our automated billing desk verifies the bank settlement and activates your plan immediately.\nOfficial GST/billing receipts are issued to your registered email. If you need invoice assistance, contact: **paperx.assist@gmail.com**.",
+        "timestamp": 1791043933069
+      },
+      {
+        "id": "msg_bot_1791045119629",
+        "sender": "bot",
+        "senderName": "PaperX Assistant",
+        "text": "PaperX AI Support is active and operational! All 30+ tools—including Neural OCR, Document Translation, PDF Conversions (Word, Excel, PPT, JPG), Compression, Merge, Split, and Sign & Protect—are fully available.\n\nPlease ask any question about using PaperX, account plans, or type **\"Talk with CEO\"** to connect directly with CEO Sayan Biswas.",
+        "timestamp": 1791045119629
+      },
+      {
+        "id": "msg_bot_1791045189422",
+        "sender": "bot",
+        "senderName": "PaperX Assistant",
+        "text": "**PaperX Membership Plans:**\n• **Free Tier**: 50MB per file, 100 pages per conversion, access to standard tools.\n• **Pro Plan**: 250MB per file, unlimited pages, priority neural OCR queue.\n• **Max Plan**: 500MB per file, unlimited pages, VIP ultra-fast processing queue, parallel batch engine, lifetime cloud storage.\nVisit the **Pricing** tab to upgrade anytime!",
+        "timestamp": 1791045189422
+      },
+      {
+        "id": "msg_sys_1791339875386",
+        "sender": "system",
+        "senderName": "System Notice",
+        "text": "⏱️ This chat session has been closed due to 10 minutes of inactivity.",
+        "timestamp": 1791339875386,
+        "isSystemNotice": true
+      }
+    ],
+    "lastMessage": "Chat closed due to 10 minutes of inactivity",
+    "updatedAt": 1791045189422,
+    "status": "closed",
+    "id": "user_asKlB4Aa5gS0zqLuubOLrZidSJr2_musiij6b_iqvp5",
+    "closedReason": "inactivity_timeout",
+    "closedAt": 1791339875386,
+    "unreadByUser": true
+  },
+  "test_chat_1": {
+    "messages": [
+      {
+        "id": "msg_bot_1791045366055",
+        "sender": "bot",
+        "senderName": "PaperX Assistant",
+        "text": "PaperX AI Support is active and operational! All 30+ tools—including Neural OCR, Document Translation, PDF Conversions (Word, Excel, PPT, JPG), Compression, Merge, Split, and Sign & Protect—are fully available.\n\nPlease ask any question about using PaperX, account plans, or type **\"Talk with CEO\"** to connect directly with CEO Sayan Biswas.",
+        "timestamp": 1791045366055
+      },
+      {
+        "id": "msg_sys_1791339875386",
+        "sender": "system",
+        "senderName": "System Notice",
+        "text": "⏱️ This chat session has been closed due to 10 minutes of inactivity.",
+        "timestamp": 1791339875386,
+        "isSystemNotice": true
+      }
+    ],
+    "lastMessage": "Chat closed due to 10 minutes of inactivity",
+    "updatedAt": 1791045366055,
+    "status": "closed",
+    "id": "test_chat_1",
+    "closedReason": "inactivity_timeout",
+    "closedAt": 1791339875386,
+    "unreadByUser": true
+  }
+}

@@ -372,6 +372,18 @@ export const CameraScanner: React.FC<CameraScannerProps> = ({ isOpen, onClose, o
         };
     }, [stream, detectLoop]);
 
+    // Automatically start the camera stream when the scanner is opened
+    useEffect(() => {
+        if (isOpen) {
+            startCamera(facingMode);
+        } else {
+            stopCamera();
+        }
+        return () => {
+            stopCamera();
+        };
+    }, [isOpen, startCamera, facingMode, stopCamera]);
+
     // Toggle Camera (Front vs Back)
     const toggleFacingMode = () => {
         const next = facingMode === 'environment' ? 'user' : 'environment';
@@ -859,7 +871,7 @@ export const CameraScanner: React.FC<CameraScannerProps> = ({ isOpen, onClose, o
     if (!isOpen) return null;
 
     return (
-        <div className="fixed inset-0 z-[100] bg-black/95 backdrop-blur-md flex flex-col animate-fade-in text-white select-none">
+        <div className="fixed inset-0 z-[100] bg-black/95 flex flex-col animate-fade-in text-white select-none">
             {/* Hidden File Input for scanning document photos/files directly */}
             <input 
                 type="file" 
@@ -984,9 +996,9 @@ export const CameraScanner: React.FC<CameraScannerProps> = ({ isOpen, onClose, o
                                         {/* Animated Scanning Beam */}
                                         <div className="absolute inset-x-10 h-[2px] bg-gradient-to-r from-transparent via-yellow-400 to-transparent animate-scan-line opacity-75"></div>
 
-                                        <div className="bg-black/60 backdrop-blur-md px-3.5 py-1.5 rounded-full border border-white/10 shadow-lg">
+                                        <div className="bg-black/60 px-3.5 py-1.5 rounded-full border border-white/10 shadow-lg">
                                             <div className="text-white text-[10px] font-black tracking-widest uppercase flex items-center gap-2">
-                                                <div className="w-2 h-2 rounded-full bg-yellow-400 animate-pulse" />
+                                                <div className="w-2 h-2 rounded-full bg-yellow-400" />
                                                 Align document inside frame
                                             </div>
                                         </div>
@@ -995,7 +1007,7 @@ export const CameraScanner: React.FC<CameraScannerProps> = ({ isOpen, onClose, o
 
                                 {lastCornersRef.current && (
                                     <div className="absolute top-4 inset-x-0 flex justify-center pointer-events-none">
-                                        <div className="bg-yellow-400 text-stone-950 font-black text-[10px] tracking-wider uppercase px-3 py-1 rounded-full shadow-lg flex items-center gap-1.5 animate-bounce">
+                                        <div className="bg-yellow-400 text-stone-950 font-black text-[10px] tracking-wider uppercase px-3 py-1 rounded-full shadow-lg flex items-center gap-1.5">
                                             <Check size={12} strokeWidth={3} /> Page Detected
                                         </div>
                                     </div>
@@ -1053,12 +1065,19 @@ export const CameraScanner: React.FC<CameraScannerProps> = ({ isOpen, onClose, o
                                 {/* Center: Shutter Capture Button */}
                                 <div className="flex-shrink-0 px-4">
                                     <button 
-                                        onClick={() => captureImage(captureMode === 'full')}
+                                        onClick={async () => {
+                                            await captureImage(captureMode === 'full');
+                                            if (localStorage.getItem('pref_autoSaveScan') !== 'false') {
+                                                // Trigger auto-save if enabled
+                                                // Assuming a library save function exists or needs to be called
+                                                await handleCreate('pdf', false); 
+                                            }
+                                        }}
                                         disabled={images.length >= 30}
                                         className="relative group disabled:opacity-40 active:scale-90 transition-transform cursor-pointer"
                                         title="Snap & Scan Page"
                                     >
-                                        <div className="absolute inset-0 bg-yellow-400/20 rounded-full blur-xl group-hover:bg-yellow-400/30 transition-all"></div>
+                                        <div className="absolute inset-0 bg-yellow-400/20 rounded-full  group-hover:bg-yellow-400/30 transition-all"></div>
                                         <div className="relative w-18 h-18 rounded-full border-4 border-white flex items-center justify-center shadow-2xl">
                                             <div className="w-14 h-14 rounded-full bg-white group-hover:scale-95 transition-transform shadow-inner flex items-center justify-center">
                                                 <div className="w-4 h-4 rounded-full border-2 border-stone-400/40" />
@@ -1093,7 +1112,7 @@ export const CameraScanner: React.FC<CameraScannerProps> = ({ isOpen, onClose, o
                                                 stopCamera();
                                             }}
                                         >
-                                            <img src={img} alt={`Page ${idx + 1}`} className="w-full h-full object-cover" />
+                                            {img && <img src={img} alt={`Page ${idx + 1}`} className="w-full h-full object-cover" />}
                                             <button 
                                                 onClick={(e) => {
                                                     e.stopPropagation();
@@ -1157,17 +1176,17 @@ export const CameraScanner: React.FC<CameraScannerProps> = ({ isOpen, onClose, o
                                             {ocrResult}
                                         </pre>
                                     </div>
-                                ) : (
+                                ) : images[selectedIdx] ? (
                                     <img 
                                         src={images[selectedIdx]} 
                                         alt={`Page ${selectedIdx + 1}`} 
                                         className="max-w-full max-h-full object-contain rounded-xl shadow-2xl"
                                     />
-                                )}
+                                ) : null}
 
                                 {/* Processing Overlay */}
                                 {isProcessing && (
-                                    <div className="absolute inset-0 bg-black/75 backdrop-blur-sm flex flex-col items-center justify-center animate-fade-in z-30">
+                                    <div className="absolute inset-0 bg-black/75 flex flex-col items-center justify-center animate-fade-in z-30">
                                         <div className="w-12 h-12 border-4 border-yellow-400/20 border-t-yellow-400 rounded-full animate-spin mb-3"></div>
                                         <p className="text-white font-bold text-xs uppercase tracking-widest">
                                             Processing {processingType}...
@@ -1202,7 +1221,7 @@ export const CameraScanner: React.FC<CameraScannerProps> = ({ isOpen, onClose, o
                                         onClick={() => setSelectedIdx(idx)}
                                         className={`relative w-14 h-18 flex-shrink-0 rounded-xl overflow-hidden border-2 transition-all ${selectedIdx === idx ? 'border-yellow-400 scale-105 shadow-md shadow-yellow-500/20' : 'border-white/10 opacity-50 hover:opacity-90'}`}
                                     >
-                                        <img src={img} alt={`Page ${idx + 1}`} className="w-full h-full object-cover" />
+                                        {img && <img src={img} alt={`Page ${idx + 1}`} className="w-full h-full object-cover" />}
                                         <div className="absolute bottom-1 right-1 bg-black/70 text-[9px] font-black text-white px-1.5 py-0.5 rounded">
                                             {idx + 1}
                                         </div>

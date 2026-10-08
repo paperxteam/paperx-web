@@ -10,7 +10,7 @@
         "name": { "type": "string", "description": "Display name" },
         "email": { "type": "string", "description": "Email address" },
         "avatarUrl": { "type": "string", "description": "Avatar image URL" },
-        "plan": { "type": "string", "description": "Subscription plan (Basic Plan, Plus Plan, Max Plan)" },
+        "plan": { "type": "string", "description": "Subscription plan (Basic Plan, Pro Plan, Max Plan)" },
         "planExpiresAt": { "type": "string", "description": "Subscription expiration timestamp (ISO)" },
         "billingCycle": { "type": "string", "description": "Billing cycle (half-month, month, half-year, year)" },
         "subscriptionStatus": { "type": "string", "description": "Subscription status (active, expired, free, pending)" },
@@ -128,6 +128,23 @@
         "type": { "type": "string", "description": "Receipt type (PAYMENT_SUCCESSFUL, REFUND_SUCCESSFUL)" }
       },
       "required": ["receiptId", "uid", "amount", "status", "verificationId", "type"]
+    },
+    "UserSession": {
+      "title": "UserSession",
+      "description": "Active user device session and security tracking",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "deviceName": { "type": "string" },
+        "deviceType": { "type": "string" },
+        "browser": { "type": "string" },
+        "os": { "type": "string" },
+        "lastActive": { "type": "string" },
+        "loginTime": { "type": "string" },
+        "revoked": { "type": "boolean" }
+      },
+      "required": ["id", "userId", "deviceName"]
     }
   },
   "firestore": {
@@ -138,6 +155,10 @@
     "/users/{userId}/documents/{docId}": {
       "schema": "StoredDocument",
       "description": "5-year archived documents for user with real-time synchronization"
+    },
+    "/users/{userId}/sessions/{sessionId}": {
+      "schema": "UserSession",
+      "description": "Active user device sessions"
     },
     "/orders/{orderId}": {
       "schema": "Order",

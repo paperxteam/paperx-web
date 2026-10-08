@@ -9,72 +9,64 @@ service cloud.firestore {
       return isAuthenticated() && request.auth.uid == userId;
     }
 
-    function isNotExpired(userData) {
-      return !('planExpiresAt' in userData) || 
-             userData.planExpiresAt == null || 
-             userData.planExpiresAt == '' || 
-             request.time < timestamp.date(userData.planExpiresAt);
-    }
-
     // User profiles & user files
     match /users/{userId} {
-      allow read: if true;
-      allow write: if isOwner(userId) || true;
+      allow read, write: if isOwner(userId);
 
-      match /files/{fileId} {
-        allow read, write: if true;
+      // Documents vault (Recent and My Documents)
+      match /documents/{docId} {
+        allow read, write: if isOwner(userId);
+
+        // Document binary chunks for large files (>1MB)
+        match /chunks/{chunkId} {
+          allow read, write: if isOwner(userId);
+        }
       }
 
-      // 5-Year Document Vault with real-time sync
-      match /documents/{docId} {
-        allow read, write: if true;
+      // Active device sessions
+      match /sessions/{sessionId} {
+        allow read, write: if isOwner(userId);
       }
     }
 
     // Orders & UTR Payment submissions
     match /orders/{orderId} {
-      allow read, write: if true;
+      allow read: if isAuthenticated() && resource.data.uid == request.auth.uid;
+      allow write: if false; // Orders should be managed by backend
     }
 
     // Secure receipts
     match /receipts/{receiptId} {
-      allow read, write: if true;
+      allow read: if isAuthenticated() && resource.data.uid == request.auth.uid;
+      allow write: if false; // Receipts should be managed by backend
     }
 
-    // Support chats
-    match /support_chats/{chatId} {
-      allow read, write: if true;
-    }
-
-    // Payment transactions
-    match /payments/{paymentId} {
-      allow read, write: if true;
-    }
-
-    // Global app settings, banners, maintenance mode & pricing plans
+    // Global app settings
     match /app_settings/{settingId} {
       allow read: if true;
-      allow write: if true;
+      allow write: if false; // Settings should be managed by admin
     }
 
-    // Admin notifications, announcements & custom user messages
+    // Connection testing
+    match /test/{docId} {
+      allow read: if true;
+    }
+
+    // Admin notifications
     match /notifications/{notificationId} {
-      allow read, write: if true;
+      allow read: if isAuthenticated() && resource.data.recipient == request.auth.uid;
+      allow write: if false;
     }
 
-    // Audit logs
-    match /audit_logs/{logId} {
-      allow read, write: if true;
-    }
-
-    // Document conversion analytics
-    match /documents/{docId} {
-      allow read, write: if true;
+    // End-to-end secured support chats (Owner only)
+    match /support_chats/{chatId} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated() && (resource == null || resource.data.userId == request.auth.uid || request.resource.data.userId == request.auth.uid);
     }
 
     // Catch-all rule for all other collections
     match /{document=**} {
-      allow read, write: if true;
+      allow read, write: if false;
     }
   }
 }

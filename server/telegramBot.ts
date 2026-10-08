@@ -360,8 +360,8 @@ export const sendTelegramPaymentTicketNotification = async (data: {
         { text: "💬 Send Support Message", callback_data: `msg|${sUid}` }
       ],
       [
-        { text: "👑 Set Plus Plan", callback_data: `setplan|${sUid}|plus` },
-        { text: "👑 Set Max Plan", callback_data: `setplan|${sUid}|max` }
+        { text: "👑 Set Pro Plan", callback_data: `setplan|${sUid}|plus` },
+        { text: "👑 Set Max Plan", callback_data: `setplan|${sMaxUid || sUid}|max` }
       ]
     ])
   };
@@ -375,6 +375,7 @@ export const sendTelegramSupportNotification = async (data: {
   userEmail: string;
   query: string;
   chatId: string;
+  isCeoRequest?: boolean;
 }) => {
   const cidKey = data.chatId || (data.userId.startsWith('user_') || data.userId.startsWith('guest_') ? data.userId : `user_${data.userId}`);
   const sCid = toShortToken(cidKey);
@@ -388,7 +389,11 @@ export const sendTelegramSupportNotification = async (data: {
   const lowerQuery = (data.query || '').toLowerCase();
   const isPaymentRelated = lowerQuery.includes('utr') || lowerQuery.includes('payment') || lowerQuery.includes('money') || lowerQuery.includes('debited') || lowerQuery.includes('refund') || lowerQuery.includes('billing') || lowerQuery.includes('paid');
 
-  const html = `💬 <b>NEW SUPPORT INQUIRY (INSTANT)</b>\n\n` +
+  const headerTitle = data.isCeoRequest
+    ? `👑 🚨 <b>EXECUTIVE DESK: TALK WITH CEO SAYAN BISWAS</b> 🚨 👑\n\n⚡ <b>PRIORITY ESCALATION:</b> User has requested a direct conversation with CEO Sayan Biswas!`
+    : `💬 <b>NEW SUPPORT INQUIRY (INSTANT)</b>`;
+
+  const html = `${headerTitle}\n\n` +
     `• <b>User:</b> <code>${escapeHtml(data.userName || 'User')}</code> (${escapeHtml(data.userEmail || 'No email')})\n` +
     `• <b>User ID:</b> <code>${escapeHtml(data.userId)}</code>\n` +
     `• <b>Chat Thread:</b> <code>${escapeHtml(cidKey)}</code>\n\n` +
@@ -397,7 +402,7 @@ export const sendTelegramSupportNotification = async (data: {
 
   const inlineKeyboardRows: any[][] = [
     [
-      { text: "✍️ Custom Reply", callback_data: `custommsg_${sCid}` },
+      { text: data.isCeoRequest ? "✍️ Reply as CEO" : "✍️ Custom Reply", callback_data: `custommsg_${sCid}` },
       { text: "💡 Send AI Guide", callback_data: `sendai|${sCid}` }
     ]
   ];
@@ -410,7 +415,7 @@ export const sendTelegramSupportNotification = async (data: {
   }
 
   inlineKeyboardRows.push([
-    { text: "👑 Set Plus Plan", callback_data: `setplan|${sCid}|plus` },
+    { text: "👑 Set Pro Plan", callback_data: `setplan|${sCid}|plus` },
     { text: "👑 Set Max Plan", callback_data: `setplan|${sCid}|max` }
   ]);
 
@@ -891,7 +896,7 @@ export const initTelegramBot = async () => {
           const sOrderId = toShortToken(orderId);
           const uid = o.uid || 'Anonymous';
           const sUid = toShortToken(uid);
-          const plan = o.plan || 'Plus Plan';
+          const plan = o.plan || 'Pro Plan';
           const amount = o.amount || (plan.toLowerCase().includes('max') ? 100 : 50);
           const currency = o.currency || 'INR';
           const utr = o.utr || 'Not submitted yet';
@@ -947,7 +952,7 @@ export const initTelegramBot = async () => {
 
         for (const o of sortedOrders.slice(0, 15)) {
           const statusEmoji = (o.status === 'VERIFIED' || o.status === 'COMPLETED') ? '🟢 APPROVED' : o.status === 'REJECTED' ? '🔴 REJECTED' : '🟡 PENDING';
-          const planName = o.plan || 'Plus Plan';
+          const planName = o.plan || 'Pro Plan';
           const amount = o.amount || (planName.toLowerCase().includes('max') ? 100 : 50);
           const currency = o.currency || 'INR';
           const utr = o.utr || 'None provided';
@@ -1080,7 +1085,7 @@ export const initTelegramBot = async () => {
     const sendDirectUserMessage = async (adminChatId: number | string, userIdentifier: string, messageText: string) => {
       try {
         let targetUid = userIdentifier;
-        let targetChatId = userIdentifier;
+        const cleanUid = userIdentifier.replace(/^user_/, '');
 
         // If email provided, find user
         if (userIdentifier.includes('@')) {
@@ -1088,24 +1093,7 @@ export const initTelegramBot = async () => {
           const found = users.find(u => (u.email || '').toLowerCase() === userIdentifier.toLowerCase());
           if (found) {
             targetUid = found.id;
-            targetChatId = `user_${found.id}`;
           }
-        }
-
-        // Look up matching support chat document
-        const allChats = await getAllSupportChatDocs();
-        const matchingChat = allChats.find(c =>
-          c.chatId === userIdentifier ||
-          c.id === userIdentifier ||
-          c.userId === userIdentifier ||
-          (c.userEmail && c.userEmail.toLowerCase() === userIdentifier.toLowerCase())
-        );
-
-        if (matchingChat) {
-          targetChatId = matchingChat.chatId || matchingChat.id;
-          targetUid = matchingChat.userId || targetUid;
-        } else if (!targetChatId.startsWith('user_') && !targetChatId.startsWith('guest_')) {
-          targetChatId = `user_${targetChatId}`;
         }
 
         const newMsg = {
@@ -1116,9 +1104,50 @@ export const initTelegramBot = async () => {
           timestamp: Date.now()
         };
 
-        await pushChatMessage(targetChatId, targetUid, newMsg);
+        const deliveredTo = new Set<string>();
 
-        bot!.sendMessage(adminChatId, `✅ *Message delivered directly in-app to \`${targetChatId}\`!*\n\n• *User:* \`${targetUid}\`\n• *Message:* "${messageText}"`, { parse_mode: 'Markdown' });
+        // Look up all matching support chat documents for this user
+        const allChats = await getAllSupportChatDocs();
+        const matchingChats = allChats.filter(c =>
+          c.chatId === userIdentifier ||
+          c.id === userIdentifier ||
+          c.userId === userIdentifier ||
+          c.userId === cleanUid ||
+          (c.chatId && c.chatId.includes(cleanUid)) ||
+          (c.userEmail && c.userEmail.toLowerCase() === userIdentifier.toLowerCase())
+        );
+
+        if (matchingChats.length > 0) {
+          for (const mChat of matchingChats) {
+            const mId = mChat.chatId || mChat.id;
+            if (mId && !deliveredTo.has(mId)) {
+              await pushChatMessage(mId, cleanUid, newMsg);
+              deliveredTo.add(mId);
+            }
+          }
+        }
+
+        // Always ensure the base user doc (support_chats/user_${cleanUid}) is updated
+        const baseDocId = `user_${cleanUid}`;
+        if (!deliveredTo.has(baseDocId)) {
+          await pushChatMessage(baseDocId, cleanUid, newMsg);
+          deliveredTo.add(baseDocId);
+        }
+
+        // Emit real-time WebSocket events so the open chat modal renders the admin response immediately
+        emitAdminAction("admin-chat-message", { 
+          userId: cleanUid, 
+          chatId: baseDocId, 
+          message: newMsg 
+        });
+        emitAdminAction("support-chat-message", { 
+          userId: cleanUid, 
+          chatId: baseDocId, 
+          message: newMsg 
+        });
+
+        const targetDesc = Array.from(deliveredTo).join(', ');
+        bot!.sendMessage(adminChatId, `✅ *Message delivered directly in-app to user \`${cleanUid}\`!*\n\n• *Thread(s):* \`${targetDesc}\`\n• *Message:* "${messageText}"`, { parse_mode: 'Markdown' });
       } catch (err: any) {
         bot!.sendMessage(adminChatId, `⚠️ Failed to deliver message: ${err.message}`);
       }
@@ -1492,7 +1521,7 @@ export const initTelegramBot = async () => {
           }
           
           const planCode = parts[2] || 'plus';
-          const targetPlan = planCode === 'plus' ? 'Plus Plan' : planCode === 'max' ? 'Max Plan' : planCode === 'free' ? 'Free Plan' : planCode;
+          const targetPlan = planCode === 'plus' ? 'Pro Plan' : planCode === 'max' ? 'Max Plan' : planCode === 'free' ? 'Free Plan' : planCode;
           const uid = cid.startsWith('user_') ? cid.replace('user_', '') : cid;
           const isPro = targetPlan !== 'Free Plan' && targetPlan !== 'Basic Plan';
           const tier = targetPlan.toLowerCase().includes('max') ? 'max' : (targetPlan.toLowerCase().includes('plus') ? 'plus' : 'free');
@@ -1518,7 +1547,7 @@ export const initTelegramBot = async () => {
             sender: 'admin',
             senderName: 'PaperX Official Support',
             text: isPro 
-              ? `🎉 Great news! Your account membership has been updated to **${targetPlan}** by our Telegram Admin. All premium tools (Neural OCR, Document Translation, 500MB upload limits) are now unlocked!`
+              ? `Great news! Your account membership has been updated to **${targetPlan}** by our Telegram Admin. All premium tools (Neural OCR, Document Translation, 500MB upload limits) are now unlocked!`
               : `ℹ️ Your account membership plan has been set to **${targetPlan}**.`,
             timestamp: Date.now()
           };
@@ -1599,7 +1628,7 @@ export const initTelegramBot = async () => {
                 id: `msg_${Date.now()}`,
                 sender: 'admin',
                 senderName: 'PaperX Official Support',
-                text: `🎉 Great news! Your membership payment has been VERIFIED & APPROVED by our Telegram Admin. Your account has been upgraded to Pro Plan with full access to all tools!`,
+                text: `Great news! Your membership payment has been VERIFIED & APPROVED by our Telegram Admin. Your account has been upgraded to Pro Plan with full access to all tools!`,
                 timestamp: Date.now()
             };
             await pushChatMessage(cid || uid, uid, approvalMsg);
@@ -1848,24 +1877,69 @@ export const initTelegramBot = async () => {
           // 2. Fetch order data from database
           let oData = await getServerDoc('orders', oid) || (memOrder ? { plan: memOrder.plan, uid: memOrder.uid } : null);
 
-          // RECOVERY: If order not found and looks like a short token (or empty/undefined), try to parse from message
-          if (!oData && (oid.startsWith('k') || !oid || oid === 'undefined')) {
-            const recovered = recoverIdFromMessage(message.text || message.caption);
-            if (recovered && recovered !== 'undefined') {
-              console.log(`[Telegram Bot] Recovered order ID from message text for Approval: ${recovered}`);
-              oid = recovered;
+          // RECOVERY 1: Check if oid matches a support_tickets record
+          if (!oData && oid) {
+            const ticket = await getServerDoc('support_tickets', oid);
+            if (ticket) {
+              oData = {
+                uid: ticket.uid,
+                plan: ticket.plan || 'Pro Plan',
+                amount: ticket.amount || 50,
+                utr: ticket.utr,
+                ticketId: ticket.ticketId || oid,
+                status: 'PENDING'
+              };
+            }
+          }
+
+          // RECOVERY 2: If order not found or is placeholder (AI-REVIEW / short token / undefined), recover details from Telegram message text
+          if (!oData || oid === 'AI-REVIEW' || oid.startsWith('k') || !oid || oid === 'undefined') {
+            const msgText = message.text || message.caption || '';
+            const recoveredOid = recoverIdFromMessage(msgText);
+            if (recoveredOid && recoveredOid !== 'undefined' && recoveredOid !== 'AI-REVIEW') {
+              oid = recoveredOid;
               oData = await getServerDoc('orders', oid);
+            }
+
+            if (!oData) {
+              const uidMatch = msgText.match(/User ID:?\s*(?:<code>|`|\*|\b)([a-zA-Z0-9_-]{10,40})(?:<\/code>|`|\*|\b)?/i);
+              const planMatch = msgText.match(/Plan:?\s*(?:<b>|`|\*|\b)(Pro Plan|Max Plan|Basic Plan)(?:<\/b>|`|\*|\b)?/i);
+              const amountMatch = msgText.match(/Amount:?\s*(?:<b>|`|\*|\b)₹?([0-9.]+)(?:<\/b>|`|\*|\b)?/i);
+              const utrMatch = msgText.match(/UTR(?:\s*\/|\s*Ref)?:?\s*(?:<code>|`|\*|\b)([0-9A-Za-z_-]+)(?:<\/code>|`|\*|\b)?/i);
+              const ticketMatch = msgText.match(/Ticket(?: ID)?:?\s*(?:<code>|`|\*|\b)(TICK-[A-Z0-9_-]+)(?:<\/code>|`|\*|\b)?/i);
+
+              if (uidMatch) {
+                const userUid = uidMatch[1];
+                const planName = planMatch ? planMatch[1] : 'Pro Plan';
+                const amount = amountMatch ? parseFloat(amountMatch[1]) : (planName === 'Max Plan' ? 100 : 50);
+                const utr = utrMatch ? utrMatch[1] : '';
+                const ticketId = ticketMatch ? ticketMatch[1] : undefined;
+
+                if (!oid || oid === 'AI-REVIEW' || oid === 'undefined' || oid.startsWith('k')) {
+                  oid = `ORD-APP-${Date.now().toString(36).toUpperCase()}`;
+                }
+
+                oData = {
+                  uid: userUid,
+                  plan: planName,
+                  amount,
+                  utr,
+                  ticketId,
+                  status: 'PENDING'
+                };
+                console.log(`[Telegram Bot] Successfully recovered user (${userUid}) and plan (${planName}) from message text.`);
+              }
             }
           }
 
           if (!oData) {
-            bot.sendMessage(chatId, `⚠️ Order \`${oid}\` not found. Action aborted. (If you recently restarted the server, old buttons may not work if they used short tokens).`);
+            bot.sendMessage(chatId, `⚠️ Order/User information not found for this button. Please use the "👑 Set Pro Plan" or "👑 Set Max Plan" button directly.`);
             bot.answerCallbackQuery(callbackQuery.id, { text: "Error: Order not found" });
             return;
           }
 
           if (oData) {
-            const targetPlan = oData.plan || 'Plus Plan';
+            const targetPlan = (oData.plan === 'Pro Plan' || oData.plan === 'Plus') ? 'Pro Plan' : (oData.plan || 'Pro Plan');
             const userUid = oData.uid || 'guest_user';
             const billingCycle = oData.billingCycle || 'month';
             const durationDays = oData.durationDays || (
@@ -1968,7 +2042,7 @@ export const initTelegramBot = async () => {
               id: `msg_${Date.now()}`,
               sender: 'admin',
               senderName: 'PaperX Official Support',
-              text: `🎉 Great news! Your payment for ${targetPlan} (Order ${oid}) has been VERIFIED & APPROVED. Your account has been upgraded with all premium perks immediately!`,
+              text: `Great news! Your payment for ${targetPlan} (Order ${oid}) has been VERIFIED & APPROVED. Your account has been upgraded with all premium perks immediately!`,
               timestamp: Date.now()
             };
             await pushChatMessage(chatKey, userUid, approvalMsg);
@@ -2015,18 +2089,46 @@ export const initTelegramBot = async () => {
           // 2. Update Database Record
           let oData = await getServerDoc('orders', oid) || (memOrder ? { uid: memOrder.uid } : null);
 
-          // RECOVERY: If order not found and looks like a short token (or empty/undefined), try to parse from message
-          if (!oData && (oid.startsWith('k') || !oid || oid === 'undefined')) {
-            const recovered = recoverIdFromMessage(message.text || message.caption);
-            if (recovered && recovered !== 'undefined') {
-              console.log(`[Telegram Bot] Recovered order ID from message text for Rejection: ${recovered}`);
+          // RECOVERY 1: Check support_tickets
+          if (!oData && oid) {
+            const ticket = await getServerDoc('support_tickets', oid);
+            if (ticket) {
+              oData = {
+                uid: ticket.uid,
+                plan: ticket.plan || 'Pro Plan',
+                amount: ticket.amount || 0,
+                utr: ticket.utr,
+                ticketId: ticket.ticketId || oid,
+                status: 'PENDING'
+              };
+            }
+          }
+
+          // RECOVERY 2: If order not found and looks like a short token (or empty/undefined), try to parse from message
+          if (!oData || oid === 'AI-REVIEW' || oid.startsWith('k') || !oid || oid === 'undefined') {
+            const msgText = message.text || message.caption || '';
+            const recovered = recoverIdFromMessage(msgText);
+            if (recovered && recovered !== 'undefined' && recovered !== 'AI-REVIEW') {
               oid = recovered;
               oData = await getServerDoc('orders', oid);
+            }
+
+            if (!oData) {
+              const uidMatch = msgText.match(/User ID:?\s*(?:<code>|`|\*|\b)([a-zA-Z0-9_-]{10,40})(?:<\/code>|`|\*|\b)?/i);
+              if (uidMatch) {
+                oData = {
+                  uid: uidMatch[1],
+                  status: 'PENDING'
+                };
+                if (!oid || oid === 'AI-REVIEW' || oid === 'undefined' || oid.startsWith('k')) {
+                  oid = `ORD-REJ-${Date.now().toString(36).toUpperCase()}`;
+                }
+              }
             }
           }
 
           if (!oData) {
-            bot.sendMessage(chatId, `⚠️ Order \`${oid}\` not found. Action aborted. (If you recently restarted the server, old buttons may not work if they used short tokens).`);
+            bot.sendMessage(chatId, `⚠️ Order \`${oid}\` not found. Action aborted.`);
             bot.answerCallbackQuery(callbackQuery.id, { text: "Error: Order not found" });
             return;
           }

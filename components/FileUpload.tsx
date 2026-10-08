@@ -2,6 +2,8 @@ import React, { useCallback, useState, useRef } from 'react';
 import { UploadCloud, File as FileIcon, X, CheckCircle2, AlertCircle, Loader2, AlertTriangle, ArrowUp, Ban } from 'lucide-react';
 import { FileData } from '../types';
 import { motion, AnimatePresence } from 'motion/react';
+import { useAppTranslation } from '../translations';
+import { CloudStorageModal, GoogleDriveAnimatedIcon, DropboxAnimatedIcon, CloudProvider } from './CloudStorageModal';
 
 interface FileUploadProps {
   onFilesSelected: (files: File[]) => void;
@@ -24,9 +26,17 @@ export const FileUpload: React.FC<FileUploadProps> = ({
     maxFiles = 10,
     toolId
 }) => {
+  const { t } = useAppTranslation();
   const [isDragging, setIsDragging] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [isCloudModalOpen, setIsCloudModalOpen] = useState(false);
+  const [cloudModalProvider, setCloudModalProvider] = useState<CloudProvider>('google-drive');
   const dragCounter = useRef(0);
+
+  const openCloudImport = (provider: CloudProvider) => {
+    setCloudModalProvider(provider);
+    setIsCloudModalOpen(true);
+  };
 
   const validateAndSelectFiles = useCallback((fileList: File[]) => {
     setError(null);
@@ -111,57 +121,121 @@ export const FileUpload: React.FC<FileUploadProps> = ({
 
   const getAcceptString = () => {
       switch (toolId) {
-          case 'image-to-pdf': return 'image/jpeg,image/png,image/webp';
-          case 'word-to-pdf': return '.doc,.docx,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document';
-          case 'excel-to-pdf': return '.xls,.xlsx,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+          case 'image-to-pdf': 
+          case 'jpg-to-pdf':
+          case 'compress-image':
+          case 'image-to-text':
+              return 'image/jpeg,image/png,image/webp';
+          case 'word-to-pdf': 
+          case 'merge-docx':
+          case 'split-docx':
+          case 'docx-to-txt':
+          case 'docx-to-html':
+              return '.doc,.docx,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+          case 'excel-to-pdf': 
+          case 'merge-xlsx':
+          case 'split-xlsx':
+              return '.xls,.xlsx,.csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv';
+          case 'powerpoint-to-pdf':
+          case 'merge-pptx':
+          case 'split-pptx':
+              return '.ppt,.pptx,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.presentationml.presentation';
+          case 'csv-to-pdf':
+          case 'csv-to-xlsx':
+              return '.csv,text/csv';
+          case 'txt-to-pdf':
+          case 'txt-to-docx':
+              return '.txt,text/plain';
+          case 'markdown-to-pdf':
+          case 'markdown-to-docx':
+              return '.md,.markdown,text/markdown,text/plain';
+          case 'html-to-pdf':
+          case 'html-to-docx':
+              return '.html,.htm,text/html';
           case 'pdf-to-word':
-          case 'pdf-to-text':
+          case 'pdf-to-excel':
+          case 'pdf-to-powerpoint':
+          case 'pdf-to-txt':
+          case 'pdf-to-markdown':
+          case 'pdf-to-html':
+          case 'pdf-to-pdfa':
+          case 'pdf-to-csv':
+          case 'pdf-to-jpg':
+          case 'pdf-to-png':
           case 'merge-pdf':
           case 'split-pdf':
           case 'compress-pdf':
+          case 'repair-pdf':
+          case 'ocr-pdf':
           case 'protect-pdf':
+          case 'unlock-pdf':
           case 'sign-pdf':
           case 'edit-pdf':
-          case 'encrypt-pdf':
-          case 'draw-pdf':
-          case 'highlight-pdf':
-          case 'comment-pdf':
-          case 'sticky-notes-pdf':
-          case 'bookmark-pdf':
+          case 'rotate-pdf':
+          case 'rotate-pages':
+          case 'crop-pdf':
+          case 'add-page-numbers':
+          case 'watermark-pdf':
+          case 'add-header-footer':
+          case 'pdf-forms':
+          case 'pdf-find-replace':
+          case 'flatten-pdf':
+          case 'nup-pdf':
+          case 'redact-pdf':
+          case 'compare-pdf':
+          case 'extract-pages':
+          case 'remove-pages':
+          case 'replace-pages':
+          case 'insert-pages':
+          case 'duplicate-pages':
+          case 'organize-pdf':
               return 'application/pdf';
-          case 'auto-edge-detect':
-          case 'auto-enhance':
+          case 'add-image-to-pdf':
+              return 'application/pdf,image/jpeg,image/png,image/webp';
+          case 'scan-pdf':
               return 'image/jpeg,image/png,application/pdf';
           default:
-              return 'application/pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,image/jpeg,image/png';
+              return 'application/pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.csv,.txt,.md,.html,image/jpeg,image/png,image/webp';
       }
   };
 
   const getAcceptText = () => {
       switch (toolId) {
-          case 'image-to-pdf': return 'Support for JPG, PNG, WEBP. Max size 100MB.';
-          case 'word-to-pdf': return 'Support for DOC, DOCX. Max size 100MB.';
-          case 'excel-to-pdf': return 'Support for XLS, XLSX. Max size 100MB.';
-          case 'pdf-to-word':
-          case 'pdf-to-text':
-          case 'merge-pdf':
-          case 'split-pdf':
-          case 'compress-pdf':
-          case 'protect-pdf':
-          case 'sign-pdf':
-          case 'edit-pdf':
-          case 'encrypt-pdf':
-          case 'draw-pdf':
-          case 'highlight-pdf':
-          case 'comment-pdf':
-          case 'sticky-notes-pdf':
-          case 'bookmark-pdf':
-              return 'Support for PDF. Max size 100MB.';
-          case 'auto-edge-detect':
-          case 'auto-enhance':
-              return 'Support for PDF, JPG, PNG. Max size 100MB.';
+          case 'image-to-pdf':
+          case 'jpg-to-pdf':
+          case 'compress-image':
+          case 'image-to-text':
+              return 'Support for JPG, PNG, WEBP. Max size 100MB.';
+          case 'word-to-pdf':
+          case 'merge-docx':
+          case 'split-docx':
+          case 'docx-to-txt':
+          case 'docx-to-html':
+              return 'Support for DOC, DOCX. Max size 100MB.';
+          case 'excel-to-pdf':
+          case 'merge-xlsx':
+          case 'split-xlsx':
+              return 'Support for XLS, XLSX, CSV. Max size 100MB.';
+          case 'powerpoint-to-pdf':
+          case 'merge-pptx':
+          case 'split-pptx':
+              return 'Support for PPT, PPTX. Max size 100MB.';
+          case 'csv-to-pdf':
+          case 'csv-to-xlsx':
+              return 'Support for CSV files. Max size 100MB.';
+          case 'txt-to-pdf':
+          case 'txt-to-docx':
+              return 'Support for TXT plain text. Max size 100MB.';
+          case 'markdown-to-pdf':
+          case 'markdown-to-docx':
+              return 'Support for Markdown (.md) documents. Max size 100MB.';
+          case 'html-to-pdf':
+          case 'html-to-docx':
+              return 'Support for HTML web pages. Max size 100MB.';
+          case 'add-image-to-pdf':
+              return 'Select your PDF document and image files. Max size 100MB.';
           default:
-              return 'Support for PDF, Word, Excel, PPT, JPG and more. Max size 100MB.';
+              return 'Support for PDF, Word, Excel, PowerPoint, CSV, Text, HTML, and Images. Max size 100MB.';
       }
   };
 
@@ -180,13 +254,13 @@ export const FileUpload: React.FC<FileUploadProps> = ({
             initial={{ opacity: 0, scale: 0.95 }}
             animate={{ opacity: 1, scale: 1 }}
             exit={{ opacity: 0, scale: 0.95 }}
-            className="absolute inset-0 z-50 bg-white/90 backdrop-blur-md border-2 border-black border-dashed rounded-[2.5rem] flex flex-col items-center justify-center pointer-events-none"
+            className="absolute inset-0 z-50 bg-white/90 border-2 border-black border-dashed rounded-[2.5rem] flex flex-col items-center justify-center pointer-events-none"
           >
             <div className="p-6 bg-black rounded-3xl mb-4 shadow-2xl">
                <UploadCloud size={48} className="text-white animate-bounce" />
             </div>
-            <h3 className="text-3xl font-black text-gray-900 tracking-tight">Drop files here</h3>
-            <p className="text-gray-500 mt-2 font-medium text-lg">Add to your workspace instantly</p>
+            <h3 className="text-3xl font-black text-gray-900 tracking-tight">{t('dropFiles', 'Drop files here')}</h3>
+            <p className="text-gray-500 mt-2 font-medium text-lg">{t('addWorkspace', 'Add to your workspace instantly')}</p>
           </motion.div>
         )}
       </AnimatePresence>
@@ -231,11 +305,39 @@ export const FileUpload: React.FC<FileUploadProps> = ({
             <UploadCloud size={40} className={`text-gray-900 ${isDragging ? 'animate-bounce' : 'group-hover:text-black transition-transform'}`} strokeWidth={1.5} />
           </div>
           <h3 className="text-2xl font-black text-gray-900 mb-2 tracking-tight">
-            {isDragging ? 'Drop files to upload' : <span>Drop files here or <span className="underline decoration-2 underline-offset-4 decoration-black/20 hover:decoration-black transition-all">browse</span></span>}
+            {isDragging ? t('dropToUpload', 'Drop files to upload') : <span>{t('dropOrBrowse', 'Drop files here or')} <span className="underline decoration-2 underline-offset-4 decoration-black/20 hover:decoration-black transition-all">{t('browse', 'browse')}</span></span>}
           </h3>
           <p className="text-base text-gray-500 max-w-xs mx-auto font-medium">
             {getAcceptText()}
           </p>
+
+          {/* Cloud Provider Select Options */}
+          <div 
+            className="mt-4 pt-3 border-t border-gray-100 flex flex-wrap items-center justify-center gap-2 z-20"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <span className="text-xs font-semibold text-gray-400">or import from</span>
+            <div className="flex items-center gap-1.5 bg-gray-50/90 p-1 rounded-2xl border border-gray-200/60 shadow-2xs">
+              <button
+                type="button"
+                onClick={() => openCloudImport('google-drive')}
+                className="px-2.5 py-1.5 bg-white hover:bg-gray-50 text-gray-700 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 shadow-2xs cursor-pointer hover:scale-105 active:scale-95"
+                title="Import from Google Drive"
+              >
+                <GoogleDriveAnimatedIcon className="w-4 h-4" />
+                <span>Drive</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => openCloudImport('dropbox')}
+                className="px-2.5 py-1.5 bg-white hover:bg-gray-50 text-gray-700 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 shadow-2xs cursor-pointer hover:scale-105 active:scale-95"
+                title="Import from Dropbox"
+              >
+                <DropboxAnimatedIcon className="w-4 h-4" />
+                <span>Dropbox</span>
+              </button>
+            </div>
+          </div>
         </motion.div>
       ) : (
         <div className="space-y-8">
@@ -243,7 +345,7 @@ export const FileUpload: React.FC<FileUploadProps> = ({
           <motion.div 
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
-            className="bg-white/40 backdrop-blur-2xl rounded-[2rem] p-6 border border-white/60 shadow-sm"
+            className="bg-white/40 rounded-[2rem] p-6 border border-white/60 shadow-sm"
           >
              <div className="flex flex-wrap justify-between items-center mb-2 gap-2">
                 <h3 className="text-lg font-bold flex items-center gap-2 tracking-tight">
@@ -285,10 +387,30 @@ export const FileUpload: React.FC<FileUploadProps> = ({
                    )}
 
                    {files.length < maxFiles && !isBatchProcessing && !isBatchUploading && (
-                      <label className="group text-sm font-bold text-gray-600 hover:text-black cursor-pointer flex items-center gap-1 px-3 py-1.5 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors">
-                        <input type="file" multiple className="hidden" onChange={handleFileInput} accept={getAcceptString()} />
-                        <span className="group-hover:rotate-90 transition-transform inline-block">+</span> Add more
-                      </label>
+                      <div className="flex items-center gap-1.5">
+                        <label className="group text-sm font-bold text-gray-600 hover:text-black cursor-pointer flex items-center gap-1 px-3 py-1.5 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors">
+                          <input type="file" multiple className="hidden" onChange={handleFileInput} accept={getAcceptString()} />
+                          <span className="group-hover:rotate-90 transition-transform inline-block">+</span> Add more
+                        </label>
+                        <div className="flex items-center gap-1 bg-white border border-gray-200 rounded-lg p-0.5">
+                          <button
+                            type="button"
+                            onClick={() => openCloudImport('google-drive')}
+                            className="p-1 hover:bg-gray-100 rounded text-gray-700 transition-colors cursor-pointer"
+                            title="Add from Google Drive"
+                          >
+                            <GoogleDriveAnimatedIcon className="w-4 h-4" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => openCloudImport('dropbox')}
+                            className="p-1 hover:bg-gray-100 rounded text-gray-700 transition-colors cursor-pointer"
+                            title="Add from Dropbox"
+                          >
+                            <DropboxAnimatedIcon className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </div>
                    )}
                 </div>
              </div>
@@ -319,7 +441,7 @@ export const FileUpload: React.FC<FileUploadProps> = ({
                     initial={{ opacity: 0, scale: 0.95, y: 10 }}
                     animate={{ opacity: 1, scale: 1, y: 0 }}
                     exit={{ opacity: 0, scale: 0.95, x: -20 }}
-                    className={`group relative bg-white/60 backdrop-blur-xl border rounded-2xl p-5 flex items-center gap-5 shadow-sm hover:shadow-xl hover:border-white/80 transition-all ${file.status === 'cancelled' ? 'border-gray-100 opacity-60 bg-gray-50' : 'border-white/60'}`}
+                    className={`group relative bg-white/60  border rounded-2xl p-5 flex items-center gap-5 shadow-sm hover:shadow-xl hover:border-white/80 transition-all ${file.status === 'cancelled' ? 'border-gray-100 opacity-60 bg-gray-50' : 'border-white/60'}`}
                 >
                   <div className="p-4 bg-gray-50 rounded-xl group-hover:bg-black group-hover:text-white transition-all duration-300">
                     <FileIcon size={24} className="group-hover:scale-110 transition-transform" />
@@ -410,6 +532,20 @@ export const FileUpload: React.FC<FileUploadProps> = ({
           </AnimatePresence>
         </div>
       </div>
+      )}
+
+      {/* Real Cloud Storage Modal */}
+      {isCloudModalOpen && (
+        <CloudStorageModal
+          isOpen={isCloudModalOpen}
+          onClose={() => setIsCloudModalOpen(false)}
+          initialProvider={cloudModalProvider}
+          fileType={toolId?.includes('image') || toolId?.includes('jpg') ? 'image' : toolId?.includes('word') || toolId?.includes('docx') ? 'word' : 'all'}
+          onFilesImported={(importedFiles) => {
+            validateAndSelectFiles(importedFiles);
+            setIsCloudModalOpen(false);
+          }}
+        />
       )}
     </div>
   );

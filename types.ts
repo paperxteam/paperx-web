@@ -1,12 +1,13 @@
 import { LucideIcon } from 'lucide-react';
 
 export enum ToolCategory {
-  CONVERT = 'Convert',
-  CREATE = 'Create',
-  ORGANIZE = 'Organize',
-  OPTIMIZE = 'Optimize',
-  EDIT = 'Edit & Annotate',
-  SECURITY = 'Security'
+  CONVERT_TO = 'Convert to PDF',
+  CONVERT_FROM = 'Convert from PDF',
+  OPTIMIZE = 'Optimize & OCR',
+  ORGANIZE = 'Organize & Pages',
+  SECURITY = 'Security & Sign',
+  INTELLIGENCE = 'PDF Intelligence',
+  EDIT = 'Edit & Markup'
 }
 
 export interface Tool {
@@ -17,8 +18,20 @@ export interface Tool {
   icon: LucideIcon;
   isPopular?: boolean;
   isNew?: boolean;
-  requiredPlan?: 'Free' | 'Plus' | 'Max';
+  requiredPlan?: 'Free' | 'Plus' | 'Pro' | 'Max';
   action?: (file: File) => Promise<any>;
+  inputFormats?: string[];
+  outputFormat?: string;
+  tags?: string[];
+}
+
+export interface DocxMergeOptions {
+  pageBreakBetween?: boolean;
+  outputFormat?: 'docx' | 'pdf';
+  addSectionTitles?: boolean;
+  generateToc?: boolean;
+  continuousPageNumbers?: boolean;
+  normalizeTypography?: boolean;
 }
 
 export interface User {
@@ -26,15 +39,16 @@ export interface User {
   uid: string;
   name: string;
   email: string;
+  emailVerified?: boolean;
   avatarUrl: string;
-  plan: 'Basic Plan' | 'Plus Plan' | 'Max Plan';
-  purchasedPlan?: 'Basic Plan' | 'Plus Plan' | 'Max Plan';
-  activePlanMode?: 'Basic Plan' | 'Plus Plan' | 'Max Plan';
+  plan: 'Basic Plan' | 'Pro Plan' | 'Pro Plan' | 'Max Plan';
+  purchasedPlan?: 'Basic Plan' | 'Pro Plan' | 'Pro Plan' | 'Max Plan';
+  activePlanMode?: 'Basic Plan' | 'Pro Plan' | 'Pro Plan' | 'Max Plan';
   planExpiresAt?: string;
   basicPlanStartedAt?: string;
   basicPlanExpiresAt?: string;
   billingCycle?: 'month' | 'half-year' | 'year';
-  previousPlan?: 'Plus Plan' | 'Max Plan' | 'Basic Plan';
+  previousPlan?: 'Pro Plan' | 'Pro Plan' | 'Max Plan' | 'Basic Plan';
   isPro?: boolean;
   isRefunded?: boolean;
   membershipTier?: 'free' | 'basic' | 'plus' | 'max';
@@ -49,6 +63,10 @@ export interface User {
   language?: string; // e.g., 'English (US)'
   jobTitle?: string;
   company?: string;
+  isPermanentSuspended?: boolean;
+  permanentSuspendedAt?: number;
+  permanentSuspensionReason?: string;
+  abuseStrikes?: number;
   phone?: string;
   location?: string;
   bio?: string;
@@ -56,13 +74,18 @@ export interface User {
   forceReLogin?: boolean;
   isBlocked?: boolean;
   blockReason?: string;
+  banUntil?: number;
+  banReason?: string;
   isRestricted?: boolean;
   restrictedPermanently?: boolean;
   twoFactorEnabled?: boolean;
   twoFactorMethod?: 'totp';
   twoFactorSecret?: string;
   twoFactorBackupCodes?: string[];
+  loginAlertsEnabled?: boolean;
+  manualRestoreAt?: string;
   fontSize?: 'system' | 'small' | 'medium' | 'large';
+  darkMode?: boolean;
   notificationSoundEnabled?: boolean;
   analyticsEnabled?: boolean;
   largerTextEnabled?: boolean;
@@ -78,6 +101,10 @@ export interface User {
   pdfAutoCompress?: boolean;
   theme?: 'light' | 'dark';
   lastLogoutAllAt?: string;
+  dataErasureRequested?: boolean;
+  dataErasureScheduledAt?: string;
+  dataErasureScheduledUntil?: string;
+  dataErasureCancelledAt?: string;
   status?: string;
   createdAt?: string;
   updatedAt?: string;
@@ -87,7 +114,7 @@ export interface UserSession {
   id: string;
   userId: string;
   deviceName: string;
-  deviceType: 'desktop' | 'mobile' | 'tablet';
+  deviceType: 'desktop' | 'laptop' | 'mobile' | 'tablet';
   browser: string;
   os: string;
   ipAddress?: string;
@@ -96,6 +123,7 @@ export interface UserSession {
   loginTime?: string;
   isCurrentSession?: boolean;
   revoked?: boolean;
+  timeZone?: string;
 }
 
 export interface FileData {
@@ -181,7 +209,7 @@ export const BILLING_CYCLE_LABELS: Record<BillingCycleType, string> = {
 };
 
 export const PLAN_CYCLE_VALUES: Record<string, Record<BillingCycleType, number>> = {
-  'Plus Plan': {
+  'Pro Plan': {
     'month': 50,
     'half-year': 250,
     'year': 500,
@@ -195,7 +223,7 @@ export const PLAN_CYCLE_VALUES: Record<string, Record<BillingCycleType, number>>
 
 export const getPlanCreditValue = (planName?: string | null, cycle?: BillingCycleType | string | null): number => {
   if (!planName) return 0;
-  const p = planName.toLowerCase().includes('max') ? 'Max Plan' : planName.toLowerCase().includes('plus') || planName.toLowerCase().includes('pro') ? 'Plus Plan' : null;
+  const p = planName.toLowerCase().includes('max') ? 'Max Plan' : planName.toLowerCase().includes('plus') || planName.toLowerCase().includes('pro') ? 'Pro Plan' : null;
   if (!p) return 0;
   const c = (cycle as BillingCycleType) || 'month';
   return PLAN_CYCLE_VALUES[p]?.[c] || (p === 'Max Plan' ? 100 : 50);
@@ -214,7 +242,7 @@ export const isBillingCycleCovered = (
   return userCycle === targetCycle;
 };
 
-export const getUserPurchasedTier = (user: User | null | undefined): 'Free' | 'Plus' | 'Max' => {
+export const getUserPurchasedTier = (user: User | null | undefined): 'Free' | 'Pro' | 'Plus' | 'Max' => {
   if (!user) return 'Free';
 
   if (user.isRefunded) {
@@ -231,7 +259,7 @@ export const getUserPurchasedTier = (user: User | null | undefined): 'Free' | 'P
   if (user.purchasedPlan) {
     const purchased = user.purchasedPlan.toLowerCase();
     if (purchased.includes('max')) return 'Max';
-    if (purchased.includes('plus') || purchased.includes('pro')) return 'Plus';
+    if (purchased.includes('plus') || purchased.includes('pro')) return 'Pro';
     if (purchased.includes('basic') || purchased.includes('free')) return 'Free';
   }
 
@@ -239,7 +267,7 @@ export const getUserPurchasedTier = (user: User | null | undefined): 'Free' | 'P
   const tier = ((user as any).membershipTier || '').toLowerCase();
 
   if (p.includes('max') || tier.includes('max')) return 'Max';
-  if (p.includes('plus') || p.includes('pro') || tier.includes('plus')) return 'Plus';
+  if (p.includes('plus') || p.includes('pro') || tier.includes('plus') || tier.includes('pro')) return 'Pro';
   return 'Free';
 };
 
@@ -313,7 +341,7 @@ export const READYMADE_TICKET_REASONS = {
     {
       id: 'refund_upgrade_annual',
       title: 'Refund Month/Half-Month membership to upgrade to 1-Year Membership',
-      desc: 'I want a full refund on my short-term plan to immediately buy the annual Max/Plus plan for better savings.'
+      desc: 'I want a full refund on my short-term plan to immediately buy the annual Max/Pro plan for better savings.'
     },
     {
       id: 'refund_upgrade_6month',
@@ -355,5 +383,28 @@ export const isOrderAwaitingLongTime = (order: any, thresholdMinutes: number = 1
   const diffMinutes = (Date.now() - ts) / (60 * 1000);
   return diffMinutes >= thresholdMinutes;
 };
+
+export interface StoredDocument {
+  id: string;
+  userId?: string;
+  name: string;
+  date: string;
+  timestamp: number;
+  size: string;
+  type: string;
+  action?: string;
+  dataUrl?: string;
+  tags?: string[];
+  createdAt?: string;
+  expiresAt?: string;
+  retentionYears?: number;
+  retentionDaysRecent?: number;
+  recentUntil?: string;
+  isArchived5Years?: boolean;
+  hasChunks?: boolean;
+  chunkCount?: number;
+  _fallbackTs?: number;
+}
+
 
 

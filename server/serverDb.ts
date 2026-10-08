@@ -10,10 +10,7 @@ const BASE_URL = `https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/dat
 let adminDb: Firestore | null = null;
 
 function handleAdminError(err: any) {
-  if (adminDb) {
-    adminDb = null;
-    console.log(`[ServerDB] Admin SDK switched off (using authorized REST fallback): ${err.message || err}`);
-  }
+  console.log(`[ServerDB] Admin SDK transient warning (falling back dynamically): ${err.message || err}`);
 }
 
 try {
@@ -203,36 +200,50 @@ export async function getServerDoc(colName: string, docId: string): Promise<any 
 export async function getServerDocs(colName: string): Promise<any[]> {
   if (adminDb) {
     try {
-      const snap = await withTimeout(adminDb.collection(colName).get(), 1500);
+      const snap = await withTimeout(adminDb.collection(colName).get(), 5000);
       const docs = snap.docs.map(d => ({ ...d.data(), id: d.id }));
       const colMap = getColMap(colName);
-      for (const d of docs) colMap.set(d.id, d);
+      for (const d of docs) {
+        const existing = colMap.get(d.id) || {};
+        colMap.set(d.id, { ...existing, ...d, id: d.id });
+      }
       saveColToDisk(colName);
-      return docs;
+      return Array.from(colMap.values());
     } catch (adminErr: any) {
       handleAdminError(adminErr);
     }
   }
 
-  // REST Fallback
+  // REST Fallback (recursively load ALL pages of documents to guarantee zero truncation or data loss)
   try {
-    const res = await fetch(`${BASE_URL}/${colName}?key=${API_KEY}&pageSize=100`);
-    if (!res.ok) throw new Error(`REST returned status ${res.status}`);
-    const data = await res.json();
-    if (!data.documents) {
-      return Array.from(getColMap(colName).entries()).map(([id, val]) => ({ ...val, id }));
-    }
-    const docs = data.documents.map((d: any) => {
-      const nameParts = d.name.split('/');
-      const docId = nameParts[nameParts.length - 1];
-      return { ...fromFirestoreFields(d.fields), id: docId };
-    });
+    let allRestDocs: any[] = [];
+    let pageToken = '';
+    do {
+      const url = `${BASE_URL}/${colName}?key=${API_KEY}&pageSize=300` + (pageToken ? `&pageToken=${pageToken}` : '');
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`REST returned status ${res.status}`);
+      const data = await res.json();
+      if (data.documents) {
+        const docs = data.documents.map((d: any) => {
+          const nameParts = d.name.split('/');
+          const docId = nameParts[nameParts.length - 1];
+          return { ...fromFirestoreFields(d.fields), id: docId };
+        });
+        allRestDocs.push(...docs);
+      }
+      pageToken = data.nextPageToken || '';
+    } while (pageToken);
+
     const colMap = getColMap(colName);
-    for (const d of docs) colMap.set(d.id, d);
+    for (const d of allRestDocs) {
+      const existing = colMap.get(d.id) || {};
+      colMap.set(d.id, { ...existing, ...d, id: d.id });
+    }
     saveColToDisk(colName);
-    return docs;
+    return Array.from(colMap.values());
   } catch (restErr: any) {
-    return Array.from(getColMap(colName).entries()).map(([id, val]) => ({ ...val, id }));
+    console.error(`[ServerDB] REST docs fetch failed for ${colName}:`, restErr.message || restErr);
+    return Array.from(getColMap(colName).values());
   }
 }
 
@@ -412,7 +423,7 @@ export async function pushChatMessage(
   const targetChatId = chatId;
   const targetUserId = userId.startsWith('user_') ? userId.replace('user_', '') : userId;
 
-  // Update in-memory cache
+  // 1. Update in-memory cache for primary targetChatId
   const existing = inMemorySupportChats.get(targetChatId) || await getServerDoc('support_chats', targetChatId) || { messages: [] };
   const currentMessages = Array.isArray(existing.messages) ? [...existing.messages] : [];
   currentMessages.push(message);
@@ -431,6 +442,7 @@ export async function pushChatMessage(
   };
   inMemorySupportChats.set(targetChatId, updatedDoc);
 
+  // 2. Persist to Firestore
   if (adminDb) {
     try {
       const chatRef = adminDb.collection('support_chats').doc(targetChatId);
@@ -438,12 +450,48 @@ export async function pushChatMessage(
         ...updatedDoc,
         messages: FieldValue.arrayUnion(message),
       }, { merge: true }), 1500);
-      return;
     } catch (adminErr: any) {
       handleAdminError(adminErr);
+      await setServerDoc('support_chats', targetChatId, updatedDoc, true);
     }
+  } else {
+    await setServerDoc('support_chats', targetChatId, updatedDoc, true);
   }
 
-  // REST fallback
-  await setServerDoc('support_chats', targetChatId, updatedDoc, true);
+  // 3. Also update all other session docs for this user to guarantee 100% receipt across all tabs/devices
+  if (targetUserId && targetUserId !== 'guest' && targetUserId !== 'User') {
+    const userBaseDocId = `user_${targetUserId}`;
+    if (userBaseDocId !== targetChatId) {
+      const baseExisting = inMemorySupportChats.get(userBaseDocId) || await getServerDoc('support_chats', userBaseDocId) || { messages: [] };
+      const baseMsgs = Array.isArray(baseExisting.messages) ? [...baseExisting.messages] : [];
+      baseMsgs.push(message);
+      const baseUpdated = {
+        ...baseExisting,
+        chatId: userBaseDocId,
+        userId: targetUserId,
+        userName: existing.userName || baseExisting.userName || 'User',
+        userEmail: existing.userEmail || baseExisting.userEmail || 'Guest',
+        messages: baseMsgs,
+        lastMessage: message.text,
+        updatedAt: Date.now(),
+        unreadByUser: message.sender === 'admin'
+      };
+      inMemorySupportChats.set(userBaseDocId, baseUpdated);
+      await setServerDoc('support_chats', userBaseDocId, baseUpdated, true).catch(() => {});
+    }
+
+    // Update any other in-memory sessions for this user
+    for (const [memId, memChat] of inMemorySupportChats.entries()) {
+      if (memId !== targetChatId && memId !== userBaseDocId && (memChat.userId === targetUserId || memId.startsWith(`user_${targetUserId}`))) {
+        const memMsgs = Array.isArray(memChat.messages) ? [...memChat.messages] : [];
+        memMsgs.push(message);
+        memChat.messages = memMsgs;
+        memChat.lastMessage = message.text;
+        memChat.updatedAt = Date.now();
+        memChat.unreadByUser = true;
+        inMemorySupportChats.set(memId, memChat);
+        setServerDoc('support_chats', memId, memChat, true).catch(() => {});
+      }
+    }
+  }
 }

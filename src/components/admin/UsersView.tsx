@@ -22,7 +22,8 @@ export const UsersView: React.FC<UsersViewProps> = ({ usersList, showFeedback })
   const itemsPerPage = 8;
 
   // Filter & Search Logic
-  const filteredUsers = usersList.filter(user => {
+  const filteredUsers = (usersList || []).filter(user => {
+    if (!user) return false;
     const matchesSearch = 
       (user.email || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
       (user.name || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -223,17 +224,18 @@ export const UsersView: React.FC<UsersViewProps> = ({ usersList, showFeedback })
                 </tr>
               ) : (
                 paginatedUsers.map((user) => {
+                  if (!user) return null;
                   const isActive = (user.status || 'ACTIVE') === 'ACTIVE';
                   const userPlan = user.plan || 'Basic Plan';
                   const userRole = user.role || 'User';
 
                   return (
-                    <tr key={user.id} className="hover:bg-stone-800/30 transition">
+                    <tr key={user.id || Math.random()} className="hover:bg-stone-800/30 transition">
                       <td className="p-4">
                         <div className="flex items-center gap-3">
                           <img 
-                            src={user.avatarUrl || `https://ui-avatars.com/api/?name=${encodeURIComponent(user.name || user.email || 'U')}&background=random`} 
-                            alt={user.name || 'User'} 
+                            src={user?.avatarUrl || `https://ui-avatars.com/api/?name=${encodeURIComponent(user?.name || user?.email || 'U')}&background=random`} 
+                            alt={user?.name || 'User'} 
                             className="w-9 h-9 rounded-full object-cover border border-stone-700"
                           />
                           <div>
@@ -343,7 +345,7 @@ export const UsersView: React.FC<UsersViewProps> = ({ usersList, showFeedback })
 
       {/* SECTION 3: Deep Dive User Details Drawer / Modal */}
       {selectedUser && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-50 bg-black/80  flex items-center justify-center p-4">
           <div className="bg-stone-900 border border-stone-800 rounded-3xl max-w-2xl w-full p-6 shadow-2xl relative overflow-hidden animate-in fade-in zoom-in-95 duration-200">
             <button 
               onClick={() => setSelectedUser(null)}
@@ -355,14 +357,14 @@ export const UsersView: React.FC<UsersViewProps> = ({ usersList, showFeedback })
             {/* Profile Header */}
             <div className="flex items-center gap-4 mb-6 pb-6 border-b border-stone-800">
               <img 
-                src={selectedUser.avatarUrl || `https://ui-avatars.com/api/?name=${encodeURIComponent(selectedUser.name || 'U')}`}
-                alt={selectedUser.name}
+                src={selectedUser?.avatarUrl || `https://ui-avatars.com/api/?name=${encodeURIComponent(selectedUser?.name || 'U')}`}
+                alt={selectedUser?.name || 'User'} 
                 className="w-16 h-16 rounded-2xl object-cover border-2 border-orange-500/40"
               />
               <div>
-                <h4 className="text-xl font-extrabold text-white">{selectedUser.name || 'Paper X User'}</h4>
-                <p className="text-xs text-stone-400 font-mono">{selectedUser.email}</p>
-                <p className="text-[11px] text-stone-500 mt-1">UID: <span className="font-mono text-stone-300">{selectedUser.id}</span></p>
+                <h4 className="text-xl font-extrabold text-white">{selectedUser?.name || 'Paper X User'}</h4>
+                <p className="text-xs text-stone-400 font-mono">{selectedUser?.email}</p>
+                <p className="text-[11px] text-stone-500 mt-1">UID: <span className="font-mono text-stone-300">{selectedUser?.id}</span></p>
               </div>
             </div>
 

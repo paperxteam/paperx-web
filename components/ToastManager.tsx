@@ -46,6 +46,8 @@ const ToastItem: React.FC<{
 }> = ({ toast, onDismiss, onDownloadFile }) => {
   const duration = toast.duration || 5000;
   const [progress, setProgress] = useState(100);
+  const onDismissRef = React.useRef(onDismiss);
+  onDismissRef.current = onDismiss;
 
   useEffect(() => {
     const startTime = Date.now();
@@ -55,12 +57,12 @@ const ToastItem: React.FC<{
       setProgress(remaining);
       if (remaining <= 0) {
         clearInterval(interval);
-        onDismiss(toast.id);
+        onDismissRef.current(toast.id);
       }
     }, 50);
 
     return () => clearInterval(interval);
-  }, [toast.id, duration, onDismiss]);
+  }, [toast.id, duration]);
 
   return (
     <motion.div
@@ -70,7 +72,7 @@ const ToastItem: React.FC<{
       exit={{ opacity: 0, scale: 0.9, y: 12, transition: { duration: 0.2 } }}
       transition={{ type: 'spring', stiffness: 400, damping: 30 }}
       id={`toast-${toast.id}`}
-      className="relative overflow-hidden w-full max-w-sm sm:max-w-md rounded-2xl bg-white/95 dark:bg-stone-900/95 text-stone-900 dark:text-stone-100 border border-stone-200/80 dark:border-stone-800 shadow-[0_12px_35px_rgba(0,0,0,0.18)] dark:shadow-[0_12px_35px_rgba(0,0,0,0.6)] backdrop-blur-xl p-3.5 sm:p-4 group"
+      className="relative overflow-hidden w-full max-w-sm sm:max-w-md rounded-2xl bg-white/95 dark:bg-stone-900/95 text-stone-900 dark:text-stone-100 border border-stone-200/80 dark:border-stone-800 shadow-[0_12px_35px_rgba(0,0,0,0.18)] dark:shadow-[0_12px_35px_rgba(0,0,0,0.6)] p-3.5 sm:p-4 group"
     >
       <div className="flex items-start gap-3">
         {/* Subtle Icon Badge */}

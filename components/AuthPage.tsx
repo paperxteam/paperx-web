@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   Eye, 
@@ -20,6 +20,8 @@ import {
 } from 'lucide-react';
 import { GlassPillButton } from './GlassPillButton';
 import { DeviceLimitModal } from './DeviceLimitModal';
+import { TotpMultiFactorGenerator } from 'firebase/auth';
+import { User } from '../types';
 import {
   registerWithEmail,
   loginWithEmail,
@@ -30,13 +32,15 @@ import {
   getUser2FAStatus,
   getAuthErrorMessage,
   isValidEmail,
-  getEmailFormatError
+  getEmailFormatError,
+  syncUserProfile,
+  dispatchPaperXAuthChange
 } from '../services/firebase';
 import { verifyTOTPCode } from '../services/totpService';
 
 interface AuthPageProps {
   mode: 'login' | 'signup' | 'reset';
-  onAuthSuccess: () => void;
+  onAuthSuccess: (user?: User) => void;
   onNavigate: (path: string) => void;
 }
 
@@ -85,11 +89,16 @@ export const PasswordStrengthMeter: React.FC<{
     level = 1;
   }
 
+  const onStrengthChangeRef = useRef(onStrengthChange);
   useEffect(() => {
-    if (onStrengthChange) {
-      onStrengthChange(tier);
+    onStrengthChangeRef.current = onStrengthChange;
+  }, [onStrengthChange]);
+
+  useEffect(() => {
+    if (onStrengthChangeRef.current) {
+      onStrengthChangeRef.current(tier);
     }
-  }, [tier, onStrengthChange]);
+  }, [tier]);
 
   if (!password) return null;
 
@@ -196,31 +205,48 @@ export const AuthPage: React.FC<AuthPageProps> = ({ mode: initialMode, onAuthSuc
   const [twoFactorVerifyState, setTwoFactorVerifyState] = useState<'idle' | 'checking' | 'valid' | 'invalid'>('idle');
   const [useBackupCodeMode, setUseBackupCodeMode] = useState<boolean>(false);
   const [backupCodeInput, setBackupCodeInput] = useState<string>('');
+  const [mfaResolver, setMfaResolver] = useState<any>(null);
 
   const handleAutoVerify2FA = async (code: string) => {
     if (code.length !== 6 || isVerifyingTwoFactor || twoFactorVerifyState === 'checking' || twoFactorVerifyState === 'valid') return;
+    if (!mfaResolver) {
+      setTwoFactorError('MFA session expired. Please sign in again.');
+      setViewState('main');
+      return;
+    }
+
     setIsVerifyingTwoFactor(true);
     setTwoFactorVerifyState('checking');
     setTwoFactorError(null);
 
     try {
-      const sec = twoFactorSecret || localStorage.getItem('paperx_2fa_secret') || '';
-      const isVerified = await verifyTOTPCode(sec, code);
-      if (isVerified) {
-        setTwoFactorVerifyState('valid');
-        setIsVerifyingTwoFactor(false);
-        setTimeout(() => {
-          onAuthSuccess();
-        }, 500);
-      } else {
-        setTwoFactorVerifyState('invalid');
-        setIsVerifyingTwoFactor(false);
-        setTwoFactorError('Invalid Authenticator code. Please check your app.');
+      const hint = mfaResolver.hints.find((h: any) => h.factorId === TotpMultiFactorGenerator.FACTOR_ID) || mfaResolver.hints[0];
+      const assertion = TotpMultiFactorGenerator.assertionForSignIn(hint.uid, code);
+      if (typeof window !== 'undefined') {
+        try {
+          sessionStorage.setItem('paperx_is_new_login', 'true');
+          (window as any).__paperx_is_new_login = true;
+        } catch (_) {}
       }
+      const userCredential = await mfaResolver.resolveSignIn(assertion);
+      
+      setTwoFactorVerifyState('valid');
+      setIsVerifyingTwoFactor(false);
+
+      const profile = await syncUserProfile(userCredential.user);
+      dispatchPaperXAuthChange(profile);
+
+      setTimeout(() => {
+        onAuthSuccess(profile);
+      }, 500);
     } catch (err: any) {
       setTwoFactorVerifyState('invalid');
       setIsVerifyingTwoFactor(false);
-      setTwoFactorError(err.message || 'Invalid or expired verification code.');
+      setTwoFactorError('Invalid authenticator code. Please check your app and try again.');
+      setTimeout(() => {
+        setTwoFactorCode('');
+        setTwoFactorVerifyState('idle');
+      }, 1500);
     }
   };
 
@@ -263,42 +289,47 @@ export const AuthPage: React.FC<AuthPageProps> = ({ mode: initialMode, onAuthSuc
     
     try {
       if (initialMode === 'signup') {
-        await registerWithEmail(
+        try {
+          sessionStorage.setItem('paperx_is_new_login', 'true');
+          (window as any).__paperx_is_new_login = true;
+        } catch (_) {}
+        const registeredUser = await registerWithEmail(
           formData.email.trim(),
           formData.password,
           formData.firstName.trim(),
           formData.lastName.trim()
         );
         setIsLoading(false);
-        onAuthSuccess();
+        onAuthSuccess(registeredUser);
+        if (onNavigate) onNavigate('/dashboard');
       } else {
-        await loginWithEmail(
-          formData.email.trim(),
-          formData.password
-        );
-
-        // Check if user has 2-Step Verification enabled
-        const faStatus = await getUser2FAStatus(formData.email.trim());
-        const local2FA = localStorage.getItem('pref_twoStep') === 'true';
-
-        if (faStatus.twoFactorEnabled || local2FA) {
-          const secret = faStatus.twoFactorSecret || localStorage.getItem('paperx_2fa_secret') || '';
-          const backupCodes = faStatus.twoFactorBackupCodes || [];
-
-          setTwoFactorSecret(secret);
-          setTwoFactorBackupCodes(backupCodes);
-          setTwoFactorCode('');
-          setTwoFactorError(null);
-          setUseBackupCodeMode(false);
-          setBackupCodeInput('');
-
+        try {
+          try {
+            sessionStorage.setItem('paperx_is_new_login', 'true');
+            (window as any).__paperx_is_new_login = true;
+          } catch (_) {}
+          const loggedInUser = await loginWithEmail(
+            formData.email.trim(),
+            formData.password
+          );
           setIsLoading(false);
-          setViewState('2fa-challenge');
-          return;
+          onAuthSuccess(loggedInUser);
+          if (onNavigate) onNavigate('/dashboard');
+        } catch (err: any) {
+          setIsLoading(false);
+          if (err?.code === 'auth/multi-factor-auth-required') {
+            setMfaResolver(err.resolver);
+            setViewState('2fa-challenge');
+            setTwoFactorCode('');
+            setTwoFactorError(null);
+            return;
+          }
+          const errMsg = getAuthErrorMessage(err, 'email');
+          setError(errMsg);
+          if (err?.message?.includes('DEVICE_LIMIT_EXCEEDED') || errMsg.includes('Device limit exceeded')) {
+            setShowDeviceLimitModal(true);
+          }
         }
-
-        setIsLoading(false);
-        onAuthSuccess();
       }
     } catch (err: any) {
       setIsLoading(false);
@@ -415,35 +446,28 @@ export const AuthPage: React.FC<AuthPageProps> = ({ mode: initialMode, onAuthSuc
     setError(null);
     
     try {
+      try {
+        sessionStorage.setItem('paperx_is_new_login', 'true');
+        (window as any).__paperx_is_new_login = true;
+      } catch (_) {}
       const user = await loginWithGoogle();
       if (!user) {
         // User closed/cancelled Google sign-in window; keep login page clean & ready
         setIsLoading(false);
         return;
       }
-      if (user?.email) {
-        const faStatus = await getUser2FAStatus(user.email);
-        const local2FA = localStorage.getItem('pref_twoStep') === 'true';
-        if (faStatus.twoFactorEnabled || local2FA) {
-          const secret = faStatus.twoFactorSecret || localStorage.getItem('paperx_2fa_secret') || '';
-          const backupCodes = faStatus.twoFactorBackupCodes || [];
-
-          setTwoFactorSecret(secret);
-          setTwoFactorBackupCodes(backupCodes);
-          setTwoFactorCode('');
-          setTwoFactorError(null);
-          setUseBackupCodeMode(false);
-          setBackupCodeInput('');
-
-          setIsLoading(false);
-          setViewState('2fa-challenge');
-          return;
-        }
-      }
       setIsLoading(false);
-      onAuthSuccess();
+      onAuthSuccess(user);
+      if (onNavigate) onNavigate('/dashboard');
     } catch (err: any) {
       setIsLoading(false);
+      if (err?.code === 'auth/multi-factor-auth-required') {
+        setMfaResolver(err.resolver);
+        setViewState('2fa-challenge');
+        setTwoFactorCode('');
+        setTwoFactorError(null);
+        return;
+      }
       const code = err?.code || '';
       const msg = err?.message || '';
       if (
@@ -631,9 +655,9 @@ export const AuthPage: React.FC<AuthPageProps> = ({ mode: initialMode, onAuthSuc
                   return (
                     <div 
                       key={idx}
-                      className={`w-11 h-14 sm:w-12 sm:h-14 rounded-xl border flex items-center justify-center text-2xl font-mono font-bold transition-all duration-200 ${boxBorderAndBg}`}
+                      className={`w-11 h-14 sm:w-12 sm:h-14 rounded-xl border flex items-center justify-center text-2xl font-mono font-bold transition-all duration-200 leading-none ${boxBorderAndBg}`}
                     >
-                      {char || (isCurrent && twoFactorVerifyState === 'idle' ? <span className="w-0.5 h-6 bg-gray-900 dark:bg-white animate-pulse" /> : '')}
+                      {char || (isCurrent && twoFactorVerifyState === 'idle' ? <span className="inline-block w-0.5 h-6 bg-gray-900 dark:bg-white animate-pulse self-center rounded-full" /> : '')}
                     </div>
                   );
                 })}
@@ -880,9 +904,9 @@ export const AuthPage: React.FC<AuthPageProps> = ({ mode: initialMode, onAuthSuc
                                         return (
                                             <div 
                                                 key={idx}
-                                                className={`w-11 h-14 sm:w-12 sm:h-14 rounded-xl border flex items-center justify-center text-2xl font-mono font-bold transition-all duration-200 ${boxBorderAndBg}`}
+                                                className={`w-11 h-14 sm:w-12 sm:h-14 rounded-xl border flex items-center justify-center text-2xl font-mono font-bold transition-all duration-200 leading-none ${boxBorderAndBg}`}
                                             >
-                                                {char || (isCurrent && otpVerifyState === 'idle' ? <span className="w-0.5 h-6 bg-gray-900 dark:bg-white animate-pulse" /> : '')}
+                                                {char || (isCurrent && otpVerifyState === 'idle' ? <span className="inline-block w-0.5 h-6 bg-gray-900 dark:bg-white animate-pulse self-center rounded-full" /> : '')}
                                             </div>
                                         );
                                     })}
@@ -1094,6 +1118,15 @@ export const AuthPage: React.FC<AuthPageProps> = ({ mode: initialMode, onAuthSuc
                         <ArrowLeft size={16} className="mr-1" />
                         Back to Home
                     </button>
+
+                    <div className="flex justify-center mb-3">
+                      <img
+                        src="/PaperXtransparent_cropped.png"
+                        alt="PaperX"
+                        className="h-6 sm:h-7 max-h-7 w-auto max-w-[140px] object-contain cursor-pointer transition-transform hover:scale-105"
+                        onClick={() => onNavigate('/')}
+                      />
+                    </div>
 
                     <h1 className="text-2xl sm:text-3xl font-black tracking-tight text-gray-900 dark:text-white mb-2">
                         {initialMode === 'login' ? 'Welcome back' : 'Create an account'}

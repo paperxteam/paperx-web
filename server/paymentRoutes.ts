@@ -12,7 +12,7 @@ export interface PaymentOrderRecord {
   uid: string;
   userEmail?: string;
   userName?: string;
-  plan: 'Plus Plan' | 'Max Plan';
+  plan: 'Pro Plan' | 'Pro Plan' | 'Max Plan';
   amount: number;
   currency: string;
   vpa: string;
@@ -179,7 +179,7 @@ router.get("/order/:orderId/status", async (req, res) => {
           uid: dbOrder.uid || 'guest_user',
           userEmail: dbOrder.userEmail,
           userName: dbOrder.userName,
-          plan: dbOrder.plan || 'Plus Plan',
+          plan: (dbOrder.plan === 'Pro Plan' || dbOrder.plan === 'Plus') ? 'Pro Plan' : (dbOrder.plan || 'Pro Plan'),
           amount: dbOrder.amount || 50,
           currency: dbOrder.currency || 'INR',
           vpa: dbOrder.vpa || PAPERX_MERCHANT_VPA,
@@ -265,7 +265,7 @@ router.post("/verify-utr", async (req, res) => {
       order = {
         orderId,
         uid: uid || 'guest_user',
-        plan: req.body.plan || 'Plus Plan',
+        plan: (req.body.plan === 'Pro Plan' || req.body.plan === 'Plus') ? 'Pro Plan' : (req.body.plan || 'Pro Plan'),
         amount: parseFloat(req.body.amount) || (req.body.plan === 'Max Plan' ? 100 : 50),
         currency: 'INR',
         vpa: PAPERX_MERCHANT_VPA,
@@ -374,7 +374,8 @@ router.post("/resubmit-utr", async (req, res) => {
     let order = activeOrders.get(orderId);
     let dbOrder = await getServerDoc('orders', orderId).catch(() => null);
 
-    const targetPlan = dbOrder?.plan || order?.plan || req.body.plan || 'Plus Plan';
+    const rawPlan = dbOrder?.plan || order?.plan || req.body.plan;
+    const targetPlan = (rawPlan === 'Pro Plan' || rawPlan === 'Plus') ? 'Pro Plan' : (rawPlan || 'Pro Plan');
     const targetAmount = dbOrder?.amount || order?.amount || (targetPlan === 'Max Plan' ? 100 : 50);
     const targetUid = uid || dbOrder?.uid || order?.uid || 'user';
     const targetEmail = userEmail || req.body.email || dbOrder?.userEmail || order?.userEmail || '';
@@ -462,9 +463,11 @@ const handleUserOrders = async (req: express.Request, res: express.Response) => 
 
     // 1. Check in-memory active orders
     for (const [orderId, order] of activeOrders.entries()) {
-      const matchUid = uid && order.uid === uid;
-      const matchEmail = email && (order.userEmail?.toLowerCase() === email);
-      if (matchUid || matchEmail) {
+      const ordAny = order as any;
+      const matchUid = Boolean(uid && (ordAny.uid === uid || ordAny.userId === uid));
+      const matchEmail = Boolean(email && (ordAny.userEmail?.toLowerCase() === email || ordAny.email?.toLowerCase() === email));
+      // Require uid match if order has uid, or email match only if order has no conflicting foreign uid
+      if (matchUid || (matchEmail && (!ordAny.uid || ordAny.uid === uid || ordAny.uid === 'guest_user'))) {
         orderMap.set(orderId, {
           id: orderId,
           ...order,
@@ -480,10 +483,10 @@ const handleUserOrders = async (req: express.Request, res: express.Response) => 
         const orderId = d.orderId || d.id;
         if (!orderId) continue;
 
-        const matchUid = uid && (d.uid === uid || d.userId === uid);
-        const matchEmail = email && (d.userEmail?.toLowerCase() === email || d.email?.toLowerCase() === email);
+        const matchUid = Boolean(uid && (d.uid === uid || d.userId === uid));
+        const matchEmail = Boolean(email && (d.userEmail?.toLowerCase() === email || d.email?.toLowerCase() === email));
 
-        if (matchUid || matchEmail) {
+        if (matchUid || (matchEmail && (!d.uid || d.uid === uid || d.uid === 'guest_user'))) {
           const existing = orderMap.get(orderId) || {};
           orderMap.set(orderId, {
             ...existing,

@@ -5,7 +5,7 @@ import {
   AlertTriangle, DollarSign, Clock, Download, Sliders, BarChart3, 
   Megaphone, ShieldCheck, ChevronRight, Menu, X, CheckCircle2, Zap, MessageSquare
 } from 'lucide-react';
-import { db } from '../../services/firebase';
+import { db, auth } from '../../services/firebase';
 import { collection, getDocs, onSnapshot, doc, setDoc, addDoc } from 'firebase/firestore';
 
 import { DashboardOverview } from './admin/DashboardOverview';
@@ -230,7 +230,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onClose }) => {
       } catch (e) {
         // Initial fallback seed
         setUsersList([
-          { id: 'u_101', name: 'PaperX Admin', email: 'paperx.team@gmail.com', role: 'SuperAdmin', status: 'ACTIVE', memberSince: '2026-01-01', plan: 'Pro Plan' },
+          { id: 'u_101', name: 'PaperX Admin', email: 'paperx.dev@gmail.com', role: 'SuperAdmin', status: 'ACTIVE', memberSince: '2026-01-01', plan: 'Pro Plan' },
           { id: 'u_102', name: 'Demo Subscriber', email: 'user.demo@example.com', role: 'User', status: 'ACTIVE', memberSince: '2026-02-14', plan: 'Basic Plan' },
           { id: 'u_103', name: 'Enterprise Client', email: 'enterprise.client@corp.com', role: 'User', status: 'ACTIVE', memberSince: '2026-03-01', plan: 'Enterprise Plan' }
         ]);
@@ -238,13 +238,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onClose }) => {
 
       // 4. Audit & Error Logs
       setAuditLogs([
-        { id: 'log_1', action: 'SETTINGS_UPDATE', admin: 'paperx.team@gmail.com', timestamp: Date.now() - 3600000, details: 'Updated global announcement banner' },
-        { id: 'log_2', action: 'PAYMENT_APPROVE', admin: 'paperx.team@gmail.com', timestamp: Date.now() - 7200000, details: 'Approved UTR #UTR984125' },
-        { id: 'log_3', action: 'USER_ENABLE', admin: 'paperx.team@gmail.com', timestamp: Date.now() - 14400000, details: 'Enabled user account u_102' }
+        { id: 'log_1', action: 'SETTINGS_UPDATE', admin: 'paperx.dev@gmail.com', timestamp: Date.now() - 3600000, details: 'Updated global announcement banner' },
+        { id: 'log_2', action: 'PAYMENT_APPROVE', admin: 'paperx.dev@gmail.com', timestamp: Date.now() - 7200000, details: 'Approved UTR #UTR984125' },
+        { id: 'log_3', action: 'USER_ENABLE', admin: 'paperx.dev@gmail.com', timestamp: Date.now() - 14400000, details: 'Enabled user account u_102' }
       ]);
 
       setErrorLogs([
-        { id: 'err_1', level: 'WARN', service: 'Gemini AI', message: 'Token quota warning on secondary key', timestamp: Date.now() - 18000000 }
+        { id: 'err_1', level: 'WARN', service: 'PaperX AI', message: 'Token quota warning on secondary key', timestamp: Date.now() - 18000000 }
       ]);
 
     } catch (err: any) {
@@ -349,7 +349,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onClose }) => {
     return (
       <div className="fixed inset-0 z-50 bg-stone-950 flex items-center justify-center p-4">
         <div className="bg-stone-900 border border-stone-800 rounded-3xl p-8 max-w-md w-full shadow-2xl relative overflow-hidden">
-          <div className="absolute -top-24 -right-24 w-48 h-48 bg-orange-500/10 rounded-full blur-3xl pointer-events-none" />
+          <div className="absolute -top-24 -right-24 w-48 h-48 bg-orange-500/10 rounded-full  pointer-events-none" />
 
           <div className="text-center mb-8">
             <div className="inline-flex p-4 rounded-2xl bg-orange-500/10 text-orange-500 mb-4 border border-orange-500/20">
@@ -437,7 +437,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onClose }) => {
 
       {/* LEFT SIDEBAR NAVIGATION */}
       <aside className={`
-        fixed md:relative inset-y-0 left-0 z-40 w-72 bg-stone-900/90 backdrop-blur-xl border-r border-stone-800/80 
+        fixed md:relative inset-y-0 left-0 z-40 w-72 bg-stone-900/90  border-r border-stone-800/80 
         flex flex-col justify-between transition-transform duration-200 shrink-0
         ${mobileMenuOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}
       `}>
@@ -629,6 +629,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ onClose }) => {
 
         {activeTab === 'documents' && (
           <DocumentsView 
+            uid={auth.currentUser?.uid || 'paperx_admin'}
             systemStats={systemStats}
             showFeedback={showFeedback}
           />

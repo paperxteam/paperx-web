@@ -2,7 +2,7 @@ import express from "express";
 import { activeOrders } from "./paymentRoutes";
 import { getServerDoc, getServerDocs, setServerDoc, saveSupportChatDoc } from "./serverDb";
 import { sendTelegramSupportNotification, sendTelegramPaymentTicketNotification } from "./telegramBot";
-import { generateSupportAnswer, generateAdminSuggestedAnswer } from "./supportAgent";
+import { generateSupportAnswer, generateAdminSuggestedAnswer, detectSlangOrAbuse, isCeoTalkRequest, analyzePaymentProof } from "./supportAgent";
 import { generateReceiptForOrder } from "./receiptGenerator";
 
 const router = express.Router();
@@ -447,7 +447,8 @@ router.post("/order/action", async (req, res) => {
 
     // Upgrade user's plan in Firestore 'users'
     if (order.uid && order.uid !== 'guest_user') {
-      const targetPlan = String(order.plan || 'Plus Plan');
+      const rawP = String(order.plan || '');
+      const targetPlan = (rawP === 'Pro Plan' || rawP === 'Plus') ? 'Pro Plan' : (rawP || 'Pro Plan');
       const isPro = !targetPlan.toLowerCase().includes('free') && !targetPlan.toLowerCase().includes('basic');
       const tier = targetPlan.toLowerCase().includes('max') ? 'max' : 'plus';
 
@@ -471,7 +472,7 @@ router.post("/order/action", async (req, res) => {
     const notifId = `notif_order_${orderId}_verified`;
     await setServerDoc('notifications', notifId, {
       id: notifId,
-      title: "Payment Approved! 🎉",
+      title: "Payment Approved",
       body: `Your payment for ${order.plan || 'Membership'} has been verified. Your account has been upgraded!`,
       recipient: order.uid || 'ALL',
       recipientUserId: order.uid || '',
@@ -486,7 +487,7 @@ router.post("/order/action", async (req, res) => {
       ioInstance.emit("order-updated", { orderId, status: 'VERIFIED' });
       ioInstance.emit("admin-notification", {
         id: notifId,
-        title: "Payment Approved! 🎉",
+        title: "Payment Approved",
         body: `Order ${orderId} has been verified.`
       });
     }
@@ -538,50 +539,370 @@ router.post("/order/action", async (req, res) => {
 // Support Query Notification
 router.post("/support/notify", async (req, res) => {
   try {
-    const { userId, userName, userEmail, query, chatId, hasBotAnswer } = req.body;
-    
-    // 1. Dispatch background notify to Telegram bot
-    await sendTelegramSupportNotification({ userId, userName, userEmail, query, chatId });
-    
-    // 2. Respond immediately to the client to avoid blocking the UI
-    res.json({ success: true });
+    const { userId, userName, userEmail, query, chatId, hasBotAnswer, history, attachment, wantsCeo } = req.body;
+    const cleanQuery = (query || '').trim();
 
-    // 3. Process accurate Gemini support response in the background
-    if (chatId && query && !hasBotAnswer) {
-      (async () => {
-        try {
-          const botReply = await generateSupportAnswer(query, userEmail, userName);
-          const botNow = Date.now();
-          const botMsg = {
-            id: `msg_bot_${botNow}`,
-            sender: 'bot',
-            senderName: 'PaperX Assistant',
-            text: botReply,
-            timestamp: botNow
-          };
-
-          const existingDoc = await getServerDoc('support_chats', chatId);
-          const messages = existingDoc ? (existingDoc.messages || []) : [];
-          
-          // Check if the message is already present to prevent duplicates (e.g. if saved during active topic)
-          const isDuplicate = messages.some((m: any) => m.text === botReply && Math.abs(m.timestamp - botNow) < 5000);
-          if (!isDuplicate) {
-            messages.push(botMsg);
-            await setServerDoc('support_chats', chatId, {
-              messages,
-              lastMessage: botReply,
-              updatedAt: botNow,
-              status: 'active'
-            }, true);
-          }
-        } catch (bgErr) {
-          console.error("[AdminRoutes] Background support response failed:", bgErr);
-        }
-      })();
+    // 0. Check if account is permanently suspended
+    let userDoc: any = null;
+    if (userId && userId !== 'guest' && !userId.startsWith('guest_')) {
+      userDoc = await getServerDoc('users', userId);
     }
+    if (!userDoc && userEmail && userEmail.includes('@')) {
+      const allUsers = await getServerDocs('users');
+      userDoc = allUsers.find(u => (u.email || '').toLowerCase() === userEmail.toLowerCase());
+    }
+
+    if (userDoc?.isPermanentSuspended) {
+      return res.json({
+        success: false,
+        permanentBanned: true,
+        strikes: 4,
+        botReply: `🚫 **Account Permanently Suspended**\n\nThis account has been permanently suspended for giving hate and slangs to PaperX after receiving 3 warnings. Giving hate and slangs is strictly prohibited by our app rules.`
+      });
+    }
+
+    // 1. Check if user is currently suspended for abuse (1 hour restriction)
+    if (chatId) {
+      const existingDoc = await getServerDoc('support_chats', chatId);
+      if (existingDoc?.isPermanentSuspended) {
+        return res.json({
+          success: false,
+          permanentBanned: true,
+          strikes: 4,
+          botReply: `🚫 **Account Permanently Suspended**\n\nThis account has been permanently suspended for giving hate and slangs to PaperX after receiving 3 warnings. Giving hate and slangs is strictly prohibited by our app rules.`
+        });
+      }
+
+      if (existingDoc && existingDoc.bannedUntil && Number(existingDoc.bannedUntil) > Date.now()) {
+        const remainingMin = Math.ceil((Number(existingDoc.bannedUntil) - Date.now()) / 60000);
+        const currentStrikes = existingDoc.abuseStrikes || 1;
+        return res.json({
+          success: false,
+          banned: true,
+          bannedUntil: existingDoc.bannedUntil,
+          strikes: currentStrikes,
+          botReply: `🚫 **Chat Access Suspended (Warning ${currentStrikes}/3)**\n\nYour support chat access is currently suspended for 1 hour. Access will be automatically restored in approximately ${remainingMin} minute(s).`
+        });
+      }
+    }
+
+    // 2. Check for abusive language / vulgar slang / hate in current query
+    const abuse = detectSlangOrAbuse(cleanQuery);
+    if (abuse.isAbusive) {
+      const existingChat = chatId ? await getServerDoc('support_chats', chatId) : null;
+      const clientStrikes = Number(req.body.clientStrikes || 0);
+      const priorStrikes = Math.max(
+        Number(existingChat?.abuseStrikes || 0),
+        Number(userDoc?.abuseStrikes || 0),
+        clientStrikes
+      );
+      const newStrikes = priorStrikes + 1;
+
+      // EXCEEDED 3 WARNINGS -> PERMANENT BAN
+      if (newStrikes > 3) {
+        const permReason = 'Giving hate and slangs to PaperX after receiving 3 warnings. Strictly prohibited by PaperX App Rules.';
+        const permReply = `🚫 **Account Permanently Suspended**\n\nYour account has been permanently suspended for giving hate and slangs to PaperX after receiving 3 prior warnings. Giving hate and slangs is strictly prohibited by PaperX rules. Access to this account has been permanently terminated.`;
+
+        const botNow = Date.now();
+        const botMsg = {
+          id: `msg_bot_${botNow}`,
+          sender: 'bot',
+          senderName: 'PaperX Security Desk',
+          text: permReply,
+          timestamp: botNow
+        };
+
+        if (chatId) {
+          const messages = existingChat ? (existingChat.messages || []) : [];
+          messages.push(botMsg);
+          await setServerDoc('support_chats', chatId, {
+            messages,
+            lastMessage: permReply,
+            updatedAt: botNow,
+            isPermanentSuspended: true,
+            permanentSuspendedAt: botNow,
+            permanentSuspensionReason: permReason,
+            abuseStrikes: newStrikes
+          }, true);
+        }
+
+        const targetUid = userDoc?.id || (userId && !userId.startsWith('guest_') ? userId : null);
+        if (targetUid) {
+          await setServerDoc('users', targetUid, {
+            isPermanentSuspended: true,
+            permanentSuspendedAt: botNow,
+            permanentSuspensionReason: permReason,
+            abuseStrikes: newStrikes
+          }, true);
+        }
+
+        return res.json({
+          success: false,
+          permanentBanned: true,
+          strikes: newStrikes,
+          botReply: permReply
+        });
+      }
+
+      // 1-HOUR SUSPENSION (WARNING 1, 2, or 3)
+      const banDurationMs = 60 * 60 * 1000; // 1-Hour Suspension
+      const bannedUntil = Date.now() + banDurationMs;
+      
+      let banReply = "";
+      if (newStrikes === 1) {
+        banReply = `⚠️ **Warning 1 of 3: Chat Access Suspended for 1 Hour**\n\nYour chat access has been suspended for 60 minutes due to abusive language or hate against PaperX. Giving hate and slangs is strictly prohibited by our app rules. You have 2 warnings remaining before this account is permanently suspended.`;
+      } else if (newStrikes === 2) {
+        banReply = `⚠️ **Warning 2 of 3: Chat Access Suspended for 1 Hour**\n\nYour chat access has been suspended for 60 minutes. This is your second warning for using slangs or hate against PaperX. One more warning will result in permanent account termination.`;
+      } else {
+        banReply = `🚨 **Final Warning 3 of 3: Chat Access Suspended for 1 Hour**\n\nThis is your LAST warning. Any further abusive language, slangs, or hate will PERMANENTLY SUSPEND this account and its associated email without further notice.`;
+      }
+      
+      const botNow = Date.now();
+      const botMsg = {
+        id: `msg_bot_${botNow}`,
+        sender: 'bot',
+        senderName: 'PaperX Security Desk',
+        text: banReply,
+        timestamp: botNow
+      };
+
+      if (chatId) {
+        const messages = existingChat ? (existingChat.messages || []) : [];
+        messages.push(botMsg);
+        await setServerDoc('support_chats', chatId, {
+          messages,
+          lastMessage: banReply,
+          updatedAt: botNow,
+          isSuspended: true,
+          bannedUntil,
+          abuseStrikes: newStrikes,
+          suspensionReason: `Warning ${newStrikes}/3: Inappropriate language or hate against app`
+        }, true);
+      }
+
+      const targetUid = userDoc?.id || (userId && !userId.startsWith('guest_') ? userId : null);
+      if (targetUid) {
+        await setServerDoc('users', targetUid, {
+          bannedUntil,
+          abuseStrikes: newStrikes
+        }, true);
+      }
+
+      return res.json({
+        success: false,
+        banned: true,
+        bannedUntil,
+        strikes: newStrikes,
+        botReply: banReply
+      });
+    }
+
+    // 3. Check if user wants to talk with CEO Sayan Biswas
+    const isCeo = isCeoTalkRequest(cleanQuery) || wantsCeo === true;
+
+    // 4. TELEGRAM BOT DISPATCH RULE:
+    // Alert CEO directly on Telegram when requested
+    if (isCeo) {
+      sendTelegramSupportNotification({ 
+        userId: userId || 'unknown', 
+        userName: userName || 'User', 
+        userEmail: userEmail || 'No email', 
+        query: cleanQuery, 
+        chatId: chatId || 'default',
+        isCeoRequest: true
+      }).catch(err => console.warn("[Telegram Bot] CEO escalation error:", err));
+    }
+
+    // 5. AUTONOMOUS PAYMENT PROOF VERIFICATION ENGINE:
+    // If user provided payment proof (UTR / screenshot / money deducted issue):
+    // Check if authentic -> AI automatically upgrades the plan in Firestore (no admin wait needed).
+    // If ambiguous/unverified -> AI files support ticket & alerts Telegram admin for priority review.
+    let planUpgraded = false;
+    let upgradedPlanName = '';
+    const paymentCheck = await analyzePaymentProof(cleanQuery, userEmail, userName, attachment);
+
+    if (paymentCheck.isPaymentProof) {
+      const targetUid = userDoc?.id || (userId && !userId.startsWith('guest_') ? userId : null);
+
+      if (paymentCheck.isAuthentic && paymentCheck.utr) {
+        // AUTHENTIC REAL PAYMENT VERIFIED BY AI:
+        const targetPlan = paymentCheck.plan;
+        const durationDays = 30;
+        const expiresAtMs = Date.now() + durationDays * 24 * 60 * 60 * 1000;
+        const expiresAtIso = new Date(expiresAtMs).toISOString();
+
+        if (targetUid) {
+          await setServerDoc('users', targetUid, {
+            plan: targetPlan,
+            purchasedPlan: targetPlan,
+            activePlanMode: targetPlan,
+            isPro: true,
+            membershipTier: targetPlan === 'Max Plan' ? 'max' : 'plus',
+            billingCycle: 'month',
+            planExpiresAt: expiresAtIso,
+            maxProjects: targetPlan === 'Max Plan' ? 500 : 100,
+            updatedAt: new Date().toISOString()
+          }, true);
+
+          if (ioInstance) {
+            ioInstance.emit("user-updated", { 
+              userId: targetUid, 
+              plan: targetPlan,
+              purchasedPlan: targetPlan,
+              activePlanMode: targetPlan,
+              isPro: true,
+              membershipTier: targetPlan === 'Max Plan' ? 'max' : 'plus',
+              billingCycle: 'month',
+              planExpiresAt: expiresAtIso,
+              maxProjects: targetPlan === 'Max Plan' ? 500 : 100
+            });
+          }
+        }
+
+        // Record or update verified order in Firestore
+        const verifiedOrderId = `AI-VER-${paymentCheck.utr}`;
+        const orderRecord = {
+          orderId: verifiedOrderId,
+          uid: targetUid || 'user',
+          userEmail: userEmail || '',
+          userName: userName || 'User',
+          plan: targetPlan,
+          amount: paymentCheck.amount || (targetPlan === 'Max Plan' ? 100 : 50),
+          currency: 'INR',
+          utr: paymentCheck.utr,
+          status: 'VERIFIED',
+          verifiedAt: new Date().toISOString(),
+          verifiedBy: 'PaperX AI Autonomous System',
+          createdAt: new Date().toISOString(),
+          billingCycle: 'month',
+          durationDays: 30
+        };
+        await setServerDoc('orders', verifiedOrderId, orderRecord, true);
+        await generateReceiptForOrder(orderRecord, 'PAYMENT_SUCCESSFUL').catch(() => {});
+
+        planUpgraded = true;
+        upgradedPlanName = targetPlan;
+      } else {
+        // UNVERIFIED / PENDING / AMBIGUOUS PAYMENT PROOF -> DISPATCH TO ADMIN VIA TELEGRAM
+        const ticketId = `TICK-${Date.now().toString(36).toUpperCase()}`;
+        const reviewOrderId = `ORD-REV-${Date.now().toString(36).toUpperCase()}`;
+
+        const pendingOrderRecord = {
+          orderId: reviewOrderId,
+          uid: targetUid || userId || 'user',
+          userEmail: userEmail || '',
+          userName: userName || 'User',
+          plan: paymentCheck.plan,
+          amount: paymentCheck.amount || (paymentCheck.plan === 'Max Plan' ? 100 : 50),
+          currency: 'INR',
+          vpa: '7585813675@omni',
+          upiUri: '',
+          utr: paymentCheck.utr || '',
+          status: 'PENDING' as const,
+          ticketId,
+          ticketStatus: 'OPEN',
+          ticketReason: paymentCheck.explanation,
+          createdAt: Date.now(),
+          expiresAt: Date.now() + 48 * 60 * 60 * 1000,
+          billingCycle: 'month',
+          durationDays: 30
+        };
+
+        // Persist order in memory & database so Telegram approval buttons resolve instantly
+        activeOrders.set(reviewOrderId, pendingOrderRecord as any);
+        await setServerDoc('orders', reviewOrderId, {
+          ...pendingOrderRecord,
+          createdAt: new Date().toISOString(),
+          expiresAt: new Date(Date.now() + 48 * 60 * 60 * 1000).toISOString()
+        }, true);
+
+        const ticketRecord = {
+          id: ticketId,
+          ticketId,
+          orderId: reviewOrderId,
+          uid: targetUid || userId || 'user',
+          userEmail: userEmail || '',
+          userName: userName || 'User',
+          plan: paymentCheck.plan,
+          amount: paymentCheck.amount || (paymentCheck.plan === 'Max Plan' ? 100 : 50),
+          utr: paymentCheck.utr || '',
+          orderStatus: 'PENDING',
+          reason: `Payment verification required: ${paymentCheck.explanation}`,
+          notes: cleanQuery,
+          status: 'OPEN',
+          createdAt: Date.now(),
+          createdAtIso: new Date().toISOString(),
+          updatedAt: Date.now()
+        };
+
+        await setServerDoc('support_tickets', ticketId, ticketRecord, true);
+
+        // Instantly alert Telegram admin with 1-click review/approval
+        sendTelegramPaymentTicketNotification({
+          ticketId,
+          orderId: reviewOrderId,
+          uid: targetUid || userId || 'user',
+          userEmail: userEmail || '',
+          userName: userName || 'User',
+          plan: paymentCheck.plan,
+          amount: paymentCheck.amount || (paymentCheck.plan === 'Max Plan' ? 100 : 50),
+          utr: paymentCheck.utr || 'Under Review',
+          orderStatus: 'PENDING_REVIEW',
+          reason: `Payment verification check: ${paymentCheck.explanation}`,
+          notes: cleanQuery
+        }).catch(err => console.warn("[Telegram Bot] Ticket alert error:", err));
+      }
+    }
+
+    // 6. Generate accurate, concise Gemini support response for the chat
+    let botReply: string | null = null;
+    if (chatId && (cleanQuery || attachment) && !hasBotAnswer) {
+      try {
+        if (planUpgraded && upgradedPlanName && paymentCheck.utr) {
+          botReply = `🎉 **Payment Verified & Plan Activated!**\n\n• **Amount**: ₹${paymentCheck.amount}\n• **UTR Reference**: \`${paymentCheck.utr}\`\n• **Active Membership**: **${upgradedPlanName}** (Unlimited access enabled)\n\nYour account has been upgraded successfully by the PaperX autonomous verification system. All premium features are now unlocked!`;
+        } else if (paymentCheck.isPaymentProof && !paymentCheck.isAuthentic) {
+          botReply = `📋 **Payment Details Forwarded for Priority Review**\n\n• **UTR / Reference**: \`${paymentCheck.utr || 'Under Review'}\`\n• **Status**: Forwarded to the PaperX admin billing team on Telegram for manual verification.\n• **Timeline**: Admin verification usually completes within a few minutes. You will receive an instant confirmation as soon as your transaction is approved!`;
+        } else {
+          botReply = await generateSupportAnswer(cleanQuery, userEmail, userName, history, attachment);
+        }
+
+        const botNow = Date.now();
+        const botMsg = {
+          id: `msg_bot_${botNow}`,
+          sender: 'bot',
+          senderName: 'PaperX Assistant',
+          text: botReply,
+          timestamp: botNow
+        };
+
+        const existingDoc = await getServerDoc('support_chats', chatId);
+        const messages = existingDoc ? (existingDoc.messages || []) : [];
+        
+        const isDuplicate = messages.some((m: any) => m.text === botReply && Math.abs(m.timestamp - botNow) < 5000);
+        if (!isDuplicate) {
+          messages.push(botMsg);
+          await setServerDoc('support_chats', chatId, {
+            messages,
+            lastMessage: botReply,
+            updatedAt: botNow,
+            status: 'active'
+          }, true);
+        }
+      } catch (bgErr) {
+        console.error("[AdminRoutes] Support response failed:", bgErr);
+      }
+    }
+
+    res.json({ 
+      success: true, 
+      botReply, 
+      isCeoEscalated: isCeo,
+      planUpgraded,
+      upgradedPlan: upgradedPlanName
+    });
   } catch (err) {
     console.error("[AdminRoutes] Support notification failed:", err);
-    res.status(500).json({ error: "Failed to notify admin" });
+    res.status(500).json({ error: "Failed to process support message" });
   }
 });
 
@@ -619,7 +940,9 @@ router.post("/sync-user", async (req, res) => {
         plan: cachedUser.plan || user.plan || 'Basic Plan',
         forceLogout: cachedUser.forceLogout === true,
         forceReLogin: cachedUser.forceReLogin === true,
-        isBlocked: cachedUser.isBlocked === true || cachedUser.status === 'DISABLED',
+        isBlocked: cachedUser.isBlocked === true || cachedUser.status === 'DISABLED' || (cachedUser.banUntil && cachedUser.banUntil > Date.now()),
+        banUntil: cachedUser.banUntil || user.banUntil || null,
+        banReason: cachedUser.banReason || user.banReason || null,
         id: uid,
         uid: uid
       };
@@ -727,7 +1050,7 @@ router.post("/tickets/raise", async (req, res) => {
       uid,
       userEmail: userEmail || '',
       userName: userName || 'User',
-      plan: plan || 'Plus Plan',
+      plan: (plan === 'Pro Plan' || plan === 'Plus') ? 'Pro Plan' : (plan || 'Pro Plan'),
       amount: amount || 0,
       utr: utr || '',
       orderStatus: orderStatus || 'PENDING',
@@ -763,7 +1086,7 @@ router.post("/tickets/raise", async (req, res) => {
       uid,
       userEmail: userEmail || '',
       userName: userName || 'User',
-      plan: plan || 'Plus Plan',
+      plan: (plan === 'Pro Plan' || plan === 'Plus') ? 'Pro Plan' : (plan || 'Pro Plan'),
       amount: amount || 0,
       utr: utr || '',
       orderStatus: orderStatus || 'PENDING',

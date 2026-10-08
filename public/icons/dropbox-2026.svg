@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100%" height="100%">
+  <!-- Top Left -->
+  <polygon points="25,10 0,28 25,46 50,28" fill="#0061FF"/>
+  <!-- Top Right -->
+  <polygon points="75,10 50,28 75,46 100,28" fill="#0061FF"/>
+  <!-- Middle Left -->
+  <polygon points="0,64 25,82 50,64 25,46" fill="#0061FF"/>
+  <!-- Middle Right -->
+  <polygon points="100,64 75,46 50,64 75,82" fill="#0061FF"/>
+  <!-- Bottom Center -->
+  <polygon points="25,82 50,100 75,82 50,64" fill="#0061FF"/>
+</svg>

@@ -12,7 +12,12 @@ import authRoutes from "./server/authRoutes";
 import paymentRoutes from "./server/paymentRoutes";
 import adminRoutes from "./server/adminRoutes";
 import aiRoutes from "./server/aiRoutes";
+import cloudsqlRoutes from "./server/cloudsqlRoutes";
+import usageRoutes from "./server/usageRoutes";
+import converterRoutes from "./server/converterRoutes";
+import cloudRoutes from "./server/cloudRoutes";
 import { ensureAPKFile } from "./server/apkBuilder";
+import { getServerDocs, setServerDoc } from "./server/serverDb";
 
 async function startServer() {
   const app = express();
@@ -35,12 +40,81 @@ async function startServer() {
   app.use(express.json({ limit: '50mb' }));
   app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
+  // CORS & PWA headers for PWABuilder & external crawlers
+  app.use((req, res, next) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PUT, PATCH, DELETE");
+    res.setHeader("Access-Control-Allow-Headers", "X-Requested-With,content-type,Authorization");
+    res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate, max-age=0");
+    res.setHeader("Pragma", "no-cache");
+    res.setHeader("Expires", "0");
+    if (req.method === 'OPTIONS') {
+      return res.sendStatus(200);
+    }
+    next();
+  });
+
+  // Serve Manifest explicitly with correct Content-Type and 0ms latency
+  app.get(["/manifest.json", "/manifest.webmanifest"], (req, res) => {
+    const manifestPath = path.join(process.cwd(), "public", "manifest.json");
+    if (fs.existsSync(manifestPath)) {
+      res.setHeader("Content-Type", "application/manifest+json; charset=utf-8");
+      res.setHeader("Cache-Control", "public, max-age=3600");
+      res.sendFile(manifestPath);
+    } else {
+      res.status(404).send("Manifest not found");
+    }
+  });
+
+  // Serve static assets from public directly before Vite middleware
+  app.use(express.static(path.join(process.cwd(), "public")));
+
   // Health check endpoint for Render/Cloud hosting
   app.get("/health", (req, res) => {
     res.status(200).send("OK");
   });
   app.get("/api/health", (req, res) => {
     res.status(200).json({ status: "ok" });
+  });
+
+  // --- Live Web Page Fetcher for Web-to-PDF Conversion ---
+  app.get("/api/fetch-webpage", async (req, res) => {
+    try {
+      let targetUrl = req.query.url as string;
+      if (!targetUrl) {
+        return res.status(400).json({ error: "URL parameter is required" });
+      }
+      if (!targetUrl.startsWith("http://") && !targetUrl.startsWith("https://")) {
+        targetUrl = "https://" + targetUrl;
+      }
+
+      const response = await fetch(targetUrl, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
+        }
+      });
+
+      if (!response.ok) {
+        return res.status(response.status).json({ error: `Failed to fetch webpage (Status ${response.status})` });
+      }
+
+      let html = await response.text();
+      const parsedUrl = new URL(targetUrl);
+      const baseUrl = `${parsedUrl.protocol}//${parsedUrl.host}${parsedUrl.pathname.substring(0, parsedUrl.pathname.lastIndexOf('/') + 1)}`;
+
+      // Inject <base href="..."> into <head> so relative styles, images, and fonts resolve
+      if (html.includes("<head>")) {
+        html = html.replace("<head>", `<head><base href="${baseUrl}">`);
+      } else {
+        html = `<base href="${baseUrl}">\n` + html;
+      }
+
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
+      res.send(html);
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || "Failed to fetch target URL" });
+    }
   });
 
   // --- Direct APK Download Route ---
@@ -59,6 +133,19 @@ async function startServer() {
   
   // --- AI Features ---
   app.use("/api/ai", aiRoutes);
+
+  // --- Cloud SQL (PostgreSQL) Routes ---
+  app.use("/api/cloudsql", cloudsqlRoutes);
+
+  // --- Real Usage and Quota Tracking Routes ---
+  app.use("/api/usage", usageRoutes);
+
+  // --- Real Document & Office Converters (PowerPoint, Excel, CSV, TXT, Markdown) ---
+  app.use("/api", converterRoutes);
+
+  // --- Real Google Drive and Dropbox Cloud Import Routes ---
+  app.use("/api/cloud", cloudRoutes);
+  app.use("/auth/dropbox/callback", (req, res) => res.redirect(307, `/api/cloud/dropbox/callback?${new URLSearchParams(req.query as any)}`));
 
   // --- Real Version Endpoint ---
   app.get("/api/version", (req, res) => {
@@ -140,10 +227,34 @@ async function startServer() {
       appType: "spa",
     });
     app.use(vite.middlewares);
+
+    // Explicit fallback to ensure live HTML transformation on any path in dev
+    app.use(async (req, res, next) => {
+      const url = req.originalUrl;
+      try {
+        const indexPath = path.resolve(process.cwd(), "index.html");
+        let template = fs.readFileSync(indexPath, "utf-8");
+        template = await vite.transformIndexHtml(url, template);
+        res.status(200).set({ "Content-Type": "text/html" }).end(template);
+      } catch (e) {
+        vite.ssrFixStacktrace(e as Error);
+        next(e);
+      }
+    });
   } else {
     const distPath = path.join(process.cwd(), 'dist');
-    app.use(express.static(distPath));
-    app.get('*all', (req, res) => {
+    app.use(express.static(distPath, {
+      maxAge: 0,
+      setHeaders: (res) => {
+        res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate, max-age=0");
+        res.setHeader("Pragma", "no-cache");
+        res.setHeader("Expires", "0");
+      }
+    }));
+    app.use((req, res) => {
+      res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate, max-age=0");
+      res.setHeader("Pragma", "no-cache");
+      res.setHeader("Expires", "0");
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
@@ -151,6 +262,72 @@ async function startServer() {
   httpServer.listen(PORT, "0.0.0.0", async () => {
     console.log(`Server running on http://localhost:${PORT}`);
   });
+
+  // Real-time server-authoritative 10-minute support chat inactivity monitor
+  setInterval(async () => {
+    try {
+      const chats = await getServerDocs("support_chats");
+      const now = Date.now();
+      const INACTIVITY_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+
+      for (const chat of chats) {
+        if (chat.status === "active") {
+          let lastUserActivityTime = chat.lastUserActivity || 0;
+          
+          // Find the last user message timestamp to be absolutely foolproof
+          if (chat.messages && Array.isArray(chat.messages)) {
+            const userMsgs = chat.messages.filter((m: any) => m.sender === "user");
+            if (userMsgs.length > 0) {
+              const lastUserMsg = userMsgs[userMsgs.length - 1];
+              if (lastUserMsg.timestamp) {
+                lastUserActivityTime = Math.max(lastUserActivityTime, lastUserMsg.timestamp);
+              }
+            }
+          }
+
+          if (!lastUserActivityTime) {
+            lastUserActivityTime = chat.createdAt || 0;
+          }
+          
+          if (lastUserActivityTime > 0 && (now - lastUserActivityTime >= INACTIVITY_TIMEOUT_MS)) {
+            // Create system closed notice message
+            const systemNoticeMsg = {
+              id: `msg_sys_${now}`,
+              sender: "system",
+              senderName: "System Notice",
+              text: "⏱️ This chat session has been closed due to 10 minutes of inactivity.",
+              timestamp: now,
+              isSystemNotice: true
+            };
+            
+            const updatedMsgs = Array.isArray(chat.messages) ? [...chat.messages, systemNoticeMsg] : [systemNoticeMsg];
+            const updatedChat = {
+              ...chat,
+              status: "closed",
+              closedReason: "inactivity_timeout",
+              closedAt: now,
+              messages: updatedMsgs,
+              lastMessage: "Chat closed due to 10 minutes of inactivity",
+              unreadByUser: true
+            };
+            
+            await setServerDoc("support_chats", chat.id, updatedChat);
+            console.log(`[Support Inactivity Monitor] Closed inactive chat session: ${chat.id}`);
+            
+            // Broadcast real-time Socket.IO notification to update clients instantly
+            io.emit("paperx-support-status-update", {
+              chatId: chat.id,
+              status: "closed",
+              closedReason: "inactivity_timeout",
+              closedAt: now
+            });
+          }
+        }
+      }
+    } catch (err) {
+      console.warn("[Support Inactivity Monitor Error]", err);
+    }
+  }, 10000); // Check every 10 seconds
 }
 
 startServer();

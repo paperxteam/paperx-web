@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Button } from './Button';
 import { summarizeText, rewriteText, translateText } from '../services/automatedService';
 import { DocumentService } from '../services/documentService';
-import { Download, Copy, Sparkles, RefreshCw, Type, Languages, ArrowRight, Wand2, Users } from 'lucide-react';
+import { Download, Copy, Sparkles, Languages, ArrowRight, Wand2, Users, FileCode } from 'lucide-react';
 
 import { Socket } from 'socket.io-client';
 
@@ -57,34 +57,18 @@ export const TextWorkspace: React.FC<TextWorkspaceProps> = ({ toolId, socket, do
   const getActionLabel = () => {
     if (isProcessing) return processingStatus || 'Processing...';
     switch (toolId) {
-      case 'create-document':
-      case 'create-pdf':
-      case 'text-to-pdf': return 'Generate PDF';
-      case 'resume-builder': return 'Generate Resume PDF';
-      case 'letter-templates': return 'Generate Template PDF';
-      case 'invoice-creator': return 'Generate Invoice PDF';
-      case 'certificate-creator': return 'Generate Certificate PDF';
-      case 'form-creator': return 'Generate Form PDF';
-      case 'summarize-pdf': return 'Summarize & Save';
-      case 'rewrite-pdf': return 'Rewrite & Save';
-      case 'translate-pdf': return 'Translate to Spanish';
-      default: return 'Generate Document';
+      case 'summarize-pdf': return 'Summarize Document';
+      case 'translate-pdf': return 'Translate Document';
+      case 'pdf-to-markdown': return 'Convert to Markdown';
+      default: return 'Process Document';
     }
   };
 
   const getIcon = () => {
      switch (toolId) {
-        case 'create-document':
-        case 'create-pdf':
-        case 'text-to-pdf':
-        case 'resume-builder':
-        case 'letter-templates':
-        case 'invoice-creator':
-        case 'certificate-creator':
-        case 'form-creator': return Type;
         case 'summarize-pdf': return Sparkles;
-        case 'rewrite-pdf': return Wand2;
         case 'translate-pdf': return Languages;
+        case 'pdf-to-markdown': return FileCode;
         default: return ArrowRight;
      }
   };
@@ -98,36 +82,9 @@ export const TextWorkspace: React.FC<TextWorkspaceProps> = ({ toolId, socket, do
     setGeneratedBlob(null);
 
     try {
-      const isCreateType = [
-        'create-document',
-        'create-pdf',
-        'text-to-pdf',
-        'resume-builder',
-        'letter-templates',
-        'invoice-creator',
-        'certificate-creator',
-        'form-creator'
-      ].includes(toolId);
-
-      if (isCreateType) {
-        const { blob, filename } = await DocumentService.textToPDF(text, (status: string) => {
-            setProcessingStatus(status);
-        });
-        setGeneratedBlob(blob);
-        setGeneratedFilename(filename);
-        setResult("PDF Generated Successfully. Your document is saved to Recent Activity and ready for download.");
-        if (onComplete) onComplete(blob, filename);
-      } else if (toolId === 'summarize-pdf') {
+      if (toolId === 'summarize-pdf') {
         setProcessingStatus('AI Analyzing text...');
         const res = await summarizeText(text);
-        setResult(res);
-        const { blob, filename } = await DocumentService.textToPDF(res || text, () => {});
-        setGeneratedBlob(blob);
-        setGeneratedFilename(filename);
-        if (onComplete) onComplete(blob, filename);
-      } else if (toolId === 'rewrite-pdf') {
-        setProcessingStatus('Refining content...');
-        const res = await rewriteText(text);
         setResult(res);
         const { blob, filename } = await DocumentService.textToPDF(res || text, () => {});
         setGeneratedBlob(blob);
@@ -141,6 +98,14 @@ export const TextWorkspace: React.FC<TextWorkspaceProps> = ({ toolId, socket, do
         setGeneratedBlob(blob);
         setGeneratedFilename(filename);
         if (onComplete) onComplete(blob, filename);
+      } else if (toolId === 'pdf-to-markdown') {
+        setProcessingStatus('Formatting markdown...');
+        const mdBlob = new Blob([text], { type: 'text/markdown' });
+        const mdName = `Document_${Date.now()}.md`;
+        setGeneratedBlob(mdBlob);
+        setGeneratedFilename(mdName);
+        setResult(text);
+        if (onComplete) onComplete(mdBlob, mdName);
       }
     } catch (e) {
       setResult("An error occurred processing your request. Please try again.");
@@ -210,7 +175,7 @@ export const TextWorkspace: React.FC<TextWorkspaceProps> = ({ toolId, socket, do
 
       {/* Output Section */}
       {(result || isProcessing || toolId === 'create-pdf' || toolId === 'text-to-pdf') && (
-        <div className={`flex flex-col min-h-[400px] lg:h-[500px] bg-white/80 backdrop-blur-xl rounded-3xl border border-white/20 shadow-2xl shadow-black/5 overflow-hidden ${!result && !isProcessing && toolId !== 'create-pdf' && toolId !== 'text-to-pdf' ? 'opacity-50 grayscale' : ''}`}>
+        <div className={`flex flex-col min-h-[400px] lg:h-[500px] bg-white/80  rounded-3xl border border-white/20 shadow-2xl shadow-black/5 overflow-hidden ${!result && !isProcessing && toolId !== 'create-pdf' && toolId !== 'text-to-pdf' ? 'opacity-50 grayscale' : ''}`}>
            <div className="bg-gray-950 px-6 py-4 border-b border-gray-800 flex items-center justify-between text-white">
                 <span className="text-[10px] font-black text-gray-400 uppercase tracking-[0.2em]">
                     {toolId === 'create-pdf' || toolId === 'text-to-pdf' ? 'Preview' : 'Output'}
@@ -253,7 +218,7 @@ export const TextWorkspace: React.FC<TextWorkspaceProps> = ({ toolId, socket, do
                 )}
             </div>
 
-            <div className="p-4 bg-white/50 border-t border-white/20 backdrop-blur-sm">
+            <div className="p-4 bg-white/50 border-t border-white/20 ">
                 {result && !isProcessing ? (
                      <Button variant="secondary" onClick={handleDownload} className="group w-full font-black rounded-2xl shadow-lg border-none bg-black text-white hover:bg-gray-900">
                         <Download size={16} className="mr-2 group-hover:animate-bounce" />

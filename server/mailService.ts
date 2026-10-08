@@ -403,3 +403,52 @@ export async function sendEmailChangeOtpEmail(toEmail: string, otpCode: string, 
   }
 }
 
+export async function sendLoginAlertEmail(toEmail: string, info: { platform: string, ip: string, date: string }): Promise<{ success: boolean }> {
+  try {
+    const transporter = await getMailTransporter();
+    const fromAddress = getSenderAddress('Security');
+    const brandHtml = getBrandLogoHtml();
+    
+    const htmlContent = `
+      <!DOCTYPE html>
+      <html>
+      <body style="margin: 0; padding: 0; background-color: #f8fafc; font-family: -apple-system, sans-serif; color: #0f172a;">
+        <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="padding: 40px 12px;">
+          <tr><td align="center">
+            <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="max-width: 480px; background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 20px; padding: 40px;">
+              <tr><td>
+                ${brandHtml}
+                <h1 style="font-size: 24px; font-weight: 800; text-align: center; margin-bottom: 20px;">New Login Detected</h1>
+                <p style="font-size: 14px; color: #64748b; line-height: 1.6; text-align: center;">
+                  A new login was detected for your PaperX account.
+                </p>
+                <div style="background-color: #f1f5f9; border-radius: 12px; padding: 16px; margin: 20px 0;">
+                  <p style="font-size: 14px; margin: 5px 0;"><strong>Date:</strong> ${info.date}</p>
+                  <p style="font-size: 14px; margin: 5px 0;"><strong>Platform:</strong> ${info.platform}</p>
+                  <p style="font-size: 14px; margin: 5px 0;"><strong>IP Address:</strong> ${info.ip}</p>
+                </div>
+                <p style="font-size: 14px; color: #64748b; line-height: 1.6; text-align: center;">
+                  If this was you, you can safely ignore this email. If you did not authorize this, please change your password immediately.
+                </p>
+              </td></tr>
+            </table>
+          </td></tr>
+        </table>
+      </body>
+      </html>
+    `;
+
+    await transporter.sendMail({
+      from: fromAddress,
+      to: toEmail,
+      subject: "Security Alert: New Login to PaperX",
+      html: htmlContent,
+    });
+    
+    return { success: true };
+  } catch (error) {
+    console.error(`[MAIL SERVICE] Login alert fail to ${toEmail}:`, error);
+    return { success: false };
+  }
+}
+

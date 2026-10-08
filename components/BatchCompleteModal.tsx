@@ -111,7 +111,7 @@ export const BatchCompleteModal: React.FC<BatchCompleteModalProps> = ({
   return (
     <div 
       id="batch-complete-modal" 
-      className="fixed inset-0 z-[150] flex items-center justify-center p-4 sm:p-6 bg-black/60 backdrop-blur-md animate-fade-in"
+      className="fixed inset-0 z-[150] flex items-center justify-center p-4 sm:p-6 bg-black/60 animate-fade-in"
     >
       <motion.div
         initial={{ opacity: 0, scale: 0.95, y: 20 }}

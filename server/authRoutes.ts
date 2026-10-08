@@ -1,6 +1,6 @@
 import express from "express";
 import crypto from "node:crypto";
-import { sendPasswordResetOtpEmail, sendEmailChangeOtpEmail } from "./mailService";
+import { sendPasswordResetOtpEmail, sendEmailChangeOtpEmail, sendLoginAlertEmail } from "./mailService";
 import { getServerDoc, getServerDocs, setServerDoc, updateServerDoc } from "./serverDb";
 
 const router = express.Router();
@@ -100,6 +100,41 @@ setInterval(() => {
     }
   }
 }, 3 * 60 * 1000);
+  
+/**
+ * POST /api/auth/send-login-alert
+ * Sends an email alert if login is from an unrecognized device
+ */
+router.post("/send-login-alert", async (req, res) => {
+  const { uid, email, deviceId, deviceName, userAgent, platform, date } = req.body;
+  if (!uid || !email || !deviceId) {
+    return res.status(400).json({ error: "Missing required fields" });
+  }
+
+  try {
+    const userDoc = await getServerDoc('users', uid);
+    const trustedDevices = userDoc?.trustedDevices || [];
+    
+    if (!trustedDevices.includes(deviceId)) {
+      const shouldSend = userDoc?.loginAlertsEnabled !== false;
+      
+      if (shouldSend) {
+        const ip = (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || 'Unknown';
+        const formattedDate = date || new Date().toLocaleDateString('en-US', { dateStyle: 'medium' });
+        await sendLoginAlertEmail(email, { platform: platform || 'Unknown', ip, date: formattedDate });
+      }
+      await updateServerDoc('users', uid, { 
+        trustedDevices: [...trustedDevices, deviceId] 
+      });
+      return res.json({ success: true, alertSent: shouldSend });
+    }
+    
+    return res.json({ success: true, alertSent: false });
+  } catch (error) {
+    console.error("[LoginAlert] Error:", error);
+    return res.status(500).json({ error: "Failed to process login alert" });
+  }
+});
 
 /**
  * POST /api/auth/register

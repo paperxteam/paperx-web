@@ -139,7 +139,7 @@ export const AdminModal: React.FC<AdminModalProps> = ({ isOpen, onClose }) => {
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
       <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl overflow-hidden border border-emerald-100 flex flex-col max-h-[90vh]">
         
         {/* Header */}
@@ -376,7 +376,7 @@ export const AdminModal: React.FC<AdminModalProps> = ({ isOpen, onClose }) => {
                         type="text"
                         value={bannerText}
                         onChange={(e) => setBannerText(e.target.value)}
-                        placeholder="e.g. 🇮🇳 Happy Independence Day! Get 50% off Plus Plan today!"
+                        placeholder="e.g. 🇮🇳 Happy Independence Day! Get 50% off Pro Plan today!"
                         className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-emerald-600 text-sm"
                       />
                     </div>
@@ -437,7 +437,7 @@ export const AdminModal: React.FC<AdminModalProps> = ({ isOpen, onClose }) => {
 
         {/* Rejection Reason Modal Overlay */}
         {rejectModalOrder && (
-          <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="fixed inset-0 z-50 bg-slate-950/70 flex items-center justify-center p-4">
             <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 animate-in fade-in zoom-in duration-150">
               <div className="flex items-center justify-between pb-3 border-b border-slate-100">
                 <div className="flex items-center gap-2">

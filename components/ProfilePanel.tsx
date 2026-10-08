@@ -1,27 +1,33 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { X, User as UserIcon, Settings, CreditCard, LogOut, ChevronRight, ChevronLeft, MapPin, Phone, FileText, Crown, Shield, ShieldCheck, Bell, Trash2, Smartphone, Moon, Sun, Zap, Check, Edit2, AlertTriangle, Key, Mail, ArrowRight, Lock, LifeBuoy, Globe, ChevronDown, CheckCircle2, History, Clock, AlertCircle, Type, Volume2, VolumeX, Maximize2, Minimize2, RotateCcw, RefreshCw, Info, Laptop, ExternalLink, Database, Sparkles, Layers, Ticket, XCircle, Camera, Cpu, Copy, FileCheck, Sliders, Printer, DownloadCloud, Activity, Wifi, Tablet, Monitor, Code, Eye, FileDown, CheckCircle, Undo2 } from 'lucide-react';
+import { X, User as UserIcon, Settings, CreditCard, LogOut, ChevronRight, ChevronLeft, MapPin, Phone, FileText, Crown, Shield, ShieldCheck, Bell, Trash2, Smartphone, Moon, Sun, Zap, Check, Edit2, AlertTriangle, Key, Mail, ArrowRight, Lock, LifeBuoy, Globe, ChevronDown, CheckCircle2, History, Clock, Calendar, AlertCircle, Type, Volume2, VolumeX, Maximize2, Minimize2, RotateCcw, RefreshCw, Info, Laptop, ExternalLink, Database, Sparkles, Layers, Ticket, XCircle, Camera, Cpu, Copy, FileCheck, Sliders, Printer, DownloadCloud, Activity, Wifi, Tablet, Monitor, Code, Eye, FileDown, CheckCircle, Undo2, Mic, Layout, Cookie, ShieldAlert, Fingerprint, UserCheck } from 'lucide-react';
 import { User, UserSession, getUserPurchasedTier, isBillingCycleCovered, BILLING_CYCLE_LABELS, BillingCycleType, READYMADE_TICKET_REASONS, isOrderAwaitingLongTime, getOrderWaitMinutes, getOrderTimestamp, ReadyMadeTicketReason, getPlanCreditValue } from '../types';
 import { Button } from './Button';
 import { GlassPillButton } from './GlassPillButton';
-import { db, auth, updateUserInFirestore, sendEmailChangeCode, verifyEmailChangeCode, isValidEmail, getEmailFormatError, subscribeToUserSessions, removeUserSession, removeAllOtherSessions } from '../services/firebase';
+import { db, auth, updateUserInFirestore, sendEmailChangeCode, verifyEmailChangeCode, isValidEmail, getEmailFormatError, subscribeToUserSessions, removeUserSession, removeAllOtherSessions, generateTotpSecretForEnrollment, enrollTotpFactor, unenrollTotpFactor, getDeviceInfoSync, getDeviceId, recordUserSession } from '../services/firebase';
 import { setPersistence, browserLocalPersistence, browserSessionPersistence } from 'firebase/auth';
-import { collection, query, where, onSnapshot, getDocs } from 'firebase/firestore';
+import { collection, query, where, onSnapshot, getDocs, doc, deleteDoc, setDoc } from 'firebase/firestore';
 import { generateBase32Secret, verifyTOTPCode, getAuthenticatorQRCodeURL } from '../services/totpService';
-import { getTranslation, useAppTranslation } from '../translations';
+import { getTranslation, useAppTranslation, normalizeLanguage } from '../translations';
+import { LanguageSelector } from './LanguageSelector';
 import { getSampleFormattedFileName } from '../lib/namingUtils';
 import { UpgradeView } from './UpgradeView';
+import { PreferencesView } from './PreferencesView';
+import { AnimatedDeviceIcon } from './AnimatedDeviceIcon';
+import { safeStorage } from '../src/utils/safeStorage';
+import { PAPERX_LOGO_BASE64 } from '../src/assets/logo-data';
 
 interface ProfilePanelProps {
   isOpen: boolean;
   onClose: () => void;
-  user: User;
-  onLogout: () => void;
-  onUpgrade: (plan: 'Plus Plan' | 'Max Plan', amount?: string, cycle?: 'month' | 'half-year' | 'year', resubmitId?: string, upgradeFromId?: string, oldAmount?: number) => void;
-  onSwitchPlan?: (plan: 'Basic Plan' | 'Plus Plan' | 'Max Plan', cycle?: 'month' | 'half-year' | 'year') => void;
+  user: User | null;
+  onLogout: (destination?: string) => void;
+  onUpgrade: (plan: 'Pro Plan' | 'Max Plan', amount?: string, cycle?: 'month' | 'half-year' | 'year', resubmitId?: string, upgradeFromId?: string, oldAmount?: number) => void;
+  onSwitchPlan?: (plan: 'Basic Plan' | 'Pro Plan' | 'Max Plan', cycle?: 'month' | 'half-year' | 'year') => void;
   initialTab?: 'menu' | 'personal' | 'billing' | 'payment-history' | 'preferences' | 'about' | 'terms' | 'privacy';
   onSupportClick?: () => void;
   onOpenAdmin?: () => void;
+  inline?: boolean;
 }
 
 type ViewState = 'menu' | 'personal' | 'billing' | 'payment-history' | 'preferences' | 'email-change' | 'support' | 'about' | 'terms' | 'privacy';
@@ -35,11 +41,24 @@ const GoogleIcon = ({ size = 20, className = "" }: { size?: number, className?: 
   </svg>
 );
 
-export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, user, onLogout, onUpgrade, onSwitchPlan, initialTab = 'menu', onSupportClick, onOpenAdmin }) => {
+export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, user: propUser, onLogout, onUpgrade, onSwitchPlan, initialTab = 'menu', onSupportClick, onOpenAdmin, inline }) => {
+  const user: User = propUser || {
+    uid: 'guest',
+    id: 'guest',
+    name: 'PaperX User',
+    email: 'guest@paperx.app',
+    avatarUrl: '',
+    plan: 'Basic Plan',
+    projectsUsed: 0,
+    maxProjects: 5,
+    memberSince: 'Today',
+    subscriptionStatus: 'free',
+    isPro: false,
+    darkMode: false,
+    theme: 'system'
+  } as unknown as User;
   const [view, setView] = useState<ViewState>(initialTab);
   const [viewHistory, setViewHistory] = useState<ViewState[]>([]);
-  const [prevIsOpen, setPrevIsOpen] = useState(isOpen);
-  const [prevInitialTab, setPrevInitialTab] = useState(initialTab);
 
   const navigateTo = (targetView: ViewState) => {
     if (targetView !== view) {
@@ -47,17 +66,6 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
       setView(targetView);
     }
   };
-
-  // Synchronously ensure correct view during render pass before any paint or transition
-  if (isOpen && (!prevIsOpen || initialTab !== prevInitialTab)) {
-    setPrevIsOpen(isOpen);
-    setPrevInitialTab(initialTab);
-    setView(initialTab);
-    setViewHistory([]);
-  } else if (!isOpen && prevIsOpen) {
-    setPrevIsOpen(false);
-    setViewHistory([]);
-  }
 
   const [formData, setFormData] = useState({
     jobTitle: user?.jobTitle || 'Product Designer',
@@ -93,159 +101,256 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
   });
   const [isEmailProcessing, setIsEmailProcessing] = useState(false);
 
-  // Preference States (13 Fully Working Features)
-  const [notifications, setNotifications] = useState(() => localStorage.getItem('pref_notifications') !== 'false');
-  const [autoDelete, setAutoDelete] = useState(() => localStorage.getItem('pref_autoDelete') === 'true');
-  const [marketing, setMarketing] = useState(() => localStorage.getItem('pref_marketing') === 'true');
+  // Sync state with props during render phase to avoid a 1-frame visual flash or sudden mid-transition view jumps
+  const [prevIsOpen, setPrevIsOpen] = useState(isOpen);
+  const [prevInitialTab, setPrevInitialTab] = useState(initialTab);
+
+  if (isOpen !== prevIsOpen || initialTab !== prevInitialTab) {
+    setPrevIsOpen(isOpen);
+    setPrevInitialTab(initialTab);
+    if (isOpen) {
+      setView(initialTab);
+      setEmailStep(0);
+      setEmailFlowData({ oldOtp: '', newEmail: '', newOtp: '', firstName: '' });
+    }
+  }
+
+  // Preference States with safeStorage
+  const [notifications, setNotifications] = useState(() => safeStorage.getItem('pref_notifications') !== 'false');
+  const [autoDelete, setAutoDelete] = useState(() => safeStorage.getItem('pref_autoDelete') === 'true');
+  const [marketing, setMarketing] = useState(() => safeStorage.getItem('pref_marketing') === 'true');
   const [darkMode, setDarkMode] = useState(() => {
-    if (user?.theme) return user.theme === 'dark';
-    const saved = localStorage.getItem('pref_darkMode');
+    const saved = safeStorage.getItem('pref_darkMode');
     if (saved !== null) return saved === 'true';
+    if (user?.theme) return user.theme === 'dark';
+    if (user?.darkMode !== undefined) return user.darkMode;
     return window.matchMedia('(prefers-color-scheme: dark)').matches;
   });
+  const [loginAlerts, setLoginAlerts] = useState(() => user?.loginAlertsEnabled || false);
 
   // 1. Font Size State
   const [fontSize, setFontSize] = useState<'system' | 'small' | 'medium' | 'large'>(() => {
-    return user?.fontSize || (localStorage.getItem('pref_fontSize') as 'system' | 'small' | 'medium' | 'large') || 'system';
+    const saved = safeStorage.getItem('pref_fontSize') as 'system' | 'small' | 'medium' | 'large' | null;
+    if (saved) return saved;
+    if (user?.fontSize) return user.fontSize as 'system' | 'small' | 'medium' | 'large';
+    return 'system';
   });
 
   // 3. Notification Sound State
   const [soundEffects, setSoundEffects] = useState<boolean>(() => {
+    const saved = safeStorage.getItem('pref_sound');
+    if (saved !== null) return saved !== 'false';
     if (user?.notificationSoundEnabled !== undefined) return user.notificationSoundEnabled;
-    return localStorage.getItem('pref_sound') !== 'false';
+    return true;
   });
 
   // 4. Language State & Reactive Translations
-  const [language, setLanguage] = useState<string>(() => {
-    return user?.language || localStorage.getItem('pref_language') || 'English';
-  });
-  const { t, changeLanguage } = useAppTranslation(language);
+  const { t, currentLanguage, changeLanguage } = useAppTranslation();
 
   // 8. Larger Text Accessibility State
   const [largerText, setLargerText] = useState<boolean>(() => {
+    const saved = safeStorage.getItem('pref_largerText');
+    if (saved !== null) return saved === 'true';
     if (user?.largerTextEnabled !== undefined) return user.largerTextEnabled;
-    return localStorage.getItem('pref_largerText') === 'true';
+    return false;
   });
 
   // 9. Auto Restore Session State
   const [autoRestoreSession, setAutoRestoreSession] = useState<boolean>(() => {
     if (user?.autoRestoreSession !== undefined) return user.autoRestoreSession;
-    return localStorage.getItem('pref_autoRestoreSession') !== 'false';
+    return safeStorage.getItem('pref_autoRestoreSession') !== 'false';
   });
 
   // 10. Document & PDF Studio Preferences (Real Working Settings for PaperX)
   const [pdfQuality, setPdfQuality] = useState<'high' | 'standard' | 'compact'>(() => {
-    return user?.pdfQuality || (localStorage.getItem('pref_pdfQuality') as 'high' | 'standard' | 'compact') || 'high';
+    return user?.pdfQuality || (safeStorage.getItem('pref_pdfQuality') as 'high' | 'standard' | 'compact') || 'high';
   });
 
   const [namingPattern, setNamingPattern] = useState<'simple' | 'original' | 'date' | 'paperx' | string>(() => {
-    const rawPattern = user?.namingPattern || localStorage.getItem('pref_namingPattern') || 'simple';
+    const rawPattern = user?.namingPattern || safeStorage.getItem('pref_namingPattern') || 'simple';
     return rawPattern === 'paperx_date' ? 'paperx' : rawPattern;
   });
 
   const [autoSaveScan, setAutoSaveScan] = useState<boolean>(() => {
     if (user?.autoSaveScan !== undefined) return user.autoSaveScan;
-    return localStorage.getItem('pref_autoSaveScan') !== 'false';
+    return safeStorage.getItem('pref_autoSaveScan') !== 'false';
   });
 
   const [ocrLanguage, setOcrLanguage] = useState<string>(() => {
-    return user?.ocrLanguage || localStorage.getItem('pref_ocrLanguage') || 'English';
+    return user?.ocrLanguage || safeStorage.getItem('pref_ocrLanguage') || 'English';
   });
 
   const [autoCopyText, setAutoCopyText] = useState<boolean>(() => {
     if (user?.autoCopyText !== undefined) return user.autoCopyText;
-    return localStorage.getItem('pref_autoCopyText') !== 'false';
+    return safeStorage.getItem('pref_autoCopyText') !== 'false';
   });
 
   const [pdfAutoCompress, setPdfAutoCompress] = useState<boolean>(() => {
-    return localStorage.getItem('pref_pdfAutoCompress') !== 'false';
+    return safeStorage.getItem('pref_pdfAutoCompress') !== 'false';
   });
 
-  // Sync state if user profile loads later
+  const hasMountedPreferencesRef = useRef(false);
   useEffect(() => {
-    if (user) {
-        if (user.theme && (user.theme === 'dark') !== darkMode) {
-          setDarkMode(user.theme === 'dark');
-        }
-        if (user.fontSize && user.fontSize !== fontSize) {
-          setFontSize(user.fontSize as 'system' | 'small' | 'medium' | 'large');
-        }
-        if (user.largerTextEnabled !== undefined && user.largerTextEnabled !== largerText) {
-          setLargerText(user.largerTextEnabled);
-        }
-        if (user.language && user.language !== language) {
-          setLanguage(user.language);
-        }
-        if (user.autoSaveScan !== undefined && user.autoSaveScan !== autoSaveScan) {
-          setAutoSaveScan(user.autoSaveScan);
-        }
-        if (user.ocrLanguage && user.ocrLanguage !== ocrLanguage) {
-          setOcrLanguage(user.ocrLanguage);
-        }
-        if (user.autoCopyText !== undefined && user.autoCopyText !== autoCopyText) {
-          setAutoCopyText(user.autoCopyText);
-        }
-        if (user.pdfQuality && user.pdfQuality !== pdfQuality) {
-          setPdfQuality(user.pdfQuality as 'high' | 'standard' | 'compact');
-        }
-        if (user.namingPattern) {
-          const expected = user.namingPattern === 'paperx_date' ? 'paperx' : user.namingPattern;
-          if (expected !== namingPattern) {
-            setNamingPattern(expected);
-          }
-        }
-        if (user.notificationSoundEnabled !== undefined && user.notificationSoundEnabled !== soundEffects) {
-          setSoundEffects(user.notificationSoundEnabled);
-        }
-        if (user.autoRestoreSession !== undefined && user.autoRestoreSession !== autoRestoreSession) {
-          setAutoRestoreSession(user.autoRestoreSession);
-        }
-        if (user.pdfAutoCompress !== undefined && user.pdfAutoCompress !== pdfAutoCompress) {
-          setPdfAutoCompress(user.pdfAutoCompress);
-        }
-    }
-  }, [
-    user?.theme,
-    user?.fontSize,
-    user?.largerTextEnabled,
-    user?.language,
-    user?.autoSaveScan,
-    user?.ocrLanguage,
-    user?.autoCopyText,
-    user?.pdfQuality,
-    user?.namingPattern,
-    user?.notificationSoundEnabled,
-    user?.autoRestoreSession,
-    user?.pdfAutoCompress
-  ]);
+    hasMountedPreferencesRef.current = true;
+  }, []);
 
-  // 6. Trusted Devices / Active Sessions State
-  const [activeSessions, setActiveSessions] = useState<UserSession[]>([]);
+  // 6. Trusted Devices / Active Sessions State (Initialized with verified current device)
+  const [activeSessions, setActiveSessions] = useState<UserSession[]>(() => {
+    const info = getDeviceInfoSync();
+    const deviceId = getDeviceId();
+    return [{
+      id: deviceId,
+      userId: user?.uid || '',
+      deviceName: info.name,
+      deviceType: info.type,
+      browser: info.browser,
+      os: info.os,
+      lastActive: new Date().toISOString(),
+      loginTime: new Date().toISOString(),
+      isCurrentSession: true
+    }];
+  });
 
   useEffect(() => {
+    const info = getDeviceInfoSync();
+    const deviceId = getDeviceId();
+    const currentDeviceFallback: UserSession = {
+      id: deviceId,
+      userId: user?.uid || '',
+      deviceName: info.name,
+      deviceType: info.type,
+      browser: info.browser,
+      os: info.os,
+      lastActive: new Date().toISOString(),
+      loginTime: new Date().toISOString(),
+      isCurrentSession: true
+    };
+
     if (user?.uid) {
+      // Clean/reset activeSessions to current fallback device of the NEW user immediately to prevent cross-account leak
+      setActiveSessions([currentDeviceFallback]);
+
+      recordUserSession(user.uid).catch(() => {});
       const unsubscribe = subscribeToUserSessions(user.uid, (sessions) => {
-        setActiveSessions(sessions);
+        if (sessions && sessions.length > 0) {
+          setActiveSessions(sessions);
+        }
       });
       return () => unsubscribe();
+    } else {
+      setActiveSessions([currentDeviceFallback]);
     }
   }, [user?.uid]);
 
-  // Format date helper for session times
-  const formatSessionTime = (isoString?: string) => {
-    if (!isoString) return 'Unknown';
-    const date = new Date(isoString);
-    const now = new Date();
-    const diffMs = now.getTime() - date.getTime();
-    const diffMins = Math.floor(diffMs / 60000);
-    const diffHours = Math.floor(diffMins / 60);
-    const diffDays = Math.floor(diffHours / 24);
+  const [, setTzTicket] = useState(0);
 
-    if (diffMins < 1) return 'Just now';
-    if (diffMins < 60) return `${diffMins} min ago`;
-    if (diffHours < 24) return `${diffHours} hours ago`;
-    if (diffDays === 1) return 'Yesterday';
-    return date.toLocaleDateString();
+  useEffect(() => {
+    const handleTzUpdate = () => {
+      setTzTicket(prev => prev + 1);
+    };
+    window.addEventListener('paperx_timezone_updated', handleTzUpdate);
+    return () => window.removeEventListener('paperx_timezone_updated', handleTzUpdate);
+  }, []);
+
+  const getSafeTimeZone = (tz?: string | null): string | undefined => {
+    if (!tz) return undefined;
+    let cleanTz = tz.trim();
+    const mapping: { [key: string]: string } = {
+      'Calcutta': 'Asia/Kolkata',
+      'Kolkata': 'Asia/Kolkata',
+      'Bombay': 'Asia/Kolkata',
+      'Mumbai': 'Asia/Kolkata',
+      'Delhi': 'Asia/Kolkata',
+      'New Delhi': 'Asia/Kolkata',
+      'Madras': 'Asia/Kolkata',
+      'Chennai': 'Asia/Kolkata',
+      'India': 'Asia/Kolkata',
+      'IST': 'Asia/Kolkata',
+      'UTC': 'UTC',
+      'GMT': 'UTC',
+    };
+    if (mapping[cleanTz]) {
+      cleanTz = mapping[cleanTz];
+    }
+    try {
+      Intl.DateTimeFormat(undefined, { timeZone: cleanTz });
+      return cleanTz;
+    } catch {
+      return undefined;
+    }
+  };
+
+  const getFormatOptions = (options: any) => {
+    if (typeof window !== 'undefined') {
+      const tz = localStorage.getItem('paperx_override_timezone');
+      const safeTz = getSafeTimeZone(tz);
+      if (safeTz) {
+        return { ...options, timeZone: safeTz };
+      }
+    }
+    return options;
+  };
+
+  // Format date helpers for real login dates and session times
+  const formatLoginDate = (isoString?: string, sessionTimeZone?: string) => {
+    if (!isoString) return 'Active session';
+    try {
+      const date = new Date(isoString);
+      if (isNaN(date.getTime())) return 'Active session';
+      
+      const rawTz = sessionTimeZone || (typeof window !== 'undefined' ? localStorage.getItem('paperx_override_timezone') : null);
+      const targetTz = getSafeTimeZone(rawTz);
+      
+      return date.toLocaleString(undefined, {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        timeZone: targetTz,
+        timeZoneName: 'short'
+      });
+    } catch {
+      return 'Active session';
+    }
+  };
+
+  const formatLastActive = (isoString?: string, isCurrent?: boolean, sessionTimeZone?: string) => {
+    if (isCurrent) return 'Active now';
+    if (!isoString) return 'Recently active';
+    try {
+      const date = new Date(isoString);
+      const now = new Date();
+      const diffMs = now.getTime() - date.getTime();
+      if (isNaN(diffMs)) return 'Recently active';
+
+      // Handle local system clock drift gracefully
+      if (diffMs < 0) {
+        if (Math.abs(diffMs) < 60000) return isCurrent ? 'Active now' : 'Just now';
+        return 'Recently active';
+      }
+
+      const diffMins = Math.floor(diffMs / 60000);
+      const diffHours = Math.floor(diffMins / 60);
+      const diffDays = Math.floor(diffHours / 24);
+
+      if (diffMins < 1) return isCurrent ? 'Active now' : 'Just now';
+      if (diffMins < 3) return isCurrent ? 'Active now' : `${diffMins} min ago`;
+      if (diffMins < 60) return `${diffMins} min ago`;
+      if (diffHours < 24) return `${diffHours} hr ago`;
+      
+      const rawTz = sessionTimeZone || (typeof window !== 'undefined' ? localStorage.getItem('paperx_override_timezone') : null);
+      const targetTz = getSafeTimeZone(rawTz);
+      
+      if (diffDays === 1) return `Yesterday at ${date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', timeZone: targetTz, timeZoneName: 'short' })}`;
+      return date.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: targetTz, timeZoneName: 'short' });
+    } catch {
+      return 'Recently active';
+    }
+  };
+
+  const formatSessionTime = (isoString?: string, sessionTimeZone?: string) => {
+    return formatLastActive(isoString, false, sessionTimeZone);
   };
 
   // 7. Log Out of All Devices Modals
@@ -286,6 +391,7 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
   });
   const [isVerifyingFA, setIsVerifyingFA] = useState(false);
   const [faVerifyState, setFaVerifyState] = useState<'idle' | 'checking' | 'valid' | 'invalid'>('idle');
+  const [totpEnrollObj, setTotpEnrollObj] = useState<any>(null);
 
   const handleAutoVerifyProfile2FA = async (code: string) => {
     if (code.length !== 6 || isVerifyingFA) return;
@@ -294,16 +400,11 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
     setFaVerifyState('checking');
 
     try {
-      const isVerified = await verifyTOTPCode(faSecret, code);
-      if (!isVerified) {
-        setIsVerifyingFA(false);
-        setFaVerifyState('invalid');
-        setFaError('Invalid verification code. Please check your authenticator app.');
-        setTimeout(() => {
-          setFaCode('');
-          setFaVerifyState('idle');
-        }, 1200);
-        return;
+      if (totpEnrollObj) {
+        await enrollTotpFactor(totpEnrollObj, code);
+      } else {
+        const isVerified = await verifyTOTPCode(faSecret, code);
+        if (!isVerified) throw new Error('Invalid verification code');
       }
 
       setFaVerifyState('valid');
@@ -318,15 +419,10 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
       setFaBackupCodes(codes);
       setTwoStepEnabled(true);
       localStorage.setItem('pref_twoStep', 'true');
-      localStorage.setItem('paperx_2fa_method', 'totp');
-      localStorage.setItem('paperx_2fa_secret', faSecret);
-      localStorage.setItem('paperx_2fa_backup_codes', JSON.stringify(codes));
       if (user?.uid) {
         updateUserInFirestore(user.uid, { 
           twoFactorEnabled: true, 
-          twoFactorMethod: 'totp',
-          twoFactorSecret: faSecret,
-          twoFactorBackupCodes: codes
+          twoFactorMethod: 'totp'
         });
       }
 
@@ -346,14 +442,22 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
   };
 
   useEffect(() => {
-    if (user?.twoFactorEnabled !== undefined) {
-      setTwoStepEnabled(user.twoFactorEnabled);
-    }
-    if (user?.twoFactorSecret) {
-      setFaSecret(user.twoFactorSecret);
-    }
-    if (user?.twoFactorBackupCodes && user.twoFactorBackupCodes.length > 0) {
-      setFaBackupCodes(user.twoFactorBackupCodes);
+    if (user) {
+      setTwoStepEnabled(user.twoFactorEnabled || false);
+      setFaSecret(user.twoFactorSecret || '');
+      setFaBackupCodes(user.twoFactorBackupCodes || []);
+      setLoginAlerts(user.loginAlertsEnabled || false);
+      if (user.theme) {
+        setDarkMode(user.theme === 'dark');
+      }
+      if (user.fontSize) {
+        setFontSize(user.fontSize as any);
+      }
+    } else {
+      setTwoStepEnabled(false);
+      setFaSecret('');
+      setFaBackupCodes([]);
+      setLoginAlerts(false);
     }
   }, [user]);
   const [defaultFormat, setDefaultFormat] = useState(() => localStorage.getItem('pref_defaultFormat') || 'PDF');
@@ -363,7 +467,7 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
   );
   const [dismissRefundNotice, setDismissRefundNotice] = useState(false);
   
-  const isUserAdmin = user?.email?.toLowerCase() === 'paperx.team@gmail.com' || (user as any)?.role === 'Admin' || (user as any)?.role === 'SuperAdmin';
+  const isUserAdmin = user?.email?.toLowerCase() === 'paperx.dev@gmail.com' || user?.email?.toLowerCase() === 'paperx.assist@gmail.com' || (user as any)?.role === 'Admin' || (user as any)?.role === 'SuperAdmin';
 
   const [orders, setOrders] = useState<any[]>([]);
   const [ordersLoading, setOrdersLoading] = useState(false);
@@ -397,16 +501,27 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
   const [showDeleteAccountModal, setShowDeleteAccountModal] = useState(false);
   const [isSubmittingDeletion, setIsSubmittingDeletion] = useState(false);
   const [deletionSuccess, setDeletionSuccess] = useState(false);
+  const [scheduledErasureDateString, setScheduledErasureDateString] = useState<string>('');
+  const [cancelErasureSuccess, setCancelErasureSuccess] = useState(false);
   const [resetPreferencesSuccess, setResetPreferencesSuccess] = useState(false);
+  const [manualRestoreSuccess, setManualRestoreSuccess] = useState(false);
 
-  const handleGenerateFullAccountData = async () => {
+  const handleGenerateFullAccountData = async (downloadFile = true) => {
+    console.log("Export triggered in handleGenerateFullAccountData, downloadFile:", downloadFile);
+    if (!user) {
+      console.error("No user found for export");
+      alert("Error: User session not found. Please log in again.");
+      return;
+    }
     setIsExportingData(true);
     try {
+      console.log("Fetching docs for user:", user.uid || user.id);
       // 1. Fetch real documents from Firestore subcollection if user is logged in
       let realUserDocs: any[] = [];
-      if (user?.uid) {
+      const uid = user?.uid || user?.id;
+      if (uid) {
         try {
-          const docsSnap = await getDocs(collection(db, 'users', user.uid, 'documents'));
+          const docsSnap = await getDocs(collection(db, 'users', uid, 'documents'));
           docsSnap.forEach(d => realUserDocs.push({ id: d.id, ...d.data() }));
         } catch (e) {
           console.warn("Docs fetch for export note:", e);
@@ -423,7 +538,7 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
       // 2. Real User Preferences
       const appPreferences = {
         theme: darkMode ? 'dark' : 'light',
-        language,
+        language: currentLanguage,
         fontSize,
         enhancedLegibility: largerText,
         pdfOutputQuality: pdfQuality,
@@ -451,7 +566,7 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
           complianceStandard: "GDPR Art. 20 (Right to Data Portability) / CCPA § 1798.100"
         },
         userAccount: {
-          uid: user?.uid || user?.id || 'anonymous',
+          uid: uid || 'anonymous',
           name: user?.name || 'PaperX User',
           email: user?.email || '',
           phone: formData.phone || user?.phone || '',
@@ -459,13 +574,15 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
           company: formData.company || user?.company || '',
           location: formData.location || user?.location || '',
           bio: formData.bio || user?.bio || '',
-          plan: user?.plan || 'Free Plan',
-          planStatus: user?.planStatus || 'ACTIVE',
-          planCycle: user?.planCycle || 'month',
-          planValidUntil: user?.planValidUntil || null,
+          planName: user?.plan || 'Free Plan',
+          purchasedPlan: user?.purchasedPlan || 'None',
+          activePlanMode: user?.activePlanMode || 'None',
+          planStatus: user?.subscriptionStatus || 'active',
+          billingCycle: ((user?.plan as string) === 'Basic Plan' || (user?.plan as string) === 'Free Plan') ? 'N/A' : (user?.billingCycle || 'month'),
+          planValidUntil: user?.planExpiresAt || user?.subscriptionEndDate || null,
           twoFactorAuthActive: twoStepEnabled,
           emailVerified: user?.emailVerified ?? true,
-          registeredSince: user?.createdAt || user?.created_at || '2026-01-01',
+          registeredSince: user?.memberSince || '2026-01-01',
           lastActiveAt: new Date().toISOString()
         },
         activeDeviceSessions: activeSessions.map(s => ({
@@ -501,24 +618,37 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
       };
 
       setExportJsonData(fullExport);
+      setShowExportPreview(true);
       const totalCount = 1 + activeSessions.length + orders.length + (realUserDocs.length || localDocs.length);
       setExportFeedback({ count: totalCount, date: new Date().toLocaleTimeString(), filename });
 
-      // Trigger real JSON file download
-      const blob = new Blob([JSON.stringify(fullExport, null, 2)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      // Trigger real JSON file download only if requested
+      if (downloadFile) {
+        const blob = new Blob([JSON.stringify(fullExport, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }
     } catch (err) {
       console.error("Data export error:", err);
+      alert("Failed to export data. Please try again or contact support if the issue persists.");
     } finally {
       setIsExportingData(false);
     }
+  };
+
+  const handleInspectPayload = async () => {
+    console.log("handleInspectPayload clicked, current exportJsonData:", !!exportJsonData);
+    if (exportJsonData) {
+      setShowExportPreview(true);
+      return;
+    }
+    await handleGenerateFullAccountData(false);
   };
 
   const handleCopyExportJson = () => {
@@ -534,7 +664,7 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
       'pref_namingPattern',
       'pref_autoSaveScan', 'pref_ocrLanguage', 'pref_autoCopyText', 'pref_pdfAutoCompress',
       'pref_sound', 'pref_autoRestoreSession',
-      'pref_defaultFormat', 'pref_compression', 'pref_language'
+      'pref_defaultFormat', 'pref_compression', 'pref_language', 'pref_darkMode'
     ];
     keysToRemove.forEach(k => localStorage.removeItem(k));
     setFontSize('system');
@@ -549,7 +679,11 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
     setAutoRestoreSession(true);
     setDefaultFormat('PDF');
     setCompressionPreset('balanced');
-    setLanguage('English');
+    changeLanguage('English');
+    setDarkMode(false);
+    document.documentElement.setAttribute('data-font-size', 'system');
+    document.documentElement.setAttribute('data-larger-text', 'false');
+    document.documentElement.classList.remove('dark');
     setResetPreferencesSuccess(true);
     setTimeout(() => setResetPreferencesSuccess(false), 3000);
 
@@ -565,34 +699,171 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
         pdfAutoCompress: true,
         notificationSoundEnabled: true,
         autoRestoreSession: true,
-        language: 'English'
+        language: 'English',
+        darkMode: false,
+        theme: 'light'
       });
     }
     window.dispatchEvent(new CustomEvent('paperx_preferences_changed'));
   };
 
+  const handleDetectAndRestoreFullApp = () => {
+    const keysToRemove = [
+      'pref_fontSize', 'pref_largerText', 'pref_pdfQuality',
+      'pref_namingPattern', 'pref_autoSaveScan', 'pref_ocrLanguage',
+      'pref_autoCopyText', 'pref_pdfAutoCompress', 'pref_sound',
+      'pref_autoRestoreSession', 'pref_defaultFormat', 'pref_compression',
+      'pref_language', 'pref_darkMode', 'paperx_current_view_override'
+    ];
+    keysToRemove.forEach(k => localStorage.removeItem(k));
+
+    safeStorage.setItem('paperx_manual_restore_detected', 'true');
+    safeStorage.setItem('paperx_full_app_restored_at', new Date().toISOString());
+
+    setFontSize('system');
+    setLargerText(false);
+    setPdfQuality('high');
+    setNamingPattern('simple');
+    setAutoSaveScan(true);
+    setOcrLanguage('English');
+    setAutoCopyText(false);
+    setPdfAutoCompress(true);
+    setSoundEffects(true);
+    setAutoRestoreSession(true);
+    setDefaultFormat('PDF');
+    setCompressionPreset('balanced');
+    changeLanguage('English');
+    setDarkMode(false);
+
+    document.documentElement.setAttribute('data-font-size', 'system');
+    document.documentElement.setAttribute('data-larger-text', 'false');
+    document.documentElement.classList.remove('dark');
+
+    setManualRestoreSuccess(true);
+    setResetPreferencesSuccess(true);
+    setTimeout(() => {
+      setManualRestoreSuccess(false);
+      setResetPreferencesSuccess(false);
+    }, 4500);
+
+    if (user?.uid) {
+      updateUserInFirestore(user.uid, {
+        fontSize: 'system',
+        largerTextEnabled: false,
+        pdfQuality: 'high',
+        namingPattern: 'paperx_date',
+        autoSaveScan: true,
+        ocrLanguage: 'English',
+        autoCopyText: false,
+        pdfAutoCompress: true,
+        notificationSoundEnabled: true,
+        autoRestoreSession: true,
+        language: 'English',
+        darkMode: false,
+        theme: 'light',
+        manualRestoreAt: new Date().toISOString()
+      });
+    }
+
+    window.dispatchEvent(new CustomEvent('paperx_manual_restore_detected', { detail: { timestamp: Date.now() } }));
+    window.dispatchEvent(new CustomEvent('paperx_preferences_changed'));
+  };
+
+  const handleProceedToLogin = async () => {
+    try {
+      await auth.signOut();
+    } catch (signOutErr) {
+      console.error("Signout error during erasure:", signOutErr);
+    }
+    setShowDeleteAccountModal(false);
+    onLogout('/login');
+    onClose();
+  };
+
+  const handleCancelErasureRequest = async () => {
+    if (!user) return;
+    const uid = user?.uid || user?.id;
+    if (uid) {
+      try {
+        const userRef = doc(db, 'users', uid);
+        await setDoc(userRef, {
+          dataErasureRequested: false,
+          dataErasureScheduledAt: null,
+          dataErasureScheduledUntil: null,
+          dataErasureCancelledAt: new Date().toISOString()
+        }, { merge: true });
+        setCancelErasureSuccess(true);
+        setTimeout(() => setCancelErasureSuccess(false), 5000);
+      } catch (err) {
+        console.error("Failed to cancel erasure request:", err);
+      }
+    }
+  };
+
   const handleRequestAccountDeletion = async () => {
+    console.log("Deletion triggered with 10-day grace period...");
+    if (!user) {
+      console.error("No user found for deletion");
+      alert("Error: User session not found. Please log in again.");
+      return;
+    }
     setIsSubmittingDeletion(true);
     try {
-      if (user?.uid) {
-        await fetch('/api/admin/tickets/raise', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            orderId: `GDPR-DEL-${Date.now()}`,
-            uid: user.uid,
-            userEmail: user.email,
-            userName: user.name,
-            plan: user.plan || 'Free Plan',
-            amount: 0,
-            utr: 'GDPR_ERASURE_REQUEST',
-            orderStatus: 'PENDING',
-            reason: 'GDPR Article 17 Right to Erasure / Full Account Deletion Request',
-            notes: `User ${user.email} (${user.name}) submitted an official GDPR Right to Erasure request. All archived documents, orders, and sessions are scheduled for purge.`
-          })
-        });
+      const uid = user?.uid || user?.id;
+      const now = new Date();
+      const scheduledDateObj = new Date(now.getTime() + 10 * 24 * 60 * 60 * 1000);
+      const scheduledUntilISO = scheduledDateObj.toISOString();
+      const formattedDate = scheduledDateObj.toLocaleDateString(undefined, {
+        weekday: 'long',
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric'
+      });
+      const formattedTime = scheduledDateObj.toLocaleTimeString(undefined, {
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+      const fullDisplay = `${formattedDate} at ${formattedTime}`;
+
+      if (uid) {
+        console.log("Scheduling 10-day deletion in Firestore for user:", uid);
+        const userRef = doc(db, 'users', uid);
+        await setDoc(userRef, {
+          dataErasureRequested: true,
+          dataErasureScheduledAt: now.toISOString(),
+          dataErasureScheduledUntil: scheduledUntilISO
+        }, { merge: true });
+
+        // Submit official GDPR Right to Erasure ticket/audit log via server
+        try {
+          await fetch('/api/admin/tickets/raise', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              orderId: `GDPR-DEL-${Date.now()}`,
+              uid: uid,
+              userEmail: user?.email || '',
+              userName: user?.name || 'PaperX User',
+              plan: user?.plan || 'Free Plan',
+              amount: 0,
+              utr: 'GDPR_ERASURE_REQUEST',
+              orderStatus: 'PENDING',
+              reason: 'GDPR Article 17 Right to Erasure / 10-Day Grace Period Deletion Request',
+              notes: `User ${user?.email || 'unknown'} (${user?.name || 'unknown'}) scheduled account deletion for ${fullDisplay} (10 days). If user logs in before this date, the deletion request is automatically cancelled and all account data restored.`
+            })
+          });
+        } catch (ticketErr) {
+          console.warn("Ticket raising failed (non-critical):", ticketErr);
+        }
       }
+
+      setScheduledErasureDateString(fullDisplay);
       setDeletionSuccess(true);
+      
+      // Automatically redirect to login and signup dashboard after 3.5 seconds
+      setTimeout(async () => {
+        await handleProceedToLogin();
+      }, 3500);
     } catch (e) {
       console.warn("Deletion request error:", e);
       setDeletionSuccess(true);
@@ -735,7 +1006,7 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
           uid: user.uid,
           userEmail: user.email,
           userName: user.name,
-          plan: selectedOrderForTicket.plan || 'Plus Plan',
+          plan: selectedOrderForTicket.plan || 'Pro Plan',
           amount: selectedOrderForTicket.amount || 50,
           utr: selectedOrderForTicket.utr || '',
           orderStatus: selectedOrderForTicket.status || 'PENDING',
@@ -784,115 +1055,119 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
 
   // Handle Dark Mode Class and Persistence
   useEffect(() => {
-    localStorage.setItem('pref_darkMode', String(darkMode));
     if (darkMode) {
       document.documentElement.classList.add('dark');
     } else {
       document.documentElement.classList.remove('dark');
     }
+    safeStorage.setItem('pref_darkMode', String(darkMode));
     window.dispatchEvent(new CustomEvent('paperx_preferences_changed', { detail: { darkMode } }));
   }, [darkMode]);
 
   // 1. Apply Font Size
   useEffect(() => {
-    localStorage.setItem('pref_fontSize', fontSize);
     if (document.documentElement.getAttribute('data-font-size') !== fontSize) {
       document.documentElement.setAttribute('data-font-size', fontSize);
     }
-    window.dispatchEvent(new CustomEvent('paperx_preferences_changed', { detail: { fontSize } }));
+    safeStorage.setItem('pref_fontSize', fontSize);
   }, [fontSize]);
+
+  const handleSetFontSize = (size: 'system' | 'small' | 'medium' | 'large') => {
+    setFontSize(size);
+    safeStorage.setItem('pref_fontSize', size);
+    document.documentElement.setAttribute('data-font-size', size);
+    window.dispatchEvent(new CustomEvent('paperx_preferences_changed', { detail: { fontSize: size } }));
+    if (user?.uid) {
+      updateUserInFirestore(user.uid, { fontSize: size });
+    }
+  };
 
   // 2. Apply Larger Text Scale (Accessibility)
   useEffect(() => {
-    localStorage.setItem('pref_largerText', String(largerText));
     if (document.documentElement.getAttribute('data-larger-text') !== String(largerText)) {
       document.documentElement.setAttribute('data-larger-text', String(largerText));
     }
-    window.dispatchEvent(new CustomEvent('paperx_preferences_changed', { detail: { largerText } }));
+    safeStorage.setItem('pref_largerText', String(largerText));
   }, [largerText]);
 
   // 3. Sound Effects Sync
   useEffect(() => {
-    localStorage.setItem('pref_sound', String(soundEffects));
-    if (user?.uid && user.notificationSoundEnabled !== soundEffects) {
-      updateUserInFirestore(user.uid, { notificationSoundEnabled: soundEffects });
-    }
-    window.dispatchEvent(new CustomEvent('paperx_preferences_changed', { detail: { soundEffects } }));
-  }, [soundEffects, user?.uid, user?.notificationSoundEnabled]);
+    safeStorage.setItem('pref_sound', String(soundEffects));
+  }, [soundEffects]);
 
   // 4. Language Sync
   useEffect(() => {
-    localStorage.setItem('pref_language', language);
-    window.dispatchEvent(new CustomEvent('paperx_language_changed', { detail: language }));
-    window.dispatchEvent(new CustomEvent('paperx_preferences_changed', { detail: { language } }));
-    if (user?.uid && user.language !== language) {
-      updateUserInFirestore(user.uid, { language });
+    safeStorage.setItem('pref_language', currentLanguage);
+    window.dispatchEvent(new CustomEvent('paperx_language_changed', { detail: currentLanguage }));
+    window.dispatchEvent(new CustomEvent('paperx_preferences_changed', { detail: { language: currentLanguage } }));
+    if (hasMountedPreferencesRef.current && user?.uid && normalizeLanguage(user.language) !== currentLanguage) {
+      updateUserInFirestore(user.uid, { language: currentLanguage });
     }
-  }, [language, user?.uid, user?.language]);
+  }, [currentLanguage]);
 
   // 9. Auto-Restore Session Sync
   useEffect(() => {
-    localStorage.setItem('pref_autoRestoreSession', String(autoRestoreSession));
-    if (user?.uid && user.autoRestoreSession !== autoRestoreSession) {
+    safeStorage.setItem('pref_autoRestoreSession', String(autoRestoreSession));
+    if (hasMountedPreferencesRef.current && user?.uid && user.autoRestoreSession !== autoRestoreSession) {
       updateUserInFirestore(user.uid, { autoRestoreSession });
     }
     try {
       setPersistence(auth, autoRestoreSession ? browserLocalPersistence : browserSessionPersistence);
     } catch (e) {}
-  }, [autoRestoreSession, user?.uid, user?.autoRestoreSession]);
+  }, [autoRestoreSession]);
 
   // 10. Document & PDF Studio Preferences Sync
   useEffect(() => {
-    localStorage.setItem('pref_pdfQuality', pdfQuality);
-    if (user?.uid && user.pdfQuality !== pdfQuality) {
+    safeStorage.setItem('pref_pdfQuality', pdfQuality);
+    if (hasMountedPreferencesRef.current && user?.uid && user.pdfQuality !== pdfQuality) {
       updateUserInFirestore(user.uid, { pdfQuality });
     }
     window.dispatchEvent(new CustomEvent('paperx_preferences_changed', { detail: { pdfQuality } }));
-  }, [pdfQuality, user?.uid, user?.pdfQuality]);
+  }, [pdfQuality]);
 
   useEffect(() => {
-    localStorage.setItem('pref_namingPattern', namingPattern);
+    safeStorage.setItem('pref_namingPattern', namingPattern);
     const normalizedUserPattern = user?.namingPattern === 'paperx_date' ? 'paperx' : user?.namingPattern;
-    if (user?.uid && normalizedUserPattern !== namingPattern) {
+    if (hasMountedPreferencesRef.current && user?.uid && normalizedUserPattern !== namingPattern) {
       const firestorePattern: 'paperx_date' | 'original_processed' | 'timestamp' = 
         namingPattern === 'paperx' ? 'paperx_date' : namingPattern === 'simple' ? 'original_processed' : 'timestamp';
       updateUserInFirestore(user.uid, { namingPattern: firestorePattern });
     }
     window.dispatchEvent(new CustomEvent('paperx_preferences_changed', { detail: { namingPattern } }));
-  }, [namingPattern, user?.uid, user?.namingPattern]);
+  }, [namingPattern]);
 
   useEffect(() => {
-    localStorage.setItem('pref_autoSaveScan', String(autoSaveScan));
-    if (user?.uid && user.autoSaveScan !== autoSaveScan) {
+    safeStorage.setItem('pref_autoSaveScan', String(autoSaveScan));
+    if (hasMountedPreferencesRef.current && user?.uid && user.autoSaveScan !== autoSaveScan) {
       updateUserInFirestore(user.uid, { autoSaveScan });
     }
     window.dispatchEvent(new CustomEvent('paperx_preferences_changed', { detail: { autoSaveScan } }));
-  }, [autoSaveScan, user?.uid, user?.autoSaveScan]);
+  }, [autoSaveScan]);
 
   useEffect(() => {
-    localStorage.setItem('pref_ocrLanguage', ocrLanguage);
-    if (user?.uid && user.ocrLanguage !== ocrLanguage) {
+    safeStorage.setItem('pref_ocrLanguage', ocrLanguage);
+    if (hasMountedPreferencesRef.current && user?.uid && user.ocrLanguage !== ocrLanguage) {
       updateUserInFirestore(user.uid, { ocrLanguage });
     }
     window.dispatchEvent(new CustomEvent('paperx_preferences_changed', { detail: { ocrLanguage } }));
-  }, [ocrLanguage, user?.uid, user?.ocrLanguage]);
+  }, [ocrLanguage]);
 
   useEffect(() => {
-    localStorage.setItem('pref_autoCopyText', String(autoCopyText));
-    if (user?.uid && user.autoCopyText !== autoCopyText) {
+    safeStorage.setItem('pref_autoCopyText', String(autoCopyText));
+    if (hasMountedPreferencesRef.current && user?.uid && user.autoCopyText !== autoCopyText) {
       updateUserInFirestore(user.uid, { autoCopyText });
     }
     window.dispatchEvent(new CustomEvent('paperx_preferences_changed', { detail: { autoCopyText } }));
-  }, [autoCopyText, user?.uid, user?.autoCopyText]);
+  }, [autoCopyText]);
 
   useEffect(() => {
-    localStorage.setItem('pref_pdfAutoCompress', String(pdfAutoCompress));
+    safeStorage.setItem('pref_pdfAutoCompress', String(pdfAutoCompress));
     const rawUserCompress = (user as any)?.pdfAutoCompress;
-    if (user?.uid && rawUserCompress !== pdfAutoCompress) {
+    if (hasMountedPreferencesRef.current && user?.uid && rawUserCompress !== pdfAutoCompress) {
       updateUserInFirestore(user.uid, { pdfAutoCompress });
     }
     window.dispatchEvent(new CustomEvent('paperx_preferences_changed', { detail: { pdfAutoCompress } }));
-  }, [pdfAutoCompress, user?.uid, (user as any)?.pdfAutoCompress]);
+  }, [pdfAutoCompress]);
 
   // Test Sound Player
   const playTestSound = () => {
@@ -985,7 +1260,7 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
         window.sessionStorage.clear();
       } catch (err) {}
 
-      // 3. Clear temporary LocalStorage caches while safely preserving auth, user data & saved documents
+      // 3. Clear temporary LocalStorage caches while safely preserving auth, user data & settings
       const preservePrefixes = [
         'firebase:',
         'pref_',
@@ -1080,9 +1355,9 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
     const getMembershipBadgeStyles = (plan: string) => {
       switch (plan) {
           case 'Max Plan':
-              return 'bg-gradient-to-r from-yellow-600 via-yellow-500 to-yellow-400 text-black shadow-[0_0_15px_rgba(234,179,8,0.4)] border border-yellow-300';
-          case 'Plus Plan':
-              return 'bg-black text-white shadow-lg shadow-black/20 border border-gray-800';
+              return 'bg-gradient-to-r from-white via-amber-50 to-amber-100 text-amber-900 border border-amber-300 shadow-sm shadow-amber-500/15 dark:from-[#231b0e] dark:via-amber-950/60 dark:to-[#1a140a] dark:text-amber-200 dark:border-amber-400/50';
+          case 'Pro Plan':
+              return 'bg-gradient-to-r from-white via-purple-50 to-purple-100 text-purple-900 border border-purple-200 shadow-sm shadow-purple-500/10 dark:from-[#1b1528] dark:via-purple-950/60 dark:to-[#171222] dark:text-purple-200 dark:border-purple-500/40';
           case 'Free Plan':
           case 'Basic Plan':
           default:
@@ -1093,7 +1368,7 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
   const getMembershipLabel = (plan: string) => {
       switch (plan) {
           case 'Max Plan': return 'Max Plan';
-          case 'Plus Plan': return 'Plus Plan';
+          case 'Pro Plan': return 'Pro Plan';
           case 'Free Plan':
           case 'Basic Plan':
           default: return 'Free Plan';
@@ -1171,7 +1446,7 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
   };
 
   const renderEmailChange = () => (
-      <div className="flex flex-col h-full animate-slide-in-right bg-white dark:bg-gray-900 relative">
+      <div className="flex flex-col h-full bg-white dark:bg-[#0d1117] relative">
           <div className="p-6 flex items-center justify-between border-b border-gray-50 dark:border-gray-800 bg-transparent relative">
             <button 
               type="button"
@@ -1337,7 +1612,7 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
   );
 
   const renderMenu = () => (
-    <div className="flex flex-col h-full animate-fade-in-up bg-white dark:bg-gray-900 relative">
+    <div className="flex flex-col h-full bg-white dark:bg-[#0d1117] relative">
       <div className="absolute top-0 left-0 w-full p-4 sm:p-6 flex items-center justify-center ios-glass-header z-20">
         <h2 className="text-xl font-heading font-black tracking-tighter text-gray-900 dark:text-white text-center">Profile</h2>
         <button 
@@ -1352,11 +1627,15 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
       <div className="p-8 md:p-10 flex flex-col items-center border-b border-gray-50 dark:border-gray-800">
         <div className="relative mb-6 group cursor-pointer">
             <div className="w-24 h-24 md:w-28 md:h-28 rounded-full overflow-hidden ring-4 ring-offset-4 ring-gray-50 dark:ring-gray-800 dark:ring-offset-gray-900 shadow-2xl group-hover:scale-105 transition-transform duration-500 relative z-10">
-                <img src={user.avatarUrl} alt={user.name} className="w-full h-full object-cover" />
+                <img 
+                  src={user.avatarUrl || `https://ui-avatars.com/api/?name=${encodeURIComponent(user.name || 'PaperX')}&background=059669&color=fff`} 
+                  alt={user.name} 
+                  className="w-full h-full object-cover" 
+                />
             </div>
             {/* Ambient Glow for Max Members */}
             {user.plan === 'Max Plan' && (
-                 <div className="absolute inset-0 rounded-full bg-gradient-to-tr from-yellow-400 to-transparent blur-xl opacity-50 animate-pulse"></div>
+                 <div className="absolute inset-0 rounded-full bg-gradient-to-tr from-yellow-400 to-transparent opacity-50"></div>
             )}
         </div>
         
@@ -1371,26 +1650,10 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
         
         <div className="flex flex-col items-center gap-3 w-full max-w-[200px]">
              <div className={`px-5 py-1.5 rounded-full ${getMembershipBadgeStyles(user.plan)} transition-all duration-300 transform hover:scale-105`}>
-                <span className="text-[10px] font-bold uppercase tracking-widest flex items-center gap-1.5">
-                    {user.plan === 'Max Plan' && <Crown size={10} fill="black" />}
+                <span className="text-[10px] font-bold uppercase tracking-widest flex items-center justify-center">
                     {getMembershipLabel(user.plan)}
                 </span>
             </div>
-            
-            {(user.plan === 'Basic Plan' || user.plan === 'Free Plan' || user.plan === 'Free') && (
-                <div className="w-full mt-2 animate-fade-in-up delay-100">
-                    <div className="flex justify-between text-[10px] text-gray-300 font-bold mb-1 uppercase tracking-wider">
-                        <span>Operations Used</span>
-                        <span>{user.projectsUsed} / {user.maxProjects || 5}</span>
-                    </div>
-                    <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden w-full">
-                        <div 
-                            className={`h-full rounded-full ${user.projectsUsed >= user.maxProjects ? 'bg-red-500' : 'bg-stone-900'}`} 
-                            style={{ width: `${Math.min(100, (user.projectsUsed / user.maxProjects) * 100)}%` }} 
-                        />
-                    </div>
-                </div>
-            )}
         </div>
       </div>
 
@@ -1487,7 +1750,7 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
   );
 
   const renderPersonal = () => (
-    <div className="flex flex-col h-full animate-slide-in-right bg-white dark:bg-gray-900 relative">
+    <div className="flex flex-col h-full bg-white dark:bg-[#0d1117] relative">
         {renderHeader("Personal Information")}
         
         <div className="flex-1 overflow-y-auto pt-[72px] sm:pt-[80px] px-6 pb-6 md:px-8 md:pb-8">
@@ -1514,8 +1777,7 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
                             
                             {/* Membership Badge Under Email */}
                             <div className={`inline-flex px-3 py-1 rounded-full ${getMembershipBadgeStyles(user.plan)} transition-all duration-300`}>
-                                <span className="text-[8px] font-bold uppercase tracking-widest flex items-center gap-1.5">
-                                    {user.plan === 'Max Plan' && <Crown size={8} fill="black" />}
+                                <span className="text-[8px] font-bold uppercase tracking-widest flex items-center justify-center">
                                     {getMembershipLabel(user.plan)}
                                 </span>
                             </div>
@@ -1622,19 +1884,18 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
                  <h3 className="text-xs font-bold text-gray-300 uppercase tracking-widest mb-4 pl-1 font-heading">Membership Status</h3>
                  <div className="relative p-6 bg-black rounded-2xl text-white shadow-2xl overflow-hidden group hover:scale-[1.01] transition-transform duration-500">
                      {/* Abstract decorative background */}
-                     <div className="absolute top-0 right-0 -mr-8 -mt-8 w-32 h-32 rounded-full bg-gray-800/50 blur-2xl group-hover:bg-gray-700/50 transition-colors duration-1000"></div>
-                     <div className="absolute bottom-0 left-0 -ml-8 -mb-8 w-24 h-24 rounded-full bg-gray-800/30 blur-2xl"></div>
+                     <div className="absolute top-0 right-0 -mr-8 -mt-8 w-32 h-32 rounded-full bg-gray-800/50 group-hover:bg-gray-700/50 transition-colors duration-1000"></div>
+                     <div className="absolute bottom-0 left-0 -ml-8 -mb-8 w-24 h-24 rounded-full bg-gray-800/30"></div>
                      
                      {user.plan === 'Max Plan' && (
                          <div className="absolute inset-0 bg-gradient-to-r from-yellow-500/10 via-transparent to-transparent opacity-50"></div>
                      )}
 
                      <div className="relative z-10 flex justify-between items-start mb-8">
-                        <div className="p-2 bg-white/10 rounded-lg backdrop-blur-sm border border-white/5 group-hover:bg-white/20 transition-colors">
+                        <div className="p-2 bg-white/10 rounded-lg border border-white/5 group-hover:bg-white/20 transition-colors">
                             <Crown size={20} className={`text-white group-hover-wiggle ${user.plan === 'Max Plan' ? 'fill-yellow-400 text-yellow-400' : ''}`} />
                         </div>
-                        <div className="px-3 py-1 bg-white/20 rounded-full backdrop-blur-md border border-white/10 flex items-center gap-1.5">
-                            <div className="w-1.5 h-1.5 bg-green-400 rounded-full animate-pulse shadow-[0_0_8px_rgba(74,222,128,0.5)]"></div>
+                        <div className="px-3 py-1 bg-white/20 rounded-full border border-white/10 flex items-center gap-1.5">
                             <span className="text-[10px] font-bold uppercase tracking-wider text-white">Active</span>
                         </div>
                      </div>
@@ -1678,9 +1939,9 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
     );
 
     return (
-        <div className="flex flex-col h-full animate-slide-in-right bg-white dark:bg-gray-900 relative">
+        <div className="flex flex-col h-full bg-white dark:bg-[#0d1117] relative">
             {renderHeader("Subscription & Billing")}
-            <div className="flex-1 overflow-y-auto pt-[72px] sm:pt-[80px] px-4 pb-4 sm:px-6 sm:pb-6 bg-gray-50/50 dark:bg-gray-900/50">
+            <div className="flex-1 overflow-y-auto pt-[72px] sm:pt-[80px] px-4 pb-4 sm:px-6 sm:pb-6 bg-gray-50/50 dark:bg-[#0d1117]/50">
                 <UpgradeView
                     onUpgrade={(plan, amount, cycle, resubmitId, upgradeFromId, oldAmount) => {
                         onUpgrade(plan, amount, cycle, resubmitId, upgradeFromId, oldAmount);
@@ -1722,7 +1983,7 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
     });
 
     return (
-      <div className="flex flex-col h-full animate-slide-in-right bg-white dark:bg-gray-900 relative">
+      <div className="flex flex-col h-full bg-white dark:bg-[#0d1117] relative">
         {renderHeader("Payment History")}
         <div className="flex-1 overflow-y-auto pt-[72px] sm:pt-[80px] px-4 pb-4 md:px-6 md:pb-6 space-y-5">
           {/* Quick Metrics */}
@@ -1945,7 +2206,7 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
                           ) : isAwaitingLong ? (
                             <button
                               onClick={() => openTicketModal(order)}
-                              className="w-full py-2.5 px-4 rounded-xl text-xs font-extrabold text-white bg-amber-600 hover:bg-amber-700 transition-all flex items-center justify-center gap-2 shadow-xs cursor-pointer animate-pulse"
+                              className="w-full py-2.5 px-4 rounded-xl text-xs font-extrabold text-white bg-amber-600 hover:bg-amber-700 transition-all flex items-center justify-center gap-2 shadow-xs cursor-pointer"
                             >
                               <Ticket size={14} />
                               <span>Raise Ticket (Awaiting Long Time — {waitMins}m)</span>
@@ -2012,7 +2273,7 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
                             ) : (
                               <button
                                 onClick={() => navigateTo('payment-history')}
-                                className="w-full py-2 px-3.5 rounded-xl text-xs font-extrabold text-amber-900 bg-amber-200/80 hover:bg-amber-300 dark:text-amber-100 dark:bg-amber-900/60 dark:hover:bg-amber-900 border border-amber-300/40 hover:scale-[1.01] transition-all flex items-center justify-center gap-1.5 cursor-pointer animate-pulse"
+                                className="w-full py-2 px-3.5 rounded-xl text-xs font-extrabold text-amber-900 bg-amber-200/80 hover:bg-amber-300 dark:text-amber-100 dark:bg-amber-900/60 dark:hover:bg-amber-900 border border-amber-300/40 hover:scale-[1.01] transition-all flex items-center justify-center gap-1.5 cursor-pointer"
                               >
                                 <Ticket size={14} />
                                 <span>Request Refund & Upgrade Plan</span>
@@ -2033,973 +2294,71 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
   };
 
   const renderPreferences = () => (
-    <div className="flex flex-col h-full animate-slide-in-right bg-white dark:bg-gray-900 relative">
+    <div className="flex flex-col h-full bg-white dark:bg-[#0d1117] relative">
       {renderHeader("Preferences")}
-      <div className="flex-1 overflow-y-auto pt-[72px] sm:pt-[80px] px-4 pb-4 sm:px-6 sm:pb-6 space-y-7">
-        
-        {/* 0. Document & PDF Studio Preferences */}
-        <div className="space-y-3">
-          <div className="flex items-center gap-2 px-1">
-            <motion.span 
-              animate={{ scale: [1, 1.25, 1], opacity: [0.7, 1, 0.7] }} 
-              transition={{ repeat: Infinity, duration: 2.5, ease: "easeInOut" }}
-              className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" 
-            />
-            <h3 className="text-[11px] font-black tracking-widest text-emerald-600 dark:text-emerald-400 uppercase font-heading">
-              PDF & Document Engine Defaults
-            </h3>
-          </div>
-          <div className="space-y-3">
-            {/* PDF Export Quality */}
-            <motion.div 
-              whileHover={{ y: -1 }}
-              className="group p-4 bg-stone-50/80 dark:bg-stone-900/60 hover:bg-white dark:hover:bg-stone-800/80 border border-stone-200/80 dark:border-stone-800/80 rounded-2xl md:rounded-3xl shadow-xs hover:shadow-md transition-all duration-300 space-y-3"
-            >
-              <div className="flex items-center gap-3.5">
-                <div className="w-10 h-10 rounded-2xl bg-white dark:bg-stone-800 text-stone-900 dark:text-stone-100 border border-stone-200/80 dark:border-stone-700/80 flex items-center justify-center shrink-0 shadow-xs group-hover:bg-black dark:group-hover:bg-white group-hover:text-white dark:group-hover:text-black transition-colors">
-                  <FileText size={18} strokeWidth={2.2} />
-                </div>
-                <div>
-                  <p className="font-heading font-black text-stone-900 dark:text-white text-sm tracking-tight">PDF Resolution & Output Quality</p>
-                  <p className="text-xs text-stone-500 dark:text-stone-400 font-medium">Default image resolution when exporting converted PDFs</p>
-                </div>
-              </div>
-              <div className="grid grid-cols-3 gap-1.5 p-1.5 bg-stone-100/90 dark:bg-stone-800/90 rounded-2xl border border-stone-200/80 dark:border-stone-700/80">
-                {[
-                  { id: 'high', label: 'High (300 DPI)' },
-                  { id: 'standard', label: 'Balanced (150 DPI)' },
-                  { id: 'compact', label: 'Compact (96 DPI)' }
-                ].map((opt) => {
-                  const isActive = pdfQuality === opt.id;
-                  return (
-                    <button
-                      key={opt.id}
-                      type="button"
-                      onClick={() => setPdfQuality(opt.id as any)}
-                      className={`relative py-2 px-2.5 rounded-xl text-xs font-bold transition-all cursor-pointer text-center z-10 ${
-                        isActive 
-                          ? 'text-stone-900 dark:text-stone-900 font-black bg-white dark:bg-white shadow-xs' 
-                          : 'text-stone-500 dark:text-stone-400 hover:text-stone-900 dark:hover:text-white'
-                      }`}
-                    >
-                      {opt.label}
-                    </button>
-                  );
-                })}
-              </div>
-            </motion.div>
-
-            {/* Document Naming Rule */}
-            <motion.div 
-              whileHover={{ y: -1 }}
-              className="group p-4 bg-stone-50/80 dark:bg-stone-900/60 hover:bg-white dark:hover:bg-stone-800/80 border border-stone-200/80 dark:border-stone-800/80 rounded-2xl md:rounded-3xl shadow-xs hover:shadow-md transition-all duration-300 space-y-3"
-            >
-              <div className="flex items-center gap-3.5">
-                <div className="w-10 h-10 rounded-2xl bg-white dark:bg-stone-800 text-stone-900 dark:text-stone-100 border border-stone-200/80 dark:border-stone-700/80 flex items-center justify-center shrink-0 shadow-xs group-hover:bg-black dark:group-hover:bg-white group-hover:text-white dark:group-hover:text-black transition-colors">
-                  <Sliders size={18} strokeWidth={2.2} />
-                </div>
-                <div>
-                  <p className="font-heading font-black text-stone-900 dark:text-white text-sm tracking-tight">Saved File Naming Format</p>
-                  <p className="text-xs text-stone-500 dark:text-stone-400 font-medium">Automatic prefix and structure for processed documents</p>
-                </div>
-              </div>
-              <div className="relative">
-                <select
-                  value={namingPattern}
-                  onChange={(e) => setNamingPattern(e.target.value as any)}
-                  className="w-full py-3 pl-4 pr-10 bg-stone-100/90 dark:bg-stone-800/90 border border-stone-200/80 dark:border-stone-700/80 rounded-2xl text-xs font-bold text-stone-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-black dark:focus:ring-white cursor-pointer appearance-none transition-all shadow-xs"
-                >
-                  <option value="simple">Simple Default (e.g. Scan 1.pdf)</option>
-                  <option value="original">Original Name (e.g. Invoice.pdf)</option>
-                  <option value="date">With Date (e.g. Scan_08-09-2026.pdf)</option>
-                  <option value="paperx">PaperX Prefix (e.g. PaperX_Scan_1.pdf)</option>
-                </select>
-                <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-stone-400 dark:text-stone-500">
-                  <ChevronDown size={16} strokeWidth={2.5} />
-                </div>
-              </div>
-
-              {/* Real-Time Live Sample Preview */}
-              <div className="px-3.5 py-2 bg-stone-100/90 dark:bg-stone-800/90 border border-stone-200/80 dark:border-stone-700/80 rounded-xl flex items-center justify-between text-xs gap-2">
-                <span className="text-stone-500 dark:text-stone-400 font-sans font-semibold text-[11px] shrink-0">Real-Time Sample:</span>
-                <span className="font-mono font-bold text-emerald-600 dark:text-emerald-400 text-[12px] bg-white dark:bg-stone-900 px-2.5 py-1 rounded-lg border border-stone-200 dark:border-stone-700 shadow-2xs">
-                  {getSampleFormattedFileName(namingPattern)}
-                </span>
-              </div>
-            </motion.div>
-
-            {/* Auto-Save Scanned Documents */}
-            <motion.div 
-              whileHover={{ y: -1 }}
-              className="group flex items-center justify-between p-4 bg-stone-50/80 dark:bg-stone-900/60 hover:bg-white dark:hover:bg-stone-800/80 border border-stone-200/80 dark:border-stone-800/80 rounded-2xl md:rounded-3xl shadow-xs hover:shadow-md transition-all duration-300"
-            >
-              <div className="flex items-center gap-3.5">
-                <div className="w-10 h-10 rounded-2xl bg-white dark:bg-stone-800 text-stone-900 dark:text-stone-100 border border-stone-200/80 dark:border-stone-700/80 flex items-center justify-center shrink-0 shadow-xs group-hover:bg-black dark:group-hover:bg-white group-hover:text-white dark:group-hover:text-black transition-colors">
-                  <FileCheck size={18} strokeWidth={2.2} />
-                </div>
-                <div>
-                  <div className="flex items-center gap-2">
-                    <p className="font-heading font-black text-stone-900 dark:text-white text-sm tracking-tight">Auto-Save Scanned Files</p>
-                    {autoSaveScan && (
-                      <span className="px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 text-[10px] font-black flex items-center gap-1">
-                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" /> Active
-                      </span>
-                    )}
-                  </div>
-                  <p className="text-xs text-stone-500 dark:text-stone-400 font-medium">Save scanned pages directly to "My Documents"</p>
-                </div>
-              </div>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={autoSaveScan}
-                aria-label="Toggle auto save scanned files"
-                onClick={() => setAutoSaveScan(!autoSaveScan)}
-                className={`relative w-12 h-7 rounded-full p-1 transition-colors duration-300 cursor-pointer shrink-0 ${
-                  autoSaveScan ? 'bg-black dark:bg-white' : 'bg-stone-200 dark:bg-stone-800'
-                }`}
-              >
-                <div className={`w-5 h-5 rounded-full shadow-sm flex items-center justify-center transition-all ${
-                  autoSaveScan ? 'ml-auto bg-white dark:bg-black text-black dark:text-white' : 'mr-auto bg-white dark:bg-stone-300'
-                }`}>
-                  {autoSaveScan && <Check size={10} strokeWidth={3.5} />}
-                </div>
-              </button>
-            </motion.div>
-
-            {/* OCR Language & Auto Copy Text */}
-            <motion.div 
-              whileHover={{ y: -1 }}
-              className="group p-4 bg-stone-50/80 dark:bg-stone-900/60 hover:bg-white dark:hover:bg-stone-800/80 border border-stone-200/80 dark:border-stone-800/80 rounded-2xl md:rounded-3xl shadow-xs hover:shadow-md transition-all duration-300 space-y-3"
-            >
-              <div className="flex items-center gap-3.5">
-                <div className="w-10 h-10 rounded-2xl bg-white dark:bg-stone-800 text-stone-900 dark:text-stone-100 border border-stone-200/80 dark:border-stone-700/80 flex items-center justify-center shrink-0 shadow-xs group-hover:bg-black dark:group-hover:bg-white group-hover:text-white dark:group-hover:text-black transition-colors">
-                  <Cpu size={18} strokeWidth={2.2} />
-                </div>
-                <div>
-                  <p className="font-heading font-black text-stone-900 dark:text-white text-sm tracking-tight">OCR Default Language & Clipboard</p>
-                  <p className="text-xs text-stone-500 dark:text-stone-400 font-medium">Text extraction target language & auto-copy behaviors</p>
-                </div>
-              </div>
-              
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                <div className="relative">
-                  <select
-                    value={ocrLanguage}
-                    onChange={(e) => setOcrLanguage(e.target.value)}
-                    className="w-full py-2.5 pl-3 pr-8 bg-stone-100/90 dark:bg-stone-800/90 border border-stone-200/80 dark:border-stone-700/80 rounded-xl text-xs font-bold text-stone-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-black dark:focus:ring-white cursor-pointer appearance-none transition-all"
-                  >
-                    {['English', 'Spanish', 'French', 'German', 'Hindi', 'Japanese', 'Chinese', 'Portuguese', 'Russian', 'Italian', 'Arabic'].map(lang => (
-                      <option key={lang} value={lang}>{lang} OCR</option>
-                    ))}
-                  </select>
-                  <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-stone-400">
-                    <ChevronDown size={14} />
-                  </div>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={() => setAutoCopyText(!autoCopyText)}
-                  className={`py-2.5 px-3 rounded-xl text-xs font-bold border transition-all flex items-center justify-between cursor-pointer ${
-                    autoCopyText 
-                      ? 'bg-black text-white dark:bg-white dark:text-black border-transparent' 
-                      : 'bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-400 border-stone-200 dark:border-stone-700'
-                  }`}
-                >
-                  <span className="flex items-center gap-1.5">
-                    <Copy size={13} /> Auto-Copy OCR Text
-                  </span>
-                  {autoCopyText && <Check size={12} strokeWidth={3} />}
-                </button>
-              </div>
-
-              <div className="pt-1 flex items-center justify-between text-[11px] font-bold text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 dark:bg-emerald-500/15 p-2 rounded-xl border border-emerald-500/20">
-                <span className="flex items-center gap-1.5">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                  Real-time {ocrLanguage} OCR Active
-                </span>
-                <span>Auto-Copy: {autoCopyText ? 'ON' : 'OFF'}</span>
-              </div>
-            </motion.div>
-
-            {/* PDF Auto-Compression */}
-            <motion.div 
-              whileHover={{ y: -1 }}
-              className="group flex items-center justify-between p-4 bg-stone-50/80 dark:bg-stone-900/60 hover:bg-white dark:hover:bg-stone-800/80 border border-stone-200/80 dark:border-stone-800/80 rounded-2xl md:rounded-3xl shadow-xs hover:shadow-md transition-all duration-300"
-            >
-              <div className="flex items-center gap-3.5">
-                <div className="w-10 h-10 rounded-2xl bg-white dark:bg-stone-800 text-stone-900 dark:text-stone-100 border border-stone-200/80 dark:border-stone-700/80 flex items-center justify-center shrink-0 shadow-xs group-hover:bg-black dark:group-hover:bg-white group-hover:text-white dark:group-hover:text-black transition-colors">
-                  <Minimize2 size={18} strokeWidth={2.2} />
-                </div>
-                <div>
-                  <div className="flex items-center gap-2">
-                    <p className="font-heading font-black text-stone-900 dark:text-white text-sm tracking-tight">Intelligent Auto-Compress</p>
-                    {pdfAutoCompress && (
-                      <span className="px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 text-[10px] font-black flex items-center gap-1">
-                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" /> Lossless
-                      </span>
-                    )}
-                  </div>
-                  <p className="text-xs text-stone-500 dark:text-stone-400 font-medium">Compress exported PDFs to optimize storage space</p>
-                </div>
-              </div>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={pdfAutoCompress}
-                aria-label="Toggle PDF Auto-Compression"
-                onClick={() => {
-                  const newValue = !pdfAutoCompress;
-                  setPdfAutoCompress(newValue);
-                  if (user?.uid) updateUserInFirestore(user.uid, { pdfAutoCompress: newValue });
-                }}
-                className={`relative w-12 h-7 rounded-full p-1 transition-colors duration-300 focus:outline-none focus:ring-2 focus:ring-black dark:focus:ring-white focus:ring-offset-2 dark:focus:ring-offset-gray-900 cursor-pointer shrink-0 ${
-                  pdfAutoCompress ? 'bg-black dark:bg-white' : 'bg-stone-200 dark:bg-stone-800'
-                }`}
-              >
-                <motion.div
-                  layout
-                  transition={{ type: "spring", stiffness: 600, damping: 30 }}
-                  className={`w-5 h-5 rounded-full shadow-sm flex items-center justify-center ${
-                    pdfAutoCompress ? 'ml-auto bg-white dark:bg-black text-black dark:text-white' : 'mr-auto bg-white dark:bg-stone-300'
-                  }`}
-                >
-                  {pdfAutoCompress && (
-                    <motion.div initial={{ scale: 0 }} animate={{ scale: 1 }} transition={{ duration: 0.15 }}>
-                      <Check size={10} strokeWidth={3.5} />
-                    </motion.div>
-                  )}
-                </motion.div>
-              </button>
-            </motion.div>
-          </div>
-        </div>
-
-        {/* 1. Appearance & Display */}
-        <div className="space-y-3">
-          <div className="flex items-center gap-2 px-1">
-            <motion.span 
-              animate={{ scale: [1, 1.25, 1], opacity: [0.7, 1, 0.7] }} 
-              transition={{ repeat: Infinity, duration: 2.5, ease: "easeInOut" }}
-              className="w-2 h-2 rounded-full bg-black dark:bg-white shrink-0" 
-            />
-            <h3 className="text-[11px] font-black tracking-widest text-stone-400 dark:text-stone-500 uppercase font-heading">
-              Appearance & Display
-            </h3>
-          </div>
-          <div className="space-y-3">
-            {/* Dark Mode */}
-            <motion.div 
-              whileHover={{ y: -1 }}
-              className="group flex items-center justify-between p-4 bg-stone-50/80 dark:bg-stone-900/60 hover:bg-white dark:hover:bg-stone-800/80 border border-stone-200/80 dark:border-stone-800/80 rounded-2xl md:rounded-3xl shadow-xs hover:shadow-md transition-all duration-300"
-            >
-              <div className="flex items-center gap-3.5">
-                <motion.div 
-                  whileHover={{ rotate: darkMode ? -20 : 20, scale: 1.12 }}
-                  whileTap={{ scale: 0.95 }}
-                  transition={{ type: "spring", stiffness: 400, damping: 17 }}
-                  className="w-10 h-10 rounded-2xl bg-white dark:bg-stone-800 text-stone-900 dark:text-stone-100 border border-stone-200/80 dark:border-stone-700/80 flex items-center justify-center shrink-0 shadow-xs group-hover:bg-black dark:group-hover:bg-white group-hover:text-white dark:group-hover:text-black transition-colors"
-                >
-                  {darkMode ? <Moon size={18} strokeWidth={2.2} /> : <Sun size={18} strokeWidth={2.2} />}
-                </motion.div>
-                <div>
-                  <p className="font-heading font-black text-stone-900 dark:text-white text-sm tracking-tight">Dark Mode</p>
-                  <p className="text-xs text-stone-500 dark:text-stone-400 font-medium">Switch between light and deep dark themes</p>
-                </div>
-              </div>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={darkMode}
-                aria-label="Toggle dark mode"
-                onClick={() => {
-                  const newValue = !darkMode;
-                  setDarkMode(newValue);
-                  if (user?.uid) updateUserInFirestore(user.uid, { theme: newValue ? 'dark' : 'light' });
-                }}
-                className={`relative w-12 h-7 rounded-full p-1 transition-colors duration-300 focus:outline-none focus:ring-2 focus:ring-black dark:focus:ring-white focus:ring-offset-2 dark:focus:ring-offset-gray-900 cursor-pointer shrink-0 ${
-                  darkMode ? 'bg-black dark:bg-white' : 'bg-stone-200 dark:bg-stone-800'
-                }`}
-              >
-                <motion.div
-                  layout
-                  transition={{ type: "spring", stiffness: 600, damping: 30 }}
-                  className={`w-5 h-5 rounded-full shadow-sm flex items-center justify-center ${
-                    darkMode ? 'ml-auto bg-white dark:bg-black text-black dark:text-white' : 'mr-auto bg-white dark:bg-stone-300'
-                  }`}
-                >
-                  {darkMode && (
-                    <motion.div initial={{ scale: 0 }} animate={{ scale: 1 }} transition={{ duration: 0.15 }}>
-                      <Check size={10} strokeWidth={3.5} />
-                    </motion.div>
-                  )}
-                </motion.div>
-              </button>
-            </motion.div>
-
-            {/* Font Size Selector */}
-            <motion.div 
-              whileHover={{ y: -1 }}
-              className="group p-4 bg-stone-50/80 dark:bg-stone-900/60 hover:bg-white dark:hover:bg-stone-800/80 border border-stone-200/80 dark:border-stone-800/80 rounded-2xl md:rounded-3xl shadow-xs hover:shadow-md transition-all duration-300 space-y-3"
-            >
-              <div className="flex items-center gap-3.5">
-                <motion.div 
-                  whileHover={{ scale: 1.12, y: -1 }}
-                  whileTap={{ scale: 0.95 }}
-                  transition={{ type: "spring", stiffness: 400, damping: 17 }}
-                  className="w-10 h-10 rounded-2xl bg-white dark:bg-stone-800 text-stone-900 dark:text-stone-100 border border-stone-200/80 dark:border-stone-700/80 flex items-center justify-center shrink-0 shadow-xs group-hover:bg-black dark:group-hover:bg-white group-hover:text-white dark:group-hover:text-black transition-colors"
-                >
-                  <Type size={18} strokeWidth={2.2} />
-                </motion.div>
-                <div>
-                  <p className="font-heading font-black text-stone-900 dark:text-white text-sm tracking-tight">App Font Size</p>
-                  <p className="text-xs text-stone-500 dark:text-stone-400 font-medium">Scale interface reading and typography</p>
-                </div>
-              </div>
-              <div className="grid grid-cols-4 gap-1 p-1 bg-stone-100/90 dark:bg-stone-800/90 rounded-2xl border border-stone-200/80 dark:border-stone-700/80 relative">
-                {(['system', 'small', 'medium', 'large'] as const).map(size => {
-                  const isActive = fontSize === size;
-                  const labels: Record<string, string> = {
-                    system: 'Device',
-                    small: 'Small',
-                    medium: 'Medium',
-                    large: 'Large'
-                  };
-                  return (
-                    <button
-                      key={size}
-                      type="button"
-                      onClick={() => {
-                        setFontSize(size);
-                        if (user?.uid) updateUserInFirestore(user.uid, { fontSize: size });
-                      }}
-                      title={size === 'system' ? 'Device Default (Auto-scales per screen resolution)' : `${labels[size]} Font Size`}
-                      className={`relative py-2 px-1.5 rounded-xl text-xs font-bold transition-colors cursor-pointer text-center z-10 ${
-                        isActive 
-                          ? 'text-stone-900 dark:text-stone-900 font-black' 
-                          : 'text-stone-500 dark:text-stone-400 hover:text-stone-900 dark:hover:text-white'
-                      }`}
-                    >
-                      {isActive && (
-                        <motion.div
-                          initial={{ opacity: 0, scale: 0.92 }}
-                          animate={{ opacity: 1, scale: 1 }}
-                          transition={{ duration: 0.15 }}
-                          className="absolute inset-0 bg-white dark:bg-white rounded-xl shadow-xs -z-10"
-                        />
-                      )}
-                      {labels[size]}
-                    </button>
-                  );
-                })}
-              </div>
-            </motion.div>
-
-            {/* Larger Text Accessibility Toggle */}
-            <motion.div 
-              whileHover={{ y: -1 }}
-              className="group flex items-center justify-between p-4 bg-stone-50/80 dark:bg-stone-900/60 hover:bg-white dark:hover:bg-stone-800/80 border border-stone-200/80 dark:border-stone-800/80 rounded-2xl md:rounded-3xl shadow-xs hover:shadow-md transition-all duration-300"
-            >
-              <div className="flex items-center gap-3.5">
-                <motion.div 
-                  whileHover={{ scale: 1.15, rotate: 90 }}
-                  whileTap={{ scale: 0.95 }}
-                  transition={{ type: "spring", stiffness: 350, damping: 20 }}
-                  className="w-10 h-10 rounded-2xl bg-white dark:bg-stone-800 text-stone-900 dark:text-stone-100 border border-stone-200/80 dark:border-stone-700/80 flex items-center justify-center shrink-0 shadow-xs group-hover:bg-black dark:group-hover:bg-white group-hover:text-white dark:group-hover:text-black transition-colors"
-                >
-                  <Maximize2 size={18} strokeWidth={2.2} />
-                </motion.div>
-                <div>
-                  <p className="font-heading font-black text-stone-900 dark:text-white text-sm tracking-tight">Enhanced Legibility</p>
-                  <p className="text-xs text-stone-500 dark:text-stone-400 font-medium">High contrast & optimized glyph spacing</p>
-                </div>
-              </div>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={largerText}
-                aria-label="Toggle accessibility font"
-                onClick={() => {
-                  const newValue = !largerText;
-                  setLargerText(newValue);
-                  if (user?.uid) updateUserInFirestore(user.uid, { largerTextEnabled: newValue });
-                }}
-                className={`relative w-12 h-7 rounded-full p-1 transition-colors duration-300 focus:outline-none focus:ring-2 focus:ring-black dark:focus:ring-white focus:ring-offset-2 dark:focus:ring-offset-gray-900 cursor-pointer shrink-0 ${
-                  largerText ? 'bg-black dark:bg-white' : 'bg-stone-200 dark:bg-stone-800'
-                }`}
-              >
-                <motion.div
-                  layout
-                  transition={{ type: "spring", stiffness: 600, damping: 30 }}
-                  className={`w-5 h-5 rounded-full shadow-sm flex items-center justify-center ${
-                    largerText ? 'ml-auto bg-white dark:bg-black text-black dark:text-white' : 'mr-auto bg-white dark:bg-stone-300'
-                  }`}
-                >
-                  {largerText && (
-                    <motion.div initial={{ scale: 0 }} animate={{ scale: 1 }} transition={{ duration: 0.15 }}>
-                      <Check size={10} strokeWidth={3.5} />
-                    </motion.div>
-                  )}
-                </motion.div>
-              </button>
-            </motion.div>
-
-            {/* Audio & Notification Chimes */}
-            <motion.div 
-              whileHover={{ y: -1 }}
-              className="group p-4 bg-stone-50/80 dark:bg-stone-900/60 hover:bg-white dark:hover:bg-stone-800/80 border border-stone-200/80 dark:border-stone-800/80 rounded-2xl md:rounded-3xl shadow-xs hover:shadow-md transition-all duration-300 space-y-3"
-            >
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3.5">
-                  <div className="w-10 h-10 rounded-2xl bg-white dark:bg-stone-800 text-stone-900 dark:text-stone-100 border border-stone-200/80 dark:border-stone-700/80 flex items-center justify-center shrink-0 shadow-xs group-hover:bg-black dark:group-hover:bg-white group-hover:text-white dark:group-hover:text-black transition-colors">
-                    {soundEffects ? <Volume2 size={18} strokeWidth={2.2} /> : <VolumeX size={18} strokeWidth={2.2} />}
-                  </div>
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <p className="font-heading font-black text-stone-900 dark:text-white text-sm tracking-tight">Audio & Feedback Chimes</p>
-                      {soundEffects && (
-                        <span className="px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 text-[10px] font-black flex items-center gap-1">
-                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" /> Active
-                        </span>
-                      )}
-                    </div>
-                    <p className="text-xs text-stone-500 dark:text-stone-400 font-medium">Chimes on document processing and task completion</p>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={soundEffects}
-                  aria-label="Toggle sound effects"
-                  onClick={() => {
-                    const newValue = !soundEffects;
-                    setSoundEffects(newValue);
-                    if (user?.uid) updateUserInFirestore(user.uid, { notificationSoundEnabled: newValue });
-                  }}
-                  className={`relative w-12 h-7 rounded-full p-1 transition-colors duration-300 focus:outline-none focus:ring-2 focus:ring-black dark:focus:ring-white focus:ring-offset-2 dark:focus:ring-offset-gray-900 cursor-pointer shrink-0 ${
-                    soundEffects ? 'bg-black dark:bg-white' : 'bg-stone-200 dark:bg-stone-800'
-                  }`}
-                >
-                  <motion.div
-                    layout
-                    transition={{ type: "spring", stiffness: 600, damping: 30 }}
-                    className={`w-5 h-5 rounded-full shadow-sm flex items-center justify-center ${
-                      soundEffects ? 'ml-auto bg-white dark:bg-black text-black dark:text-white' : 'mr-auto bg-white dark:bg-stone-300'
-                    }`}
-                  >
-                    {soundEffects && (
-                      <motion.div initial={{ scale: 0 }} animate={{ scale: 1 }} transition={{ duration: 0.15 }}>
-                        <Check size={10} strokeWidth={3.5} />
-                      </motion.div>
-                    )}
-                  </motion.div>
-                </button>
-              </div>
-
-              {/* Real-time sound test button */}
-              <div className="pt-1 flex items-center justify-between text-xs">
-                <span className="text-stone-500 dark:text-stone-400 text-[11px] font-medium">Test acoustic chime feedback</span>
-                <button
-                  type="button"
-                  onClick={playTestSound}
-                  className="py-1.5 px-3 rounded-xl bg-stone-100 hover:bg-stone-200 dark:bg-stone-800 dark:hover:bg-stone-700 text-stone-800 dark:text-stone-200 font-bold text-xs flex items-center gap-1.5 transition-colors cursor-pointer shadow-2xs active:scale-95"
-                >
-                  <Volume2 size={13} />
-                  <span>Play Sample Chime</span>
-                </button>
-              </div>
-            </motion.div>
-          </div>
-        </div>
-
-        {/* 3. Language & Regional */}
-        <div className="space-y-3">
-          <div className="flex items-center gap-2 px-1">
-            <motion.span 
-              animate={{ scale: [1, 1.25, 1], opacity: [0.7, 1, 0.7] }} 
-              transition={{ repeat: Infinity, duration: 2.5, ease: "easeInOut", delay: 0.6 }}
-              className="w-2 h-2 rounded-full bg-black dark:bg-white shrink-0" 
-            />
-            <h3 className="text-[11px] font-black tracking-widest text-stone-400 dark:text-stone-500 uppercase font-heading">
-              Language & Regional
-            </h3>
-          </div>
-          <motion.div 
-            whileHover={{ y: -1 }}
-            className="group p-4 bg-stone-50/80 dark:bg-stone-900/60 hover:bg-white dark:hover:bg-stone-800/80 border border-stone-200/80 dark:border-stone-800/80 rounded-2xl md:rounded-3xl shadow-xs hover:shadow-md transition-all duration-300 space-y-3"
-          >
-            <div className="flex items-center gap-3.5">
-              <motion.div 
-                whileHover={{ rotate: 180, scale: 1.15 }}
-                whileTap={{ scale: 0.95 }}
-                transition={{ type: "spring", stiffness: 200, damping: 15 }}
-                className="w-10 h-10 rounded-2xl bg-white dark:bg-stone-800 text-stone-900 dark:text-stone-100 border border-stone-200/80 dark:border-stone-700/80 flex items-center justify-center shrink-0 shadow-xs group-hover:bg-black dark:group-hover:bg-white group-hover:text-white dark:group-hover:text-black transition-colors"
-              >
-                <Globe size={18} strokeWidth={2.2} />
-              </motion.div>
-              <div>
-                <p className="font-heading font-black text-stone-900 dark:text-white text-sm tracking-tight">App Language</p>
-                <p className="text-xs text-stone-500 dark:text-stone-400 font-medium">Select your preferred user interface locale</p>
-              </div>
-            </div>
-            <div className="relative">
-              <select
-                value={language}
-                onChange={(e) => {
-                  const newLang = e.target.value;
-                  setLanguage(newLang);
-                  changeLanguage(newLang);
-                }}
-                className="w-full py-3 pl-4 pr-10 bg-stone-100/90 dark:bg-stone-800/90 border border-stone-200/80 dark:border-stone-700/80 rounded-2xl text-xs font-bold text-stone-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-black dark:focus:ring-white cursor-pointer appearance-none transition-all shadow-xs"
-              >
-                {[
-                  { code: 'English', label: 'English (US)' },
-                  { code: 'Spanish', label: 'Español (Spanish)' },
-                  { code: 'French', label: 'Français (French)' },
-                  { code: 'German', label: 'Deutsch (German)' },
-                  { code: 'Hindi', label: 'हिंदी (Hindi)' },
-                  { code: 'Japanese', label: '日本語 (Japanese)' },
-                  { code: 'Chinese', label: '中文 (Chinese)' },
-                  { code: 'Portuguese', label: 'Português (Portuguese)' },
-                  { code: 'Russian', label: 'Русский (Russian)' },
-                  { code: 'Korean', label: '한국어 (Korean)' },
-                  { code: 'Italian', label: 'Italiano (Italian)' },
-                  { code: 'Arabic', label: 'العربية (Arabic)' },
-                  { code: 'Bengali', label: 'বাংলা (Bengali)' },
-                  { code: 'Marathi', label: 'मराठी (Marathi)' },
-                  { code: 'Telugu', label: 'తెలుగు (Telugu)' },
-                  { code: 'Tamil', label: 'தமிழ் (Tamil)' },
-                  { code: 'Gujarati', label: 'ગુજરાતી (Gujarati)' },
-                  { code: 'Urdu', label: 'اردو (Urdu)' }
-                ].map((l) => (
-                  <option key={l.code} value={l.code} className="bg-white dark:bg-gray-900 text-gray-900 dark:text-white">
-                    {l.label}
-                  </option>
-                ))}
-              </select>
-              <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-stone-400 dark:text-stone-500">
-                <ChevronDown size={16} strokeWidth={2.5} />
-              </div>
-            </div>
-          </motion.div>
-        </div>
-
-        {/* 4. Security & Sessions */}
-        <div className="space-y-3">
-          <div className="flex items-center gap-2 px-1">
-            <motion.span 
-              animate={{ scale: [1, 1.25, 1], opacity: [0.7, 1, 0.7] }} 
-              transition={{ repeat: Infinity, duration: 2.5, ease: "easeInOut", delay: 0.9 }}
-              className="w-2 h-2 rounded-full bg-black dark:bg-white shrink-0" 
-            />
-            <h3 className="text-[11px] font-black tracking-widest text-stone-400 dark:text-stone-500 uppercase font-heading">
-              Security & Sessions
-            </h3>
-          </div>
-          <div className="space-y-3">
-            {/* Auto Restore Session */}
-            <motion.div 
-              whileHover={{ y: -1 }}
-              className="group flex items-center justify-between p-4 bg-stone-50/80 dark:bg-stone-900/60 hover:bg-white dark:hover:bg-stone-800/80 border border-stone-200/80 dark:border-stone-800/80 rounded-2xl md:rounded-3xl shadow-xs hover:shadow-md transition-all duration-300"
-            >
-              <div className="flex items-center gap-3.5">
-                <motion.div 
-                  whileHover={{ scale: 1.15, y: -2 }}
-                  whileTap={{ scale: 0.95 }}
-                  className="w-10 h-10 rounded-2xl bg-white dark:bg-stone-800 text-stone-900 dark:text-stone-100 border border-stone-200/80 dark:border-stone-700/80 flex items-center justify-center shrink-0 shadow-xs group-hover:bg-black dark:group-hover:bg-white group-hover:text-white dark:group-hover:text-black transition-colors"
-                >
-                  <Lock size={18} strokeWidth={2.2} />
-                </motion.div>
-                <div>
-                  <p className="font-heading font-black text-stone-900 dark:text-white text-sm tracking-tight">Auto-Restore Session</p>
-                  <p className="text-xs text-stone-500 dark:text-stone-400 font-medium">Keep your workspace securely logged in across launches</p>
-                </div>
-              </div>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={autoRestoreSession}
-                aria-label="Toggle auto restore session"
-                onClick={() => setAutoRestoreSession(!autoRestoreSession)}
-                className={`relative w-12 h-7 rounded-full p-1 transition-colors duration-300 focus:outline-none focus:ring-2 focus:ring-black dark:focus:ring-white focus:ring-offset-2 dark:focus:ring-offset-gray-900 cursor-pointer shrink-0 ${
-                  autoRestoreSession ? 'bg-black dark:bg-white' : 'bg-stone-200 dark:bg-stone-800'
-                }`}
-              >
-                <motion.div
-                  layout
-                  transition={{ type: "spring", stiffness: 600, damping: 30 }}
-                  className={`w-5 h-5 rounded-full shadow-sm flex items-center justify-center ${
-                    autoRestoreSession ? 'ml-auto bg-white dark:bg-black text-black dark:text-white' : 'mr-auto bg-white dark:bg-stone-300'
-                  }`}
-                >
-                  {autoRestoreSession && (
-                    <motion.div initial={{ scale: 0 }} animate={{ scale: 1 }} transition={{ duration: 0.15 }}>
-                      <Check size={10} strokeWidth={3.5} />
-                    </motion.div>
-                  )}
-                </motion.div>
-              </button>
-            </motion.div>
-
-            {/* 2FA Authenticator TOTP */}
-            <motion.div 
-              whileHover={{ y: -1 }}
-              className="group flex items-center justify-between p-4 bg-stone-50/80 dark:bg-stone-900/60 hover:bg-white dark:hover:bg-stone-800/80 border border-stone-200/80 dark:border-stone-800/80 rounded-2xl md:rounded-3xl shadow-xs hover:shadow-md transition-all duration-300"
-            >
-              <div className="flex items-center gap-3.5">
-                <motion.div 
-                  whileHover={{ scale: 1.15, rotate: [0, -8, 8, 0] }}
-                  whileTap={{ scale: 0.95 }}
-                  className="w-10 h-10 rounded-2xl bg-white dark:bg-stone-800 text-stone-900 dark:text-stone-100 border border-stone-200/80 dark:border-stone-700/80 flex items-center justify-center shrink-0 shadow-xs group-hover:bg-black dark:group-hover:bg-white group-hover:text-white dark:group-hover:text-black transition-colors"
-                >
-                  <ShieldCheck size={18} strokeWidth={2.2} />
-                </motion.div>
-                <div>
-                  <div className="flex items-center gap-2">
-                    <p className="font-heading font-black text-stone-900 dark:text-white text-sm tracking-tight">Two-Step Verification</p>
-                    {twoStepEnabled && (
-                      <span className="px-2 py-0.5 text-[9px] font-black bg-emerald-500 text-white rounded-full uppercase tracking-wider">Active</span>
-                    )}
-                  </div>
-                  <p className="text-xs text-stone-500 dark:text-stone-400 font-medium">Protect account logins with TOTP Authenticator Apps</p>
-                </div>
-              </div>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={twoStepEnabled}
-                aria-label="Toggle two step verification"
-                onClick={() => {
-                  if (!twoStepEnabled) {
-                    const sec = faSecret || generateBase32Secret();
-                    setFaSecret(sec);
-                    setShow2FAModal(true);
-                    setFaStep(1);
-                  } else {
-                    setTwoStepEnabled(false);
-                    localStorage.setItem('pref_twoStep', 'false');
-                    localStorage.removeItem('paperx_2fa_secret');
-                    localStorage.removeItem('paperx_2fa_backup_codes');
-                    localStorage.removeItem('paperx_2fa_method');
-                    if (user?.uid) {
-                      updateUserInFirestore(user.uid, {
-                        twoFactorEnabled: false,
-                        twoFactorSecret: '',
-                        twoFactorBackupCodes: []
-                      });
-                    }
-                  }
-                }}
-                className={`relative w-12 h-7 rounded-full p-1 transition-colors duration-300 focus:outline-none focus:ring-2 focus:ring-black dark:focus:ring-white focus:ring-offset-2 dark:focus:ring-offset-gray-900 cursor-pointer shrink-0 ${
-                  twoStepEnabled ? 'bg-black dark:bg-white' : 'bg-stone-200 dark:bg-stone-800'
-                }`}
-              >
-                <motion.div
-                  layout
-                  transition={{ type: "spring", stiffness: 600, damping: 30 }}
-                  className={`w-5 h-5 rounded-full shadow-sm flex items-center justify-center ${
-                    twoStepEnabled ? 'ml-auto bg-white dark:bg-black text-black dark:text-white' : 'mr-auto bg-white dark:bg-stone-300'
-                  }`}
-                >
-                  {twoStepEnabled && (
-                    <motion.div initial={{ scale: 0 }} animate={{ scale: 1 }} transition={{ duration: 0.15 }}>
-                      <Check size={10} strokeWidth={3.5} />
-                    </motion.div>
-                  )}
-                </motion.div>
-              </button>
-            </motion.div>
-
-            {/* Active Devices & Sessions */}
-            <motion.div 
-              whileHover={{ y: -1 }}
-              className="group p-4.5 bg-stone-50/80 dark:bg-stone-900/60 hover:bg-white dark:hover:bg-stone-800/80 border border-stone-200/80 dark:border-stone-800/80 rounded-2xl md:rounded-3xl shadow-xs hover:shadow-md transition-all duration-300 space-y-3.5"
-            >
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2.5">
-                  <motion.div
-                    whileHover={{ scale: 1.15 }}
-                    className="w-7 h-7 rounded-xl bg-white dark:bg-stone-800 text-stone-900 dark:text-stone-100 border border-stone-200/80 dark:border-stone-700/80 flex items-center justify-center shrink-0 shadow-2xs"
-                  >
-                    <Laptop size={14} strokeWidth={2.2} />
-                  </motion.div>
-                  <p className="font-heading font-black text-stone-900 dark:text-white text-xs tracking-tight">Active Devices ({activeSessions.length})</p>
-                </div>
-              </div>
-              <div className="space-y-2">
-                {activeSessions.map((session) => (
-                  <div key={session.id} className="p-3 bg-white dark:bg-stone-800/80 rounded-2xl border border-stone-200/60 dark:border-stone-700/60 flex items-center justify-between text-xs shadow-2xs">
-                    <div>
-                      <div className="flex items-center gap-2">
-                        {session.deviceType === 'mobile' ? (
-                          <Smartphone size={16} className="text-stone-500 dark:text-stone-400" />
-                        ) : session.deviceType === 'tablet' ? (
-                          <Tablet size={16} className="text-stone-500 dark:text-stone-400" />
-                        ) : (
-                          <Monitor size={16} className="text-stone-500 dark:text-stone-400" />
-                        )}
-                        <span className="font-bold text-stone-900 dark:text-white">{session.deviceName}</span>
-                        {session.isCurrentSession && (
-                          <span className="px-2 py-0.5 text-[8px] font-black bg-black text-white dark:bg-white dark:text-black rounded-md tracking-wider uppercase">THIS DEVICE</span>
-                        )}
-                      </div>
-                      <p className="text-[11px] text-stone-500 dark:text-stone-400 font-medium">
-                        {session.browser} • {session.os}
-                      </p>
-                      <p className="text-[10px] text-stone-400 font-medium mt-0.5">
-                        Active: {formatSessionTime(session.lastActive)}
-                        {session.loginTime && ` • Logged in: ${new Date(session.loginTime).toLocaleDateString()} ${new Date(session.loginTime).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}`}
-                      </p>
-                    </div>
-                    {!session.isCurrentSession && (
-                      <button
-                        type="button"
-                        onClick={() => user?.uid && removeUserSession(user.uid, session.id)}
-                        className="text-[11px] text-red-500 font-bold hover:underline cursor-pointer"
-                      >
-                        Sign Out
-                      </button>
-                    )}
-                  </div>
-                ))}
-              </div>
-
-              {/* Log Out of All Devices Action */}
-              <motion.button
-                whileHover={{ scale: 1.01 }}
-                whileTap={{ scale: 0.98 }}
-                type="button"
-                onClick={() => setShowLogoutAllModal(true)}
-                className="w-full py-3 bg-white dark:bg-stone-800 border border-stone-200/80 dark:border-stone-700/80 hover:bg-red-50 hover:text-red-600 hover:border-red-200 dark:hover:bg-red-950/40 dark:hover:border-red-900/50 dark:hover:text-red-400 text-stone-700 dark:text-stone-300 font-bold rounded-2xl text-xs transition-all cursor-pointer flex items-center justify-center gap-2 shadow-xs"
-              >
-                <LogOut size={14} /> Log Out of Other Devices
-              </motion.button>
-            </motion.div>
-          </div>
-        </div>
-
-        {/* 6. Data & Maintenance */}
-        <div className="space-y-3">
-          <div className="flex items-center gap-2 px-1">
-            <motion.span 
-              animate={{ scale: [1, 1.25, 1], opacity: [0.7, 1, 0.7] }} 
-              transition={{ repeat: Infinity, duration: 2.5, ease: "easeInOut", delay: 1.5 }}
-              className="w-2 h-2 rounded-full bg-black dark:bg-white shrink-0" 
-            />
-            <h3 className="text-[11px] font-black tracking-widest text-stone-400 dark:text-stone-500 uppercase font-heading">
-              Data & Maintenance
-            </h3>
-          </div>
-          <motion.div 
-            whileHover={{ y: -1 }}
-            className="group flex items-center justify-between p-4.5 bg-stone-50/80 dark:bg-stone-900/60 hover:bg-white dark:hover:bg-stone-800/80 border border-stone-200/80 dark:border-stone-800/80 rounded-2xl md:rounded-3xl shadow-xs hover:shadow-md transition-all duration-300"
-          >
-            <div className="flex items-center gap-3.5">
-              <motion.div 
-                whileHover={{ scale: 1.15, rotate: [0, -12, 12, 0] }}
-                whileTap={{ scale: 0.95 }}
-                className="w-10 h-10 rounded-2xl bg-white dark:bg-stone-800 text-stone-900 dark:text-stone-100 border border-stone-200/80 dark:border-stone-700/80 flex items-center justify-center shrink-0 shadow-xs group-hover:bg-black dark:group-hover:bg-white group-hover:text-white dark:group-hover:text-black transition-colors"
-              >
-                <Trash2 size={18} strokeWidth={2.2} />
-              </motion.div>
-              <div>
-                <p className="font-heading font-black text-stone-900 dark:text-white text-sm tracking-tight">Clear Temporary Cache</p>
-                <p className="text-xs text-stone-500 dark:text-stone-400 font-medium">Release local draft memory & preview buffers</p>
-              </div>
-            </div>
-            <motion.button
-              whileHover={{ scale: isClearingCache ? 1 : 1.05 }}
-              whileTap={{ scale: isClearingCache ? 1 : 0.95 }}
-              type="button"
-              disabled={isClearingCache}
-              onClick={handleClearCacheInBackground}
-              className={`px-4 py-2.5 rounded-2xl text-xs font-bold transition-all cursor-pointer shadow-xs flex items-center gap-2 border ${
-                cacheClearedSuccess
-                  ? 'bg-emerald-500 text-white border-emerald-500 dark:bg-emerald-600 dark:border-emerald-600'
-                  : 'bg-white dark:bg-stone-800 border-stone-200/80 dark:border-stone-700/80 hover:bg-black hover:text-white dark:hover:bg-white dark:hover:text-black text-stone-900 dark:text-white'
-              } disabled:opacity-60 disabled:cursor-not-allowed`}
-            >
-              {isClearingCache ? (
-                <>
-                  <RefreshCw size={13} className="animate-spin text-stone-900 dark:text-white" />
-                  <span>Clearing in Background...</span>
-                </>
-              ) : cacheClearedSuccess ? (
-                <>
-                  <Check size={13} strokeWidth={3} />
-                  <span>Cache Cleared</span>
-                </>
-              ) : (
-                <span>Clear Cache</span>
-              )}
-            </motion.button>
-          </motion.div>
-
-          {/* Reset All Preferences */}
-          <motion.div 
-            whileHover={{ y: -1 }}
-            className="group flex items-center justify-between p-4.5 bg-stone-50/80 dark:bg-stone-900/60 hover:bg-white dark:hover:bg-stone-800/80 border border-stone-200/80 dark:border-stone-800/80 rounded-2xl md:rounded-3xl shadow-xs hover:shadow-md transition-all duration-300"
-          >
-            <div className="flex items-center gap-3.5">
-              <div className="w-10 h-10 rounded-2xl bg-white dark:bg-stone-800 text-stone-900 dark:text-stone-100 border border-stone-200/80 dark:border-stone-700/80 flex items-center justify-center shrink-0 shadow-xs group-hover:bg-black dark:group-hover:bg-white group-hover:text-white dark:group-hover:text-black transition-colors">
-                <RotateCcw size={18} strokeWidth={2.2} />
-              </div>
-              <div>
-                <p className="font-heading font-black text-stone-900 dark:text-white text-sm tracking-tight">Reset Preferences to Default</p>
-                <p className="text-xs text-stone-500 dark:text-stone-400 font-medium">Restore standard defaults for PDF, theme & language</p>
-              </div>
-            </div>
-            <motion.button
-              whileHover={{ scale: 1.05 }}
-              whileTap={{ scale: 0.95 }}
-              type="button"
-              onClick={handleResetPreferences}
-              className={`px-4 py-2.5 rounded-2xl text-xs font-bold transition-all cursor-pointer shadow-xs flex items-center gap-2 border ${
-                resetPreferencesSuccess
-                  ? 'bg-emerald-500 text-white border-emerald-500 dark:bg-emerald-600 dark:border-emerald-600'
-                  : 'bg-white dark:bg-stone-800 border-stone-200/80 dark:border-stone-700/80 hover:bg-black hover:text-white dark:hover:bg-white dark:hover:text-black text-stone-900 dark:text-white'
-              }`}
-            >
-              {resetPreferencesSuccess ? (
-                <>
-                  <Check size={13} strokeWidth={3} />
-                  <span>Restored Defaults</span>
-                </>
-              ) : (
-                <span>Reset Defaults</span>
-              )}
-            </motion.button>
-          </motion.div>
-        </div>
-
-        {/* 7. App Info & Legal */}
-        <div className="space-y-3 pb-6">
-          <div className="flex items-center gap-2 px-1">
-            <motion.span 
-              animate={{ scale: [1, 1.25, 1], opacity: [0.7, 1, 0.7] }} 
-              transition={{ repeat: Infinity, duration: 2.5, ease: "easeInOut", delay: 1.8 }}
-              className="w-2 h-2 rounded-full bg-black dark:bg-white shrink-0" 
-            />
-            <h3 className="text-[11px] font-black tracking-widest text-stone-400 dark:text-stone-500 uppercase font-heading">
-              App Info & Legal
-            </h3>
-          </div>
-          <div className="space-y-2.5">
-            <motion.button
-              whileHover={{ y: -1, scale: 1.005 }}
-              whileTap={{ scale: 0.995 }}
-              type="button"
-              disabled={isCheckingUpdate}
-              onClick={handleCheckUpdate}
-              className="group w-full p-4 bg-stone-50/80 dark:bg-stone-900/60 hover:bg-white dark:hover:bg-stone-800/80 border border-stone-200/80 dark:border-stone-800/80 rounded-2xl md:rounded-3xl flex items-center justify-between text-left transition-all cursor-pointer shadow-xs hover:shadow-md disabled:opacity-80"
-            >
-              <div className="flex items-center gap-3.5">
-                <motion.div 
-                  whileHover={{ rotate: 360 }}
-                  transition={{ duration: 0.6, ease: "easeInOut" }}
-                  className="w-10 h-10 rounded-2xl bg-white dark:bg-stone-800 text-stone-900 dark:text-stone-100 border border-stone-200/80 dark:border-stone-700/80 flex items-center justify-center shrink-0 shadow-xs group-hover:bg-black dark:group-hover:bg-white group-hover:text-white dark:group-hover:text-black transition-colors"
-                >
-                  <RefreshCw size={18} strokeWidth={2.2} className={isCheckingUpdate ? 'animate-spin' : ''} />
-                </motion.div>
-                <div>
-                  <p className="font-heading font-black text-stone-900 dark:text-white text-sm tracking-tight">
-                    {isCheckingUpdate ? 'Checking for Updates...' : 'Check for Updates'}
-                  </p>
-                  <p className="text-xs text-stone-500 dark:text-stone-400 font-medium">
-                    {isCheckingUpdate ? 'Connecting to update server...' : 'PaperX v2.4.0 (Latest Production Build)'}
-                  </p>
-                </div>
-              </div>
-              <ChevronRight size={18} className="text-stone-400 group-hover:text-stone-900 dark:group-hover:text-white group-hover:translate-x-0.5 transition-all" />
-            </motion.button>
-
-            <motion.button
-              whileHover={{ y: -1, scale: 1.005 }}
-              whileTap={{ scale: 0.995 }}
-              type="button"
-              onClick={() => navigateTo('about')}
-              className="group w-full p-4 bg-stone-50/80 dark:bg-stone-900/60 hover:bg-white dark:hover:bg-stone-800/80 border border-stone-200/80 dark:border-stone-800/80 rounded-2xl md:rounded-3xl flex items-center justify-between text-left transition-all cursor-pointer shadow-xs hover:shadow-md"
-            >
-              <div className="flex items-center gap-3.5">
-                <motion.div 
-                  whileHover={{ scale: 1.15, rotate: 15 }}
-                  whileTap={{ scale: 0.95 }}
-                  className="w-10 h-10 rounded-2xl bg-white dark:bg-stone-800 text-stone-900 dark:text-stone-100 border border-stone-200/80 dark:border-stone-700/80 flex items-center justify-center shrink-0 shadow-xs group-hover:bg-black dark:group-hover:bg-white group-hover:text-white dark:group-hover:text-black transition-colors"
-                >
-                  <Info size={18} strokeWidth={2.2} />
-                </motion.div>
-                <div>
-                  <p className="font-heading font-black text-stone-900 dark:text-white text-sm tracking-tight">About PaperX</p>
-                  <p className="text-xs text-stone-500 dark:text-stone-400 font-medium">Version specs, architecture & team details</p>
-                </div>
-              </div>
-              <ChevronRight size={18} className="text-stone-400 group-hover:text-stone-900 dark:group-hover:text-white group-hover:translate-x-0.5 transition-all" />
-            </motion.button>
-
-            <motion.button
-              whileHover={{ y: -1, scale: 1.005 }}
-              whileTap={{ scale: 0.995 }}
-              type="button"
-              onClick={() => navigateTo('terms')}
-              className="group w-full p-4 bg-stone-50/80 dark:bg-stone-900/60 hover:bg-white dark:hover:bg-stone-800/80 border border-stone-200/80 dark:border-stone-800/80 rounded-2xl md:rounded-3xl flex items-center justify-between text-left transition-all cursor-pointer shadow-xs hover:shadow-md"
-            >
-              <div className="flex items-center gap-3.5">
-                <motion.div 
-                  whileHover={{ scale: 1.15, y: -2 }}
-                  whileTap={{ scale: 0.95 }}
-                  className="w-10 h-10 rounded-2xl bg-white dark:bg-stone-800 text-stone-900 dark:text-stone-100 border border-stone-200/80 dark:border-stone-700/80 flex items-center justify-center shrink-0 shadow-xs group-hover:bg-black dark:group-hover:bg-white group-hover:text-white dark:group-hover:text-black transition-colors"
-                >
-                  <FileText size={18} strokeWidth={2.2} />
-                </motion.div>
-                <div>
-                  <p className="font-heading font-black text-stone-900 dark:text-white text-sm tracking-tight">Terms of Service</p>
-                  <p className="text-xs text-stone-500 dark:text-stone-400 font-medium">Platform usage rules and service terms</p>
-                </div>
-              </div>
-              <ChevronRight size={18} className="text-stone-400 group-hover:text-stone-900 dark:group-hover:text-white group-hover:translate-x-0.5 transition-all" />
-            </motion.button>
-
-            <motion.button
-              whileHover={{ y: -1, scale: 1.005 }}
-              whileTap={{ scale: 0.995 }}
-              type="button"
-              onClick={() => navigateTo('privacy')}
-              className="group w-full p-4 bg-stone-50/80 dark:bg-stone-900/60 hover:bg-white dark:hover:bg-stone-800/80 border border-stone-200/80 dark:border-stone-800/80 rounded-2xl md:rounded-3xl flex items-center justify-between text-left transition-all cursor-pointer shadow-xs hover:shadow-md"
-            >
-              <div className="flex items-center gap-3.5">
-                <motion.div 
-                  whileHover={{ scale: 1.15, rotate: [0, -8, 8, 0] }}
-                  whileTap={{ scale: 0.95 }}
-                  className="w-10 h-10 rounded-2xl bg-white dark:bg-stone-800 text-stone-900 dark:text-stone-100 border border-stone-200/80 dark:border-stone-700/80 flex items-center justify-center shrink-0 shadow-xs group-hover:bg-black dark:group-hover:bg-white group-hover:text-white dark:group-hover:text-black transition-colors"
-                >
-                  <ShieldCheck size={18} strokeWidth={2.2} />
-                </motion.div>
-                <div>
-                  <p className="font-heading font-black text-stone-900 dark:text-white text-sm tracking-tight">Privacy Policy</p>
-                  <p className="text-xs text-stone-500 dark:text-stone-400 font-medium">End-to-end data encryption and zero-inspection guarantee</p>
-                </div>
-              </div>
-              <ChevronRight size={18} className="text-stone-400 group-hover:text-stone-900 dark:group-hover:text-white group-hover:translate-x-0.5 transition-all" />
-            </motion.button>
-          </div>
-        </div>
+      <div className="flex-1 overflow-y-auto pt-[72px] sm:pt-[80px] px-4 pb-6 sm:px-6 sm:pb-8">
+        <PreferencesView
+          user={user}
+          loginAlerts={loginAlerts}
+          setLoginAlerts={setLoginAlerts}
+          twoStepEnabled={twoStepEnabled}
+          setTwoStepEnabled={setTwoStepEnabled}
+          autoRestoreSession={autoRestoreSession}
+          setAutoRestoreSession={setAutoRestoreSession}
+          activeSessions={activeSessions}
+          setShowLogoutAllModal={setShowLogoutAllModal}
+          removeUserSession={removeUserSession}
+          formatLoginDate={formatLoginDate}
+          formatLastActive={formatLastActive}
+          generateTotpSecretForEnrollment={generateTotpSecretForEnrollment}
+          setFaSecret={setFaSecret}
+          setTotpEnrollObj={setTotpEnrollObj}
+          setShow2FAModal={setShow2FAModal}
+          setFaStep={setFaStep}
+          generateBase32Secret={generateBase32Secret}
+          unenrollTotpFactor={unenrollTotpFactor}
+          pdfQuality={pdfQuality}
+          setPdfQuality={setPdfQuality}
+          namingPattern={namingPattern}
+          setNamingPattern={setNamingPattern}
+          autoSaveScan={autoSaveScan}
+          setAutoSaveScan={setAutoSaveScan}
+          pdfAutoCompress={pdfAutoCompress}
+          setPdfAutoCompress={setPdfAutoCompress}
+          darkMode={darkMode}
+          setDarkMode={setDarkMode}
+          fontSize={fontSize}
+          handleSetFontSize={handleSetFontSize}
+          largerText={largerText}
+          setLargerText={setLargerText}
+          isClearingCache={isClearingCache}
+          handleClearCacheInBackground={handleClearCacheInBackground}
+          cacheClearedSuccess={cacheClearedSuccess}
+          handleResetPreferences={handleResetPreferences}
+          resetPreferencesSuccess={resetPreferencesSuccess}
+          isCheckingUpdate={isCheckingUpdate}
+          handleCheckUpdate={handleCheckUpdate}
+          navigateTo={navigateTo}
+        />
       </div>
     </div>
   );
 
   const renderAbout = () => (
-    <div className="flex flex-col h-full animate-slide-in-right bg-white dark:bg-stone-900 relative">
+    <div className="flex flex-col h-full bg-white dark:bg-[#0d1117] relative">
       {renderHeader("About PaperX")}
       <div className="flex-1 overflow-y-auto pt-[72px] sm:pt-[80px] px-4 pb-4 sm:px-6 sm:pb-6 space-y-5">
         
         {/* Logo & Header Card */}
-        <div className="p-6 bg-stone-50/90 dark:bg-stone-800/60 border border-stone-200/80 dark:border-stone-800/80 rounded-2xl md:rounded-3xl text-center space-y-3">
-          <div className="w-14 h-14 mx-auto bg-black text-white dark:bg-white dark:text-black rounded-2xl flex items-center justify-center font-black text-xl font-heading shadow-sm">
-            PX
+        <div className="p-6 bg-stone-50/90 dark:bg-[#151b23]/80 border border-stone-200/80 dark:border-white/[0.08] rounded-2xl md:rounded-3xl text-center space-y-3">
+          <div className="my-3 flex items-center justify-center">
+            <img 
+              src="/user_logo.png" 
+              alt="PaperX Logo" 
+              className="h-8 sm:h-10 w-auto object-contain mx-auto"
+            />
           </div>
           <div>
-            <h2 className="text-lg font-black font-heading text-stone-900 dark:text-white tracking-tight">PaperX Studio</h2>
             <p className="text-xs text-stone-500 dark:text-stone-400 mt-0.5 font-medium">Version 2.4.0 (Production)</p>
           </div>
           <p className="text-xs text-stone-600 dark:text-stone-300 leading-relaxed max-w-sm mx-auto">
@@ -3008,8 +2367,8 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
         </div>
 
         {/* CEO Section */}
-        <div className="p-6 bg-stone-50/90 dark:bg-stone-800/60 border border-stone-200/80 dark:border-stone-800/80 rounded-2xl md:rounded-3xl text-center space-y-4">
-          <img src="/ceo.png" alt="Sayan Biswas - CEO of PaperX" className="w-24 h-24 mx-auto rounded-full object-cover border-4 border-white dark:border-stone-700 shadow-md" />
+        <div className="p-6 bg-stone-50/90 dark:bg-[#151b23]/80 border border-stone-200/80 dark:border-white/[0.08] rounded-2xl md:rounded-3xl text-center space-y-4">
+          <img src="/ceo.png" alt="Sayan Biswas - CEO of PaperX" className="w-24 h-24 mx-auto rounded-full object-cover border-4 border-white dark:border-[#30363d] shadow-md" />
           <div>
             <h3 className="text-base font-black font-heading text-stone-900 dark:text-white tracking-tight">Sayan Biswas</h3>
             <p className="text-xs font-semibold text-stone-500 dark:text-stone-400 mt-0.5">CEO of PaperX</p>
@@ -3023,9 +2382,9 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
             Platform Capabilities
           </h4>
 
-          <div className="p-4 bg-stone-50/80 dark:bg-stone-900/60 border border-stone-200/80 dark:border-stone-800/80 rounded-2xl md:rounded-3xl space-y-1.5">
+          <div className="p-4 bg-stone-50/80 dark:bg-[#151b23]/80 border border-stone-200/80 dark:border-white/[0.08] rounded-2xl md:rounded-3xl space-y-1.5">
             <div className="flex items-center gap-2.5">
-              <div className="w-7 h-7 rounded-lg bg-stone-200/80 dark:bg-stone-800 text-stone-900 dark:text-white flex items-center justify-center shrink-0">
+              <div className="w-7 h-7 rounded-lg bg-stone-200/80 dark:bg-[#1f242c] text-stone-900 dark:text-white flex items-center justify-center shrink-0">
                 <FileText size={14} strokeWidth={2.2} />
               </div>
               <h5 className="font-heading font-bold text-stone-900 dark:text-white text-xs">PDF & Document Processing</h5>
@@ -3035,9 +2394,9 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
             </p>
           </div>
 
-          <div className="p-4 bg-stone-50/80 dark:bg-stone-900/60 border border-stone-200/80 dark:border-stone-800/80 rounded-2xl md:rounded-3xl space-y-1.5">
+          <div className="p-4 bg-stone-50/80 dark:bg-[#151b23]/80 border border-stone-200/80 dark:border-white/[0.08] rounded-2xl md:rounded-3xl space-y-1.5">
             <div className="flex items-center gap-2.5">
-              <div className="w-7 h-7 rounded-lg bg-stone-200/80 dark:bg-stone-800 text-stone-900 dark:text-white flex items-center justify-center shrink-0">
+              <div className="w-7 h-7 rounded-lg bg-stone-200/80 dark:bg-[#1f242c] text-stone-900 dark:text-white flex items-center justify-center shrink-0">
                 <Camera size={14} strokeWidth={2.2} />
               </div>
               <h5 className="font-heading font-bold text-stone-900 dark:text-white text-xs">Camera Scanning & OCR</h5>
@@ -3047,9 +2406,9 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
             </p>
           </div>
 
-          <div className="p-4 bg-stone-50/80 dark:bg-stone-900/60 border border-stone-200/80 dark:border-stone-800/80 rounded-2xl md:rounded-3xl space-y-1.5">
+          <div className="p-4 bg-stone-50/80 dark:bg-[#151b23]/80 border border-stone-200/80 dark:border-white/[0.08] rounded-2xl md:rounded-3xl space-y-1.5">
             <div className="flex items-center gap-2.5">
-              <div className="w-7 h-7 rounded-lg bg-stone-200/80 dark:bg-stone-800 text-stone-900 dark:text-white flex items-center justify-center shrink-0">
+              <div className="w-7 h-7 rounded-lg bg-stone-200/80 dark:bg-[#1f242c] text-stone-900 dark:text-white flex items-center justify-center shrink-0">
                 <Database size={14} strokeWidth={2.2} />
               </div>
               <h5 className="font-heading font-bold text-stone-900 dark:text-white text-xs">5-Year Cloud Archive</h5>
@@ -3058,10 +2417,34 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
               Safely store and search through your saved documents by month, date, and year in "My Documents".
             </p>
           </div>
+
+          <div className="p-4 bg-stone-50/80 dark:bg-[#151b23]/80 border border-stone-200/80 dark:border-white/[0.08] rounded-2xl md:rounded-3xl space-y-1.5">
+            <div className="flex items-center gap-2.5">
+              <div className="w-7 h-7 rounded-lg bg-stone-200/80 dark:bg-[#1f242c] text-stone-900 dark:text-white flex items-center justify-center shrink-0">
+                <ShieldCheck size={14} strokeWidth={2.2} />
+              </div>
+              <h5 className="font-heading font-bold text-stone-900 dark:text-white text-xs">Tight Security</h5>
+            </div>
+            <p className="text-xs text-stone-600 dark:text-stone-300 leading-relaxed pl-9">
+              Your data is protected with enterprise-grade encryption and secure access controls for ultimate privacy.
+            </p>
+          </div>
+
+          <div className="p-4 bg-stone-50/80 dark:bg-[#151b23]/80 border border-stone-200/80 dark:border-white/[0.08] rounded-2xl md:rounded-3xl space-y-1.5">
+            <div className="flex items-center gap-2.5">
+              <div className="w-7 h-7 rounded-lg bg-stone-200/80 dark:bg-[#1f242c] text-stone-900 dark:text-white flex items-center justify-center shrink-0">
+                <Zap size={14} strokeWidth={2.2} />
+              </div>
+              <h5 className="font-heading font-bold text-stone-900 dark:text-white text-xs">Fastest Processing</h5>
+            </div>
+            <p className="text-xs text-stone-600 dark:text-stone-300 leading-relaxed pl-9">
+              Experience lightning-fast document handling and processing powered by optimized server-side performance.
+            </p>
+          </div>
         </div>
 
         {/* Footer info */}
-        <div className="p-4 bg-stone-100/80 dark:bg-stone-800/80 border border-stone-200/80 dark:border-stone-700/80 rounded-2xl md:rounded-3xl flex items-center justify-between text-xs">
+        <div className="p-4 bg-stone-100/80 dark:bg-[#151b23]/80 border border-stone-200/80 dark:border-[#30363d] rounded-2xl md:rounded-3xl flex items-center justify-between text-xs">
           <span className="text-stone-500 dark:text-stone-400 font-medium">© {new Date().getFullYear()} PaperX Team</span>
           <button 
             type="button"
@@ -3077,12 +2460,12 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
   );
 
   const renderTerms = () => (
-    <div className="flex flex-col h-full animate-slide-in-right bg-white dark:bg-stone-900 relative">
+    <div className="flex flex-col h-full bg-white dark:bg-[#0d1117] relative">
       {renderHeader("Terms of Service")}
       <div className="flex-1 overflow-y-auto pt-[72px] sm:pt-[80px] px-4 pb-4 sm:px-6 sm:pb-6 space-y-5">
         
         {/* Header Summary Card */}
-        <div className="p-4 bg-stone-50/90 dark:bg-stone-800/60 border border-stone-200/80 dark:border-stone-800/80 rounded-2xl md:rounded-3xl space-y-2">
+        <div className="p-4 bg-stone-50/90 dark:bg-[#151b23]/80 border border-stone-200/80 dark:border-white/[0.08] rounded-2xl md:rounded-3xl space-y-2">
           <div className="flex items-center gap-3">
             <div className="w-9 h-9 rounded-xl bg-black dark:bg-white text-white dark:text-black flex items-center justify-center shrink-0 shadow-xs">
               <FileText size={18} strokeWidth={2.2} />
@@ -3104,7 +2487,7 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
           </h4>
 
           {/* 1. Account Usage */}
-          <div className="p-4 bg-stone-50/80 dark:bg-stone-900/60 border border-stone-200/80 dark:border-stone-800/80 rounded-2xl md:rounded-3xl space-y-1.5">
+          <div className="p-4 bg-stone-50/80 dark:bg-[#151b23]/80 border border-stone-200/80 dark:border-white/[0.08] rounded-2xl md:rounded-3xl space-y-1.5">
             <h5 className="font-heading font-bold text-stone-900 dark:text-white text-xs">1. Account & Fair Usage</h5>
             <p className="text-xs text-stone-600 dark:text-stone-300 leading-relaxed">
               You are responsible for keeping your login credentials secure. PaperX provides document tools for personal and professional productivity within plan usage limits.
@@ -3112,7 +2495,7 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
           </div>
 
           {/* 2. Document Ownership */}
-          <div className="p-4 bg-stone-50/80 dark:bg-stone-900/60 border border-stone-200/80 dark:border-stone-800/80 rounded-2xl md:rounded-3xl space-y-1.5">
+          <div className="p-4 bg-stone-50/80 dark:bg-[#151b23]/80 border border-stone-200/80 dark:border-white/[0.08] rounded-2xl md:rounded-3xl space-y-1.5">
             <h5 className="font-heading font-bold text-stone-900 dark:text-white text-xs">2. Document Ownership & Content</h5>
             <p className="text-xs text-stone-600 dark:text-stone-300 leading-relaxed">
               You retain 100% ownership of all files and content you upload to PaperX. You agree not to upload harmful, illegal, or copyright-infringing materials.
@@ -3120,7 +2503,7 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
           </div>
 
           {/* 3. Service Availability */}
-          <div className="p-4 bg-stone-50/80 dark:bg-stone-900/60 border border-stone-200/80 dark:border-stone-800/80 rounded-2xl md:rounded-3xl space-y-1.5">
+          <div className="p-4 bg-stone-50/80 dark:bg-[#151b23]/80 border border-stone-200/80 dark:border-white/[0.08] rounded-2xl md:rounded-3xl space-y-1.5">
             <h5 className="font-heading font-bold text-stone-900 dark:text-white text-xs">3. Service & Updates</h5>
             <p className="text-xs text-stone-600 dark:text-stone-300 leading-relaxed">
               We continuously improve PaperX and may update features or perform maintenance from time to time to ensure optimal system stability and performance.
@@ -3128,10 +2511,18 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
           </div>
 
           {/* 4. Subscriptions & Billing */}
-          <div className="p-4 bg-stone-50/80 dark:bg-stone-900/60 border border-stone-200/80 dark:border-stone-800/80 rounded-2xl md:rounded-3xl space-y-1.5">
+          <div className="p-4 bg-stone-50/80 dark:bg-[#151b23]/80 border border-stone-200/80 dark:border-white/[0.08] rounded-2xl md:rounded-3xl space-y-1.5">
             <h5 className="font-heading font-bold text-stone-900 dark:text-white text-xs">4. Subscriptions & Billing</h5>
             <p className="text-xs text-stone-600 dark:text-stone-300 leading-relaxed">
-              Subscription plans (Free, Plus, Max) dictate processing limits and features. Billing terms and renewal details can be reviewed in your Billing settings.
+              Subscription plans (Free, Pro, Max) dictate processing limits and features. Billing terms and renewal details can be reviewed in your Billing settings.
+            </p>
+          </div>
+
+          {/* 5. Account Termination & Erasure */}
+          <div className="p-4 bg-stone-50/80 dark:bg-[#151b23]/80 border border-stone-200/80 dark:border-white/[0.08] rounded-2xl md:rounded-3xl space-y-1.5">
+            <h5 className="font-heading font-bold text-stone-900 dark:text-white text-xs">5. Account Deletion & 10-Day Grace Period</h5>
+            <p className="text-xs text-stone-600 dark:text-stone-300 leading-relaxed">
+              When an account data erasure or deletion is requested, an automatic 10-day safety grace period is enforced. If no login occurs within 10 days, your account and all associated documents are permanently and irreversibly deleted. Signing in before the 10 days expire immediately cancels the deletion and restores full access.
             </p>
           </div>
         </div>
@@ -3141,19 +2532,19 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
   );
 
   const renderPrivacy = () => (
-    <div className="flex flex-col h-full animate-slide-in-right bg-white dark:bg-stone-900 relative">
+    <div className="flex flex-col h-full bg-white dark:bg-[#0d1117] relative">
       {renderHeader("Privacy Policy")}
       <div className="flex-1 overflow-y-auto pt-[72px] sm:pt-[80px] px-4 pb-4 sm:px-6 sm:pb-6 space-y-5">
         
         {/* Header Summary Card */}
-        <div className="p-4 bg-stone-50/90 dark:bg-stone-800/60 border border-stone-200/80 dark:border-stone-800/80 rounded-2xl md:rounded-3xl space-y-2">
+        <div className="p-4 bg-stone-50/90 dark:bg-[#151b23]/80 border border-stone-200/80 dark:border-white/[0.08] rounded-2xl md:rounded-3xl space-y-2">
           <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-black dark:bg-white text-white dark:text-black flex items-center justify-center shrink-0 shadow-xs">
-              <ShieldCheck size={18} strokeWidth={2.2} />
+            <div className="w-9 h-9 rounded-xl bg-black dark:bg-white text-white dark:text-black flex items-center justify-center shrink-0 shadow-xs relative overflow-hidden group">
+              <ShieldCheck size={18} strokeWidth={2.2} className="text-emerald-400 dark:text-emerald-600 drop-shadow-xs" />
             </div>
             <div>
-              <h3 className="font-heading font-black text-stone-900 dark:text-white text-sm tracking-tight">PaperX Privacy & Data Protection</h3>
-              <p className="text-[11px] text-stone-500 dark:text-stone-400 font-medium">GDPR & CCPA compliant document confidentiality & export tools</p>
+              <h3 className="font-heading font-black text-stone-900 dark:text-white text-sm tracking-tight">PaperX Privacy &amp; Data Protection</h3>
+              <p className="text-[11px] text-stone-500 dark:text-stone-400 font-medium">GDPR &amp; CCPA compliant document confidentiality &amp; export tools</p>
             </div>
           </div>
           <p className="text-xs text-stone-600 dark:text-stone-300 leading-relaxed pt-1">
@@ -3167,13 +2558,177 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
             Core Privacy Commitments
           </h4>
 
-          {/* 1. Document Privacy */}
-          <div className="p-4 bg-stone-50/80 dark:bg-stone-900/60 border border-stone-200/80 dark:border-stone-800/80 rounded-2xl md:rounded-3xl space-y-1.5">
+          {/* Personal Data We Collect */}
+          <div className="p-4 bg-stone-50/80 dark:bg-[#151b23]/80 border border-stone-200/80 dark:border-white/[0.08] rounded-2xl md:rounded-3xl space-y-3">
             <div className="flex items-center gap-2.5">
-              <div className="w-7 h-7 rounded-lg bg-stone-200/80 dark:bg-stone-800 text-stone-900 dark:text-white flex items-center justify-center shrink-0">
-                <FileText size={14} strokeWidth={2.2} />
+              <div className="w-7 h-7 rounded-lg bg-emerald-500/10 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0 border border-emerald-500/20">
+                <Fingerprint size={14} strokeWidth={2.2} className="" />
               </div>
-              <h5 className="font-heading font-bold text-stone-900 dark:text-white text-xs">1. Document & File Confidentiality</h5>
+              <h5 className="font-heading font-bold text-stone-900 dark:text-white text-xs">Personal Data We Collect</h5>
+            </div>
+            <p className="text-xs text-stone-600 dark:text-stone-300 leading-relaxed pl-9">
+              We collect only the data necessary to provide, protect, and maintain PaperX document intelligence services. We clearly differentiate required operational data from optional user settings:
+            </p>
+
+            <div className="pl-9 space-y-2.5 text-xs text-stone-600 dark:text-stone-300 leading-relaxed">
+              {/* Service Required Data */}
+              <div className="space-y-1.5">
+                <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-extrabold uppercase tracking-wider bg-emerald-100 text-emerald-800 dark:bg-emerald-950/80 dark:text-emerald-300">
+                  Required to Provide Service
+                </span>
+                <ul className="space-y-1 pl-1">
+                  <li className="flex items-start gap-1">
+                    <span className="shrink-0 mt-0.5"><UserIcon size={12} className="text-emerald-600 dark:text-emerald-400" /></span>
+                    <div>• <strong className="text-stone-900 dark:text-white">Account Information:</strong> Name, registered email address, and profile identifiers provided during sign-up or login.</div>
+                  </li>
+                  <li className="flex items-start gap-1">
+                    <span className="shrink-0 mt-0.5"><Key size={12} className="text-emerald-600 dark:text-emerald-400" /></span>
+                    <div>• <strong className="text-stone-900 dark:text-white">Authentication &amp; Security:</strong> Login tokens, password reset verification codes, session timestamps, and device authorization logs.</div>
+                  </li>
+                  <li className="flex items-start gap-1">
+                    <span className="shrink-0 mt-0.5"><CreditCard size={12} className="text-emerald-600 dark:text-emerald-400" /></span>
+                    <div>• <strong className="text-stone-900 dark:text-white">Subscription &amp; Payment Details:</strong> Selected plan, billing duration, order ID, and UPI reference numbers (UTR/RRN) for payment verification. We do not store credit card numbers or UPI PINs.</div>
+                  </li>
+                  <li className="flex items-start gap-1">
+                    <span className="shrink-0 mt-0.5"><FileText size={12} className="text-emerald-600 dark:text-emerald-400" /></span>
+                    <div>• <strong className="text-stone-900 dark:text-white">Document Processing Information:</strong> Uploaded PDF files, images, and documents submitted solely to execute your requested actions (e.g. OCR text extraction, document translation, conversion, or compression).</div>
+                  </li>
+                  <li className="flex items-start gap-1">
+                    <span className="shrink-0 mt-0.5"><Monitor size={12} className="text-emerald-600 dark:text-emerald-400" /></span>
+                    <div>• <strong className="text-stone-900 dark:text-white">Device &amp; Session Data:</strong> Browser type, operating system, IP address for security logging, and active login sessions.</div>
+                  </li>
+                  <li className="flex items-start gap-1">
+                    <span className="shrink-0 mt-0.5"><LifeBuoy size={12} className="text-emerald-600 dark:text-emerald-400" /></span>
+                    <div>• <strong className="text-stone-900 dark:text-white">Support Communications:</strong> Messages, transaction references, and screenshots submitted via Live Support Chat or email helpdesk.</div>
+                  </li>
+                </ul>
+              </div>
+
+              {/* Optional Information */}
+              <div className="space-y-1.5 pt-1">
+                <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-extrabold uppercase tracking-wider bg-stone-200 text-stone-700 dark:bg-stone-800 dark:text-stone-300">
+                  Optional Information
+                </span>
+                <ul className="space-y-1 pl-1">
+                  <li className="flex items-start gap-1">
+                    <span className="shrink-0 mt-0.5"><Sliders size={12} className="text-stone-600 dark:text-stone-400" /></span>
+                    <div>• <strong className="text-stone-900 dark:text-white">App Preferences:</strong> Theme settings (Dark/Light), preferred language translations, accessibility scaling, and cloud storage integrations (Google Drive, Dropbox) when voluntarily connected.</div>
+                  </li>
+                  <li className="flex items-start gap-1">
+                    <span className="shrink-0 mt-0.5"><Activity size={12} className="text-stone-600 dark:text-stone-400" /></span>
+                    <div>• <strong className="text-stone-900 dark:text-white">Anonymous Usage Analytics:</strong> Aggregated tool performance telemetry and crash logs enabled to diagnose conversion bottlenecks and improve app stability.</div>
+                  </li>
+                </ul>
+              </div>
+            </div>
+          </div>
+
+          {/* How We Use Your Information */}
+          <div className="p-4 bg-stone-50/80 dark:bg-[#151b23]/80 border border-stone-200/80 dark:border-white/[0.08] rounded-2xl md:rounded-3xl space-y-3">
+            <div className="flex items-center gap-2.5">
+              <div className="w-7 h-7 rounded-lg bg-indigo-500/10 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 flex items-center justify-center shrink-0 border border-indigo-500/20">
+                <Cpu size={14} strokeWidth={2.2} className="" />
+              </div>
+              <h5 className="font-heading font-bold text-stone-900 dark:text-white text-xs">How We Use Your Information</h5>
+            </div>
+            <p className="text-xs text-stone-600 dark:text-stone-300 leading-relaxed pl-9">
+              PaperX uses collected data solely for legitimate, service-oriented purposes to operate and deliver document intelligence tools:
+            </p>
+
+            <ul className="text-xs text-stone-600 dark:text-stone-300 space-y-1.5 pl-9 leading-relaxed">
+              <li className="flex items-start gap-1">
+                <span className="shrink-0 mt-0.5"><UserCheck size={12} className="text-indigo-600 dark:text-indigo-400" /></span>
+                <div>• <strong className="text-stone-900 dark:text-white">Account Management &amp; Authentication:</strong> Creating, maintaining, and securely authenticating user accounts, password resets, and managing active sessions.</div>
+              </li>
+              <li className="flex items-start gap-1">
+                <span className="shrink-0 mt-0.5"><Zap size={12} className="text-indigo-600 dark:text-indigo-400" /></span>
+                <div>• <strong className="text-stone-900 dark:text-white">Document Processing &amp; Conversions:</strong> Executing file conversions, Neural OCR text extraction, layout-preserving translations, compression, merging, and digital signatures.</div>
+              </li>
+              <li className="flex items-start gap-1">
+                <span className="shrink-0 mt-0.5"><Database size={12} className="text-indigo-600 dark:text-indigo-400" /></span>
+                <div>• <strong className="text-stone-900 dark:text-white">Storage &amp; File Retrieval:</strong> Storing, synchronizing, and retrieving saved documents within your personal account archive.</div>
+              </li>
+              <li className="flex items-start gap-1">
+                <span className="shrink-0 mt-0.5"><CreditCard size={12} className="text-indigo-600 dark:text-indigo-400" /></span>
+                <div>• <strong className="text-stone-900 dark:text-white">Subscriptions &amp; Payments:</strong> Verifying UPI reference numbers (UTR/RRN), activating Pro/Max tiers, delivering official invoices, and processing refund requests.</div>
+              </li>
+              <li className="flex items-start gap-1">
+                <span className="shrink-0 mt-0.5"><LifeBuoy size={12} className="text-indigo-600 dark:text-indigo-400" /></span>
+                <div>• <strong className="text-stone-900 dark:text-white">Customer Support &amp; Assistance:</strong> Responding to helpdesk tickets, Live Support Chat inquiries, and escalating urgent requests to the executive desk.</div>
+              </li>
+              <li className="flex items-start gap-1">
+                <span className="shrink-0 mt-0.5"><ShieldCheck size={12} className="text-indigo-600 dark:text-indigo-400" /></span>
+                <div>• <strong className="text-stone-900 dark:text-white">Security &amp; Abuse Prevention:</strong> Enforcing rate limits, detecting fraud, preventing unauthorized access, and securing system infrastructure.</div>
+              </li>
+              <li className="flex items-start gap-1">
+                <span className="shrink-0 mt-0.5"><Activity size={12} className="text-indigo-600 dark:text-indigo-400" /></span>
+                <div>• <strong className="text-stone-900 dark:text-white">Performance &amp; Reliability:</strong> Monitoring processing latencies and diagnosing conversion errors to optimize speed and uptime.</div>
+              </li>
+              <li className="flex items-start gap-1">
+                <span className="shrink-0 mt-0.5"><FileCheck size={12} className="text-indigo-600 dark:text-indigo-400" /></span>
+                <div>• <strong className="text-stone-900 dark:text-white">Legal &amp; Regulatory Compliance:</strong> Complying with applicable Indian and global consumer protection, taxation, and statutory requirements.</div>
+              </li>
+            </ul>
+
+            <div className="ml-9 p-3 bg-emerald-500/10 dark:bg-emerald-950/25 border border-emerald-500/20 rounded-xl flex items-start gap-2">
+              <ShieldCheck size={15} className="text-emerald-700 dark:text-emerald-400 shrink-0 mt-0.5" />
+              <p className="text-[11px] text-emerald-800 dark:text-emerald-300 font-semibold leading-relaxed">
+                Zero-Monetization &amp; AI Non-Training Pledge: PaperX never sells, rents, or monetizes personal information to third parties, and we never use your uploaded document contents to train public AI models.
+              </p>
+            </div>
+          </div>
+
+          {/* Cookies & Technical Storage */}
+          <div className="p-4 bg-stone-50/80 dark:bg-[#151b23]/80 border border-stone-200/80 dark:border-white/[0.08] rounded-2xl md:rounded-3xl space-y-2.5">
+            <div className="flex items-center gap-2.5">
+              <div className="w-7 h-7 rounded-lg bg-cyan-500/10 dark:bg-cyan-950/40 text-cyan-600 dark:text-cyan-400 flex items-center justify-center shrink-0 border border-cyan-500/20">
+                <Cookie size={14} strokeWidth={2.2} className="" />
+              </div>
+              <h5 className="font-heading font-bold text-stone-900 dark:text-white text-xs">Cookies &amp; Technical Storage</h5>
+            </div>
+            <p className="text-xs text-stone-600 dark:text-stone-300 leading-relaxed pl-9">
+              PaperX operates with a privacy-first architecture and does not use third-party advertising cookies or third-party behavioral analytics services to track users:
+            </p>
+
+            <ul className="text-xs text-stone-600 dark:text-stone-300 space-y-1.5 pl-9 leading-relaxed">
+              <li className="flex items-start gap-1">
+                <span className="shrink-0 mt-0.5"><Shield size={12} className="text-cyan-600 dark:text-cyan-400" /></span>
+                <div>• <strong className="text-stone-900 dark:text-white">Zero Third-Party Advertising Cookies:</strong> We do not deploy cross-site tracking cookies, behavioral marketing trackers, or third-party advertising networks.</div>
+              </li>
+              <li className="flex items-start gap-1">
+                <span className="shrink-0 mt-0.5"><Database size={12} className="text-cyan-600 dark:text-cyan-400" /></span>
+                <div>• <strong className="text-stone-900 dark:text-white">Essential Technical Storage:</strong> We use strictly necessary local browser storage (LocalStorage and secure session tokens) solely to maintain your login authentication, remember theme preferences, and secure API requests.</div>
+              </li>
+              <li className="flex items-start gap-1">
+                <span className="shrink-0 mt-0.5"><Eye size={12} className="text-cyan-600 dark:text-cyan-400" /></span>
+                <div>• <strong className="text-stone-900 dark:text-white">No Invasive Profiling:</strong> Any internal diagnostic metrics are technical and anonymous, utilized exclusively to detect system errors and optimize document conversion speeds.</div>
+              </li>
+            </ul>
+          </div>
+
+          {/* Children's Privacy Protection */}
+          <div className="p-4 bg-stone-50/80 dark:bg-[#151b23]/80 border border-stone-200/80 dark:border-white/[0.08] rounded-2xl md:rounded-3xl space-y-2">
+            <div className="flex items-center gap-2.5">
+              <div className="w-7 h-7 rounded-lg bg-amber-500/10 dark:bg-amber-950/40 text-amber-600 dark:text-amber-400 flex items-center justify-center shrink-0 border border-amber-500/20">
+                <ShieldAlert size={14} strokeWidth={2.2} className="" />
+              </div>
+              <h5 className="font-heading font-bold text-stone-900 dark:text-white text-xs">Children&apos;s Privacy Protection</h5>
+            </div>
+            <p className="text-xs text-stone-600 dark:text-stone-300 leading-relaxed pl-9">
+              PaperX is intended strictly for users who are legally permitted to access the platform under applicable law. PaperX is not knowingly designed to solicit or collect personal information from children who are not legally permitted to use the service.
+            </p>
+            <p className="text-xs text-stone-600 dark:text-stone-300 leading-relaxed pl-9">
+              If PaperX becomes aware that personal data has been collected from a child contrary to applicable legal regulations, we will take prompt, appropriate steps to address and permanently delete such records where required. Parents or guardians may contact <strong className="text-stone-900 dark:text-white">paperx.assist@gmail.com</strong> for assistance.
+            </p>
+          </div>
+
+          {/* 1. Document Privacy */}
+          <div className="p-4 bg-stone-50/80 dark:bg-[#151b23]/80 border border-stone-200/80 dark:border-white/[0.08] rounded-2xl md:rounded-3xl space-y-1.5">
+            <div className="flex items-center gap-2.5">
+              <div className="w-7 h-7 rounded-lg bg-blue-500/10 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400 flex items-center justify-center shrink-0 border border-blue-500/20">
+                <FileCheck size={14} strokeWidth={2.2} className="" />
+              </div>
+              <h5 className="font-heading font-bold text-stone-900 dark:text-white text-xs">1. Document &amp; File Confidentiality</h5>
             </div>
             <p className="text-xs text-stone-600 dark:text-stone-300 leading-relaxed pl-9">
               Your uploaded PDFs, scanned documents, and images are processed strictly to perform the actions you request (such as converting, merging, or scanning). We do not sell your files or use document contents to train public AI models.
@@ -3181,27 +2736,40 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
           </div>
 
           {/* 2. File Storage & Retention */}
-          <div className="p-4 bg-stone-50/80 dark:bg-stone-900/60 border border-stone-200/80 dark:border-stone-800/80 rounded-2xl md:rounded-3xl space-y-1.5">
+          <div className="p-4 bg-stone-50/80 dark:bg-[#151b23]/80 border border-stone-200/80 dark:border-white/[0.08] rounded-2xl md:rounded-3xl space-y-2">
             <div className="flex items-center gap-2.5">
-              <div className="w-7 h-7 rounded-lg bg-stone-200/80 dark:bg-stone-800 text-stone-900 dark:text-white flex items-center justify-center shrink-0">
-                <Database size={14} strokeWidth={2.2} />
+              <div className="w-7 h-7 rounded-lg bg-teal-500/10 dark:bg-teal-950/40 text-teal-600 dark:text-teal-400 flex items-center justify-center shrink-0 border border-teal-500/20">
+                <Database size={14} strokeWidth={2.2} className="" />
               </div>
-              <h5 className="font-heading font-bold text-stone-900 dark:text-white text-xs">2. Storage & Retention Limits</h5>
+              <h5 className="font-heading font-bold text-stone-900 dark:text-white text-xs">2. Storage &amp; Retention Limits</h5>
             </div>
-            <ul className="text-xs text-stone-600 dark:text-stone-300 space-y-1 pl-9 leading-relaxed">
-              <li>• <strong className="text-stone-900 dark:text-white">My Documents:</strong> Saved files are stored safely in your account archive.</li>
-              <li>• <strong className="text-stone-900 dark:text-white">Recent Activity:</strong> Displays files created or modified within the last 30 days.</li>
-              <li>• <strong className="text-stone-900 dark:text-white">User Deletion:</strong> You can delete any saved file from your archive at any time.</li>
+            <ul className="text-xs text-stone-600 dark:text-stone-300 space-y-1.5 pl-9 leading-relaxed">
+              <li className="flex items-start gap-1">
+                <span className="shrink-0 mt-0.5"><FileText size={12} className="text-teal-600 dark:text-teal-400" /></span>
+                <div>• <strong className="text-stone-900 dark:text-white">My Documents:</strong> Saved files are stored safely in your account archive.</div>
+              </li>
+              <li className="flex items-start gap-1">
+                <span className="shrink-0 mt-0.5"><Clock size={12} className="text-teal-600 dark:text-teal-400" /></span>
+                <div>• <strong className="text-stone-900 dark:text-white">Recent Activity:</strong> Displays files created or modified within the last 30 days.</div>
+              </li>
+              <li className="flex items-start gap-1">
+                <span className="shrink-0 mt-0.5"><Trash2 size={12} className="text-teal-600 dark:text-teal-400" /></span>
+                <div>• <strong className="text-stone-900 dark:text-white">User Deletion:</strong> You can delete any saved file from your archive at any time.</div>
+              </li>
+              <li className="flex items-start gap-1">
+                <span className="shrink-0 mt-0.5"><AlertTriangle size={12} className="text-teal-600 dark:text-teal-400" /></span>
+                <div>• <strong className="text-stone-900 dark:text-white">Account Erasure Criteria (10-Day Rule):</strong> When an account data erasure is requested, an automatic 10-day safety grace period begins. After 10 days of inactivity, the account and all documents are <strong>permanently and irreversibly deleted</strong>. Signing in before 10 days automatically cancels the erasure and restores everything.</div>
+              </li>
             </ul>
           </div>
 
           {/* 3. Data Protection & Security */}
-          <div className="p-4 bg-stone-50/80 dark:bg-stone-900/60 border border-stone-200/80 dark:border-stone-800/80 rounded-2xl md:rounded-3xl space-y-1.5">
+          <div className="p-4 bg-stone-50/80 dark:bg-[#151b23]/80 border border-stone-200/80 dark:border-white/[0.08] rounded-2xl md:rounded-3xl space-y-1.5">
             <div className="flex items-center gap-2.5">
-              <div className="w-7 h-7 rounded-lg bg-stone-200/80 dark:bg-stone-800 text-stone-900 dark:text-white flex items-center justify-center shrink-0">
-                <Lock size={14} strokeWidth={2.2} />
+              <div className="w-7 h-7 rounded-lg bg-violet-500/10 dark:bg-violet-950/40 text-violet-600 dark:text-violet-400 flex items-center justify-center shrink-0 border border-violet-500/20">
+                <Lock size={14} strokeWidth={2.2} className="" />
               </div>
-              <h5 className="font-heading font-bold text-stone-900 dark:text-white text-xs">3. Account & Data Security</h5>
+              <h5 className="font-heading font-bold text-stone-900 dark:text-white text-xs">3. Account &amp; Data Security</h5>
             </div>
             <p className="text-xs text-stone-600 dark:text-stone-300 leading-relaxed pl-9">
               All communications between your device and PaperX are secured using TLS 1.3 encryption. Account profile data, active sessions, and document records are protected with Firestore security rules.
@@ -3209,19 +2777,32 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
           </div>
 
           {/* 4. User Rights & Data Control */}
-          <div className="p-4 bg-stone-50/80 dark:bg-stone-900/60 border border-stone-200/80 dark:border-stone-800/80 rounded-2xl md:rounded-3xl space-y-3">
+          <div className="p-4 bg-stone-50/80 dark:bg-[#151b23]/80 border border-stone-200/80 dark:border-white/[0.08] rounded-2xl md:rounded-3xl space-y-3">
             <div className="flex items-center gap-2.5">
-              <div className="w-7 h-7 rounded-lg bg-stone-200/80 dark:bg-stone-800 text-stone-900 dark:text-white flex items-center justify-center shrink-0">
-                <Shield size={14} strokeWidth={2.2} />
+              <div className="w-7 h-7 rounded-lg bg-rose-500/10 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 flex items-center justify-center shrink-0 border border-rose-500/20">
+                <Sliders size={14} strokeWidth={2.2} className="" />
               </div>
-              <h5 className="font-heading font-bold text-stone-900 dark:text-white text-xs">4. Your Data Rights & Real Controls</h5>
+              <h5 className="font-heading font-bold text-stone-900 dark:text-white text-xs">4. Your Data Rights &amp; Real Controls</h5>
             </div>
             <p className="text-xs text-stone-600 dark:text-stone-300 leading-relaxed pl-9">
-              Under GDPR Article 20 and CCPA, you have full ownership of your data. You can download a complete structured JSON archive of your account, reset local preferences, or submit a right-to-be-forgotten erasure request.
+              Under GDPR Article 17 &amp; 20 and CCPA, you retain full sovereignty over your data. You can download a complete structured JSON archive of your account, reset local preferences, or submit a GDPR Right to Erasure request. All erasure requests include an automatic 10-day grace period before permanent purge.
             </p>
 
+            {/* 10-Day Permanent Deletion Criteria Banner */}
+            <div className="ml-9 p-3.5 bg-amber-500/10 dark:bg-amber-950/25 border border-amber-500/30 rounded-2xl space-y-1.5">
+              <div className="flex items-center gap-2 text-amber-800 dark:text-amber-300 font-bold text-xs">
+                <Clock size={14} className="text-amber-600 dark:text-amber-400 shrink-0" />
+                <span>Data Erasure Criteria &amp; 10-Day Safe Timeline</span>
+              </div>
+              <ul className="text-[11px] text-stone-600 dark:text-stone-300 space-y-1 pl-4 list-disc leading-relaxed">
+                <li><strong className="text-stone-900 dark:text-white">10-Day Safety Window:</strong> Upon submitting an erasure request, your account is queued for 10 days rather than purged immediately, protecting against accidental loss.</li>
+                <li><strong className="text-stone-900 dark:text-white">Automatic Permanent Delete:</strong> If you do not sign back in within 10 days, your account, PDF archives, login sessions, and settings will be permanently and irreversibly purged from our database.</li>
+                <li><strong className="text-stone-900 dark:text-white">Instant Cancellation on Login:</strong> Entering and logging into your account at any time before the 10 days elapse automatically cancels the erasure request and restores full account access.</li>
+              </ul>
+            </div>
+
             {/* Quick Actions Grid */}
-            <div className="pl-9 pt-1 grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <div className="relative z-50 pl-9 pt-1 grid grid-cols-1 sm:grid-cols-2 gap-2">
               <button
                 type="button"
                 onClick={handleResetPreferences}
@@ -3234,26 +2815,135 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
                   </>
                 ) : (
                   <>
-                    <Undo2 size={13} />
+                    <Undo2 size={13} className="" />
                     <span>Reset App Preferences</span>
                   </>
                 )}
               </button>
 
-              <button
-                type="button"
-                onClick={() => setShowDeleteAccountModal(true)}
-                className="py-2.5 px-3 bg-red-50 hover:bg-red-100 dark:bg-red-950/40 dark:hover:bg-red-900/40 text-red-600 dark:text-red-400 font-bold rounded-xl text-xs transition-colors flex items-center justify-center gap-1.5 cursor-pointer shadow-2xs"
-              >
-                <Trash2 size={13} />
-                <span>Request Data Erasure</span>
-              </button>
+              {user?.dataErasureRequested ? (
+                <div className="relative z-50 col-span-1 sm:col-span-2 p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-1.5 text-amber-700 dark:text-amber-300 font-bold text-xs">
+                      <Clock size={13} className="shrink-0" />
+                      <span>Data Erasure Scheduled (10-Day Period)</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleCancelErasureRequest}
+                      className="py-1 px-2.5 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-[11px] font-bold transition shadow-2xs cursor-pointer"
+                    >
+                      {cancelErasureSuccess ? 'Erasure Cancelled!' : 'Cancel Erasure Now'}
+                    </button>
+                  </div>
+                  <p className="text-[11px] text-amber-800 dark:text-amber-200 leading-normal">
+                    Permanent deletion is set for {user.dataErasureScheduledUntil ? new Date(user.dataErasureScheduledUntil).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'in 10 days'}. Logging in or clicking "Cancel Erasure Now" automatically restores your account with nothing lost.
+                  </p>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); console.log("Erasure button clicked"); setShowDeleteAccountModal(true); }}
+                  className="relative z-50 py-2.5 px-3 bg-red-50 hover:bg-red-100 dark:bg-red-950/20 dark:hover:bg-red-900/30 text-red-600 dark:text-red-400 font-bold rounded-xl text-xs transition-colors flex items-center justify-center gap-1.5 cursor-pointer shadow-2xs"
+                >
+                  <Trash2 size={13} className="" />
+                  <span>Request Data Erasure</span>
+                </button>
+              )}
             </div>
+          </div>
+
+          {/* 5. Policy Changes & Updates */}
+          <div className="p-4 bg-stone-50/80 dark:bg-[#151b23]/80 border border-stone-200/80 dark:border-white/[0.08] rounded-2xl md:rounded-3xl space-y-2">
+            <div className="flex items-center gap-2.5">
+              <div className="w-7 h-7 rounded-lg bg-orange-500/10 dark:bg-orange-950/40 text-orange-600 dark:text-orange-400 flex items-center justify-center shrink-0 border border-orange-500/20">
+                <RefreshCw size={14} strokeWidth={2.2} className="" />
+              </div>
+              <h5 className="font-heading font-bold text-stone-900 dark:text-white text-xs">5. Policy Changes &amp; Updates</h5>
+            </div>
+            <p className="text-xs text-stone-600 dark:text-stone-300 leading-relaxed pl-9">
+              PaperX may update this Privacy Policy periodically to reflect enhancements to our services, evolving security practices, or statutory legal requirements.
+            </p>
+            <p className="text-xs text-stone-600 dark:text-stone-300 leading-relaxed pl-9">
+              The latest version will always be published within the PaperX platform with an updated &ldquo;Last Updated&rdquo; date, and users are encouraged to review it periodically. Where legally required, PaperX will provide appropriate advance notice of material policy changes.
+            </p>
+          </div>
+
+          {/* 6. Privacy Contact & Grievance */}
+          <div className="p-4 bg-stone-50/80 dark:bg-[#151b23]/80 border border-stone-200/80 dark:border-white/[0.08] rounded-2xl md:rounded-3xl space-y-2">
+            <div className="flex items-center gap-2.5">
+              <div className="w-7 h-7 rounded-lg bg-rose-500/10 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 flex items-center justify-center shrink-0 border border-rose-500/20">
+                <Mail size={14} strokeWidth={2.2} className="" />
+              </div>
+              <h5 className="font-heading font-bold text-stone-900 dark:text-white text-xs">6. Privacy Contact &amp; Grievance Redressal</h5>
+            </div>
+            <p className="text-xs text-stone-600 dark:text-stone-300 leading-relaxed pl-9">
+              If you have any questions, concerns, personal data requests, or privacy grievances regarding PaperX data practices, you can contact our privacy desk directly:
+            </p>
+            <div className="ml-9 p-3 bg-stone-100/90 dark:bg-[#1f242c]/80 border border-stone-200/80 dark:border-white/[0.08] rounded-xl space-y-1.5 text-xs text-stone-600 dark:text-stone-300 leading-relaxed">
+              <p className="flex items-center gap-1.5">
+                <Mail size={12} className="text-rose-600 dark:text-rose-400 shrink-0" />
+                <span>• <strong className="text-stone-900 dark:text-white">Official Privacy Email:</strong> <a href="mailto:paperx.assist@gmail.com" className="text-emerald-600 dark:text-emerald-400 font-bold hover:underline">paperx.assist@gmail.com</a></span>
+              </p>
+              <p className="flex items-center gap-1.5">
+                <LifeBuoy size={12} className="text-rose-600 dark:text-rose-400 shrink-0" />
+                <span>• <strong className="text-stone-900 dark:text-white">Live Support Grievance:</strong> Open 24/7 Live Support Chat and select <em>&ldquo;Talk with CEO&rdquo;</em> for direct executive grievance escalation.</span>
+              </p>
+              <p className="text-[11px] text-stone-500 dark:text-stone-400 pt-0.5">
+                * Please provide your registered email address, relevant Order/User ID, and sufficient details regarding your request to help us identify and address your inquiry promptly.
+              </p>
+            </div>
+          </div>
+
+          {/* 7. Privacy Policy Information */}
+          <div className="p-4 bg-stone-50/80 dark:bg-[#151b23]/80 border border-stone-200/80 dark:border-white/[0.08] rounded-2xl md:rounded-3xl space-y-2.5">
+            <div className="flex items-center gap-2.5">
+              <div className="w-7 h-7 rounded-lg bg-emerald-500/10 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0 border border-emerald-500/20">
+                <Info size={14} strokeWidth={2.2} className="" />
+              </div>
+              <h5 className="font-heading font-bold text-stone-900 dark:text-white text-xs">7. Privacy Policy Information</h5>
+            </div>
+            <p className="text-xs text-stone-600 dark:text-stone-300 leading-relaxed pl-9">
+              Official release audit metadata and version specifications for the PaperX Privacy Policy:
+            </p>
+
+            <div className="ml-9 grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-xs">
+              <div className="p-3 bg-stone-100/90 dark:bg-[#1f242c]/80 border border-stone-200/80 dark:border-white/[0.08] rounded-xl space-y-0.5">
+                <div className="flex items-center gap-1">
+                  <Calendar size={11} className="text-emerald-600 dark:text-emerald-400 shrink-0" />
+                  <span className="text-[10px] uppercase font-bold tracking-wider text-stone-400 dark:text-stone-500">Effective Date</span>
+                </div>
+                <p className="font-bold text-stone-900 dark:text-white text-xs">October 6, 2026</p>
+                <p className="text-[10.5px] text-stone-500 dark:text-stone-400">Official active date</p>
+              </div>
+
+              <div className="p-3 bg-stone-100/90 dark:bg-[#1f242c]/80 border border-stone-200/80 dark:border-white/[0.08] rounded-xl space-y-0.5">
+                <div className="flex items-center gap-1">
+                  <Clock size={11} className="text-emerald-600 dark:text-emerald-400 shrink-0" />
+                  <span className="text-[10px] uppercase font-bold tracking-wider text-stone-400 dark:text-stone-500">Last Updated</span>
+                </div>
+                <p className="font-bold text-stone-900 dark:text-white text-xs">October 6, 2026</p>
+                <p className="text-[10.5px] text-stone-500 dark:text-stone-400">Current policy revision</p>
+              </div>
+
+              <div className="p-3 bg-stone-100/90 dark:bg-[#1f242c]/80 border border-stone-200/80 dark:border-white/[0.08] rounded-xl space-y-0.5">
+                <div className="flex items-center gap-1">
+                  <CheckCircle2 size={11} className="text-emerald-600 dark:text-emerald-400 shrink-0" />
+                  <span className="text-[10px] uppercase font-bold tracking-wider text-stone-400 dark:text-stone-500">Policy Version</span>
+                </div>
+                <p className="font-bold text-stone-900 dark:text-white text-xs">v2.4.0 (Production)</p>
+                <p className="text-[10.5px] text-stone-500 dark:text-stone-400">PaperX Global Ecosystem</p>
+              </div>
+            </div>
+
+            <p className="text-[11px] text-stone-500 dark:text-stone-400 pl-9 leading-relaxed">
+              * The latest official version of the PaperX Privacy Policy is continuously accessible within the app under Account Settings &gt; Privacy Policy.
+            </p>
           </div>
         </div>
 
         {/* Real Working Export Account Data Action Card */}
-        <div className="p-4.5 bg-stone-100/90 dark:bg-stone-800/90 border border-stone-200/90 dark:border-stone-700/80 rounded-2xl md:rounded-3xl space-y-3.5 shadow-xs">
+        <div className="relative z-50 p-4.5 bg-stone-100/90 dark:bg-[#151b23]/80 border border-stone-200/90 dark:border-white/[0.08] rounded-2xl md:rounded-3xl space-y-3.5 shadow-xs">
           <div className="flex items-start justify-between gap-3">
             <div className="space-y-1">
               <div className="flex items-center gap-2">
@@ -3267,7 +2957,7 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
 
             {exportFeedback && (
               <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 dark:bg-emerald-950/80 dark:text-emerald-300 rounded-md text-[10px] font-bold shrink-0 flex items-center gap-1">
-                <Check size={11} strokeWidth={3} /> {exportFeedback.count} Records Exported
+                <Check size={11} strokeWidth={3} className="" /> {exportFeedback.count} Records Exported
               </span>
             )}
           </div>
@@ -3276,7 +2966,7 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
             <button
               type="button"
               disabled={isExportingData}
-              onClick={handleGenerateFullAccountData}
+              onClick={() => { console.log("Export button clicked"); handleGenerateFullAccountData(true); }}
               className="flex-1 min-w-[140px] py-2.5 px-4 bg-stone-900 hover:bg-black text-white dark:bg-white dark:hover:bg-stone-100 dark:text-black rounded-xl text-xs font-bold transition-all shadow-xs cursor-pointer flex items-center justify-center gap-2 disabled:opacity-60"
             >
               {isExportingData ? (
@@ -3285,41 +2975,43 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
                   <span>Preparing Export...</span>
                 </>
               ) : (
-                <span>Download JSON</span>
+                <>
+                  <DownloadCloud size={14} />
+                  <span>Download JSON</span>
+                </>
               )}
             </button>
 
-            {exportJsonData && (
-              <>
-                <button
-                  type="button"
-                  onClick={handleCopyExportJson}
-                  className="py-2.5 px-3 bg-white dark:bg-stone-700 border border-stone-200 dark:border-stone-600 text-stone-800 dark:text-stone-200 hover:bg-stone-50 dark:hover:bg-stone-600 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 shadow-2xs"
-                  title="Copy full JSON payload to clipboard"
-                >
-                  {copiedExportJson ? (
-                    <>
-                      <Check size={13} className="text-emerald-500" strokeWidth={3} />
-                      <span className="text-emerald-600 dark:text-emerald-400">Copied!</span>
-                    </>
-                  ) : (
-                    <>
-                      <Copy size={13} />
-                      <span>Copy JSON</span>
-                    </>
-                  )}
-                </button>
+            <button
+              type="button"
+              disabled={isExportingData}
+              onClick={(e) => { e.stopPropagation(); console.log("Inspect button clicked"); handleInspectPayload(); }}
+              className="py-2.5 px-3.5 bg-white dark:bg-[#1f242c] border border-stone-200 dark:border-[#30363d] text-stone-800 dark:text-[#c9d1d9] hover:bg-stone-50 dark:hover:bg-[#30363d] rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 shadow-2xs disabled:opacity-60"
+              title="Inspect raw JSON data in viewer"
+            >
+              <Eye size={13} />
+              <span>Inspect</span>
+            </button>
 
-                <button
-                  type="button"
-                  onClick={() => setShowExportPreview(true)}
-                  className="py-2.5 px-3 bg-white dark:bg-stone-700 border border-stone-200 dark:border-stone-600 text-stone-800 dark:text-stone-200 hover:bg-stone-50 dark:hover:bg-stone-600 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 shadow-2xs"
-                  title="Inspect raw JSON data in viewer"
-                >
-                  <Eye size={13} />
-                  <span>Inspect</span>
-                </button>
-              </>
+            {exportJsonData && (
+              <button
+                type="button"
+                onClick={handleCopyExportJson}
+                className="py-2.5 px-3 bg-white dark:bg-[#1f242c] border border-stone-200 dark:border-[#30363d] text-stone-800 dark:text-[#c9d1d9] hover:bg-stone-50 dark:hover:bg-[#30363d] rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 shadow-2xs"
+                title="Copy full JSON payload to clipboard"
+              >
+                {copiedExportJson ? (
+                  <>
+                    <Check size={13} className="text-emerald-500" strokeWidth={3} />
+                    <span className="text-emerald-600 dark:text-emerald-400">Copied!</span>
+                  </>
+                ) : (
+                  <>
+                    <Copy size={13} />
+                    <span>Copy JSON</span>
+                  </>
+                )}
+              </button>
             )}
           </div>
 
@@ -3336,29 +3028,83 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
 
   return (
     <>
-      {/* Backdrop */}
-      <div 
-        className={`fixed inset-0 bg-black/30 backdrop-blur-sm z-40 transition-opacity duration-500 ${isOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
-        onClick={onClose}
-      />
+      {inline ? (
+        <div className="w-full h-full flex flex-col bg-white dark:bg-[#0d1117] overflow-hidden relative">
+          <AnimatePresence mode="wait" initial={false}>
+            <motion.div
+              key={view}
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -6 }}
+              transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
+              className="flex-1 h-full overflow-hidden"
+            >
+              {view === 'menu' && renderMenu()}
+              {view === 'personal' && renderPersonal()}
+              {view === 'billing' && renderBilling()}
+              {view === 'payment-history' && renderPaymentHistory()}
+              {view === 'preferences' && renderPreferences()}
+              {view === 'email-change' && renderEmailChange()}
+              {view === 'about' && renderAbout()}
+              {view === 'terms' && renderTerms()}
+              {view === 'privacy' && renderPrivacy()}
+            </motion.div>
+          </AnimatePresence>
+        </div>
+      ) : (
+        <AnimatePresence>
+          {isOpen && (
+            <>
+              {/* Backdrop */}
+              <motion.div 
+                key="profile-backdrop"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.25, ease: 'easeOut' }}
+                className="fixed inset-0 bg-black/50 z-40 cursor-pointer"
+                onClick={onClose}
+              />
 
-      {/* Panel */}
-      <div className={`fixed top-0 left-0 h-full w-full sm:max-w-md bg-white dark:bg-gray-900 z-50 shadow-2xl transform transition-transform duration-500 ease-[cubic-bezier(0.16,1,0.3,1)] ${isOpen ? 'translate-x-0' : '-translate-x-full pointer-events-none invisible'}`}>
-        {view === 'menu' && renderMenu()}
-        {view === 'personal' && renderPersonal()}
-        {view === 'billing' && renderBilling()}
-        {view === 'payment-history' && renderPaymentHistory()}
-        {view === 'preferences' && renderPreferences()}
-        {view === 'email-change' && renderEmailChange()}
-        {view === 'about' && renderAbout()}
-        {view === 'terms' && renderTerms()}
-        {view === 'privacy' && renderPrivacy()}
-      </div>
+              {/* Panel */}
+              <motion.div 
+                key="profile-panel"
+                initial={{ x: '-100%' }}
+                animate={{ x: 0 }}
+                exit={{ x: '-100%' }}
+                transition={{ duration: 0.28, ease: [0.25, 1, 0.5, 1] }}
+                className="fixed top-0 left-0 h-full w-full sm:max-w-md bg-white dark:bg-[#0d1117] z-50 shadow-xl flex flex-col overflow-hidden will-change-transform transform-gpu"
+              >
+                <AnimatePresence mode="wait" initial={false}>
+                  <motion.div
+                    key={view}
+                    initial={{ opacity: 0, y: 8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -6 }}
+                    transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
+                    className="flex-1 h-full overflow-hidden"
+                  >
+                    {view === 'menu' && renderMenu()}
+                    {view === 'personal' && renderPersonal()}
+                    {view === 'billing' && renderBilling()}
+                    {view === 'payment-history' && renderPaymentHistory()}
+                    {view === 'preferences' && renderPreferences()}
+                    {view === 'email-change' && renderEmailChange()}
+                    {view === 'about' && renderAbout()}
+                    {view === 'terms' && renderTerms()}
+                    {view === 'privacy' && renderPrivacy()}
+                  </motion.div>
+                </AnimatePresence>
+              </motion.div>
+            </>
+          )}
+        </AnimatePresence>
+      )}
 
       {/* Log Out of All Devices Confirmation Modal */}
       {showLogoutAllModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-md">
-          <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-3xl p-6 w-full max-w-sm shadow-2xl space-y-4 animate-in fade-in zoom-in duration-200">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60">
+          <div className="bg-white dark:bg-[#0d1117] border border-gray-200 dark:border-white/[0.08] rounded-3xl p-6 w-full max-w-sm shadow-2xl space-y-4 animate-in fade-in zoom-in duration-200">
             <div className="w-12 h-12 rounded-2xl bg-red-100 text-red-600 flex items-center justify-center mx-auto font-bold">
               <LogOut size={24} />
             </div>
@@ -3371,7 +3117,7 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
             <div className="flex gap-2 pt-2">
               <button
                 onClick={() => setShowLogoutAllModal(false)}
-                className="flex-1 py-3 bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 font-bold rounded-xl text-xs hover:bg-gray-200 transition-colors cursor-pointer"
+                className="flex-1 py-3 bg-gray-100 dark:bg-[#1f242c] text-gray-700 dark:text-[#c9d1d9] font-bold rounded-xl text-xs hover:bg-gray-200 dark:hover:bg-[#30363d] transition-colors cursor-pointer"
               >
                 Cancel
               </button>
@@ -3398,35 +3144,53 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
       {showUpdateModal && updateResult && (
         <div 
           onClick={(e) => { if (e.target === e.currentTarget) setShowUpdateModal(false); }}
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-md"
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs"
         >
-          <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-3xl p-6 w-full max-w-sm shadow-2xl space-y-4 animate-in fade-in zoom-in duration-200">
+          <div className="bg-white dark:bg-[#0d1117] border border-stone-200 dark:border-white/[0.08] rounded-3xl p-6 w-full max-w-sm shadow-2xl space-y-4 animate-in fade-in zoom-in duration-200">
             <div className="w-12 h-12 rounded-2xl bg-emerald-100 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 flex items-center justify-center mx-auto font-bold shadow-xs">
               <CheckCircle2 size={24} />
             </div>
             <div className="text-center space-y-1">
-              <h3 className="font-bold text-gray-900 dark:text-white text-base">PaperX is Up to Date</h3>
-              <p className="text-xs text-emerald-600 dark:text-emerald-400 font-bold">
-                Version {updateResult.version}
-              </p>
-              <p className="text-xs text-gray-500 dark:text-gray-400 pt-1 leading-relaxed">
-                You are running the latest version of PaperX. All document tools and security updates are active.
+              <h3 className="font-bold text-stone-900 dark:text-white text-base font-heading">PaperX is Up to Date</h3>
+              <div className="inline-flex items-center gap-2 px-2.5 py-0.5 rounded-full bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800/60">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                <p className="text-xs text-emerald-600 dark:text-emerald-400 font-bold">
+                  Version {updateResult.version}
+                </p>
+              </div>
+              {updateResult.buildDate && (
+                <p className="text-[11px] text-stone-400 dark:text-stone-500 font-medium">
+                  Build: {updateResult.buildDate}
+                </p>
+              )}
+              <p className="text-xs text-stone-500 dark:text-stone-400 pt-1 leading-relaxed">
+                {updateResult.message || 'You are running the latest version of PaperX. All document tools and security updates are active.'}
               </p>
             </div>
-            <div className="flex gap-2 pt-2">
+
+            {updateResult.releaseNotes && (
+              <div className="p-3 bg-stone-50 dark:bg-[#151b23]/80 border border-stone-200/80 dark:border-white/[0.08] rounded-2xl text-[11px] text-stone-600 dark:text-stone-300 leading-relaxed max-h-28 overflow-y-auto">
+                <span className="font-bold text-stone-900 dark:text-white block mb-0.5">What's New:</span>
+                {updateResult.releaseNotes}
+              </div>
+            )}
+
+            <div className="flex flex-col sm:flex-row gap-2 pt-1">
               <button
                 type="button"
-                onClick={handleCheckUpdate}
-                disabled={isCheckingUpdate}
-                className="flex-1 py-3 bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 font-bold rounded-xl text-xs hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors cursor-pointer flex items-center justify-center gap-1.5 disabled:opacity-50"
+                onClick={() => {
+                  setShowUpdateModal(false);
+                  handleDetectAndRestoreFullApp();
+                }}
+                className="py-3 px-4 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl text-xs transition cursor-pointer flex items-center justify-center gap-1.5 shadow-xs"
               >
-                <RefreshCw size={13} className={isCheckingUpdate ? 'animate-spin' : ''} />
-                {isCheckingUpdate ? 'Checking...' : 'Check Again'}
+                <Layout size={14} />
+                <span>Restore Full App UI & Layout</span>
               </button>
               <button
                 type="button"
                 onClick={() => setShowUpdateModal(false)}
-                className="flex-1 py-3 bg-black text-white dark:bg-white dark:text-black font-bold rounded-xl text-xs hover:opacity-90 transition-opacity cursor-pointer shadow-xs"
+                className="py-3 px-4 bg-stone-900 hover:bg-black text-white dark:bg-white dark:hover:bg-stone-100 dark:text-black font-bold rounded-xl text-xs transition cursor-pointer shadow-xs"
               >
                 Done
               </button>
@@ -3437,8 +3201,8 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
 
       {/* 2FA Setup Modal with Authenticator (TOTP) */}
       {show2FAModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-md">
-          <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-3xl p-6 w-full max-w-md shadow-2xl relative animate-in fade-in zoom-in duration-200">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60">
+          <div className="bg-white dark:bg-[#0d1117] border border-gray-200 dark:border-white/[0.08] rounded-3xl p-6 w-full max-w-md shadow-2xl relative animate-in fade-in zoom-in duration-200">
             <div className="flex items-start justify-between gap-3 mb-4">
               <div className="flex items-center gap-3 min-w-0 flex-1">
                 <div className="p-2.5 rounded-xl bg-indigo-50 dark:bg-indigo-950/50 text-indigo-600 dark:text-indigo-400 shrink-0">
@@ -3463,8 +3227,8 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
             {/* Step 1: Scan Authenticator QR */}
             {faStep === 1 && (
               <div className="space-y-4">
-                <div className="p-4 bg-gray-50 dark:bg-gray-800/60 rounded-2xl border border-gray-100 dark:border-gray-700/60 text-center">
-                  <div className="p-3 bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-700 inline-block mb-3 shadow-sm">
+                <div className="p-4 bg-gray-50 dark:bg-[#151b23]/80 rounded-2xl border border-gray-100 dark:border-white/[0.08] text-center">
+                  <div className="p-3 bg-white dark:bg-[#0d1117] rounded-2xl border border-gray-200 dark:border-[#30363d] inline-block mb-3 shadow-sm">
                     <img 
                       src={getAuthenticatorQRCodeURL(faSecret, user?.email || 'user@paperx.app')} 
                       alt="Authenticator QR Code" 
@@ -3474,7 +3238,7 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
                   <p className="text-xs font-bold text-gray-800 dark:text-gray-200 mb-1">Scan QR Code with Authenticator App</p>
                   <p className="text-[11px] text-gray-500 dark:text-gray-400 mb-2">Google Authenticator, Authy, 1Password, or Apple Passwords</p>
                   <div className="flex items-center justify-center gap-2">
-                    <span className="text-[11px] font-mono select-all bg-white dark:bg-gray-900 py-1.5 px-3 rounded-lg border border-gray-200 dark:border-gray-800 text-gray-900 dark:text-white font-bold">
+                    <span className="text-[11px] font-mono select-all bg-white dark:bg-[#1f242c] py-1.5 px-3 rounded-lg border border-gray-200 dark:border-[#30363d] text-gray-900 dark:text-white font-bold">
                       {faSecret.match(/.{1,4}/g)?.join(' ') || faSecret}
                     </span>
                   </div>
@@ -3517,21 +3281,21 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
                       } else if (faVerifyState === 'invalid') {
                         boxBorderAndBg = 'bg-red-50 dark:bg-red-950/50 border-red-500 dark:border-red-500 text-red-600 dark:text-red-400 ring-2 ring-red-500/30 animate-shake';
                       } else if (faVerifyState === 'checking') {
-                        boxBorderAndBg = 'bg-amber-50/50 dark:bg-amber-950/30 border-amber-500 dark:border-amber-400 text-amber-600 dark:text-amber-400 ring-2 ring-amber-500/20 animate-pulse';
+                        boxBorderAndBg = 'bg-amber-50/50 dark:bg-amber-950/30 border-amber-500 dark:border-amber-400 text-amber-600 dark:text-amber-400 ring-2 ring-amber-500/20 ';
                       } else if (isFilled) {
-                        boxBorderAndBg = 'bg-white dark:bg-gray-800 border-gray-900 dark:border-white text-gray-900 dark:text-white shadow-xs';
+                        boxBorderAndBg = 'bg-white dark:bg-[#1f242c] border-gray-900 dark:border-white text-gray-900 dark:text-white shadow-xs';
                       } else if (isCurrent) {
-                        boxBorderAndBg = 'bg-white dark:bg-gray-900 border-gray-900 dark:border-white ring-2 ring-gray-900/10 dark:ring-white/10';
+                        boxBorderAndBg = 'bg-white dark:bg-[#0d1117] border-gray-900 dark:border-white ring-2 ring-gray-900/10 dark:ring-white/10';
                       } else {
-                        boxBorderAndBg = 'bg-gray-50 dark:bg-gray-800/60 border-gray-200 dark:border-gray-700 text-gray-400';
+                        boxBorderAndBg = 'bg-gray-50 dark:bg-[#151b23]/80 border-gray-200 dark:border-white/[0.08] text-gray-400';
                       }
 
                       return (
                         <div 
                           key={idx}
-                          className={`w-11 h-14 sm:w-12 sm:h-14 rounded-2xl border flex items-center justify-center text-2xl font-mono font-bold transition-all duration-200 ${boxBorderAndBg}`}
+                          className={`w-11 h-14 sm:w-12 sm:h-14 rounded-2xl border flex items-center justify-center text-2xl font-mono font-bold transition-all duration-200 leading-none ${boxBorderAndBg}`}
                         >
-                          {char || (isCurrent && faVerifyState === 'idle' ? <span className="w-0.5 h-6 bg-gray-900 dark:bg-white animate-pulse" /> : '')}
+                          {char || (isCurrent && faVerifyState === 'idle' ? <span className="inline-block w-0.5 h-6 bg-gray-900 dark:bg-white animate-pulse self-center rounded-full" /> : '')}
                         </div>
                       );
                     })}
@@ -3563,7 +3327,7 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
 
                   {/* Status & Feedback */}
                   {faVerifyState === 'checking' && (
-                    <div className="flex items-center justify-center gap-2 mt-3 text-xs text-amber-600 dark:text-amber-400 font-bold animate-pulse">
+                    <div className="flex items-center justify-center gap-2 mt-3 text-xs text-amber-600 dark:text-amber-400 font-bold">
                       <RefreshCw size={14} className="animate-spin" />
                       <span>Verifying authenticator code...</span>
                     </div>
@@ -3618,9 +3382,9 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
                 <div>
                   <p className="text-xs font-bold text-gray-800 dark:text-gray-200 mb-1">Save Backup Recovery Codes</p>
                   <p className="text-[11px] text-gray-500 dark:text-gray-400 mb-2">Store these codes safely. Each can be used once if you lose access to your authenticator app.</p>
-                  <div className="bg-gray-50 dark:bg-gray-800/80 p-3 rounded-xl border border-gray-200 dark:border-gray-700 grid grid-cols-2 gap-2 font-mono text-xs text-gray-900 dark:text-white font-bold text-center">
+                  <div className="bg-gray-50 dark:bg-[#151b23]/80 p-3 rounded-xl border border-gray-200 dark:border-white/[0.08] grid grid-cols-2 gap-2 font-mono text-xs text-gray-900 dark:text-white font-bold text-center">
                     {faBackupCodes.map((code, idx) => (
-                      <div key={idx} className="bg-white dark:bg-gray-900 py-1.5 px-2 rounded border border-gray-200 dark:border-gray-800 shadow-xs select-all">
+                      <div key={idx} className="bg-white dark:bg-[#1f242c] py-1.5 px-2 rounded border border-gray-200 dark:border-[#30363d] shadow-xs select-all">
                         {code}
                       </div>
                     ))}
@@ -3643,8 +3407,8 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
 
       {/* Ticket Raising Modal for Membership Activation with Real Ready-Made Reasons */}
       {selectedOrderForTicket && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-md">
-          <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-3xl p-6 w-full max-w-lg shadow-2xl relative animate-in fade-in zoom-in duration-200 max-h-[92vh] overflow-y-auto">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70">
+          <div className="bg-white dark:bg-[#0d1117] border border-gray-200 dark:border-white/[0.08] rounded-3xl p-6 w-full max-w-lg shadow-2xl relative animate-in fade-in zoom-in duration-200 max-h-[92vh] overflow-y-auto">
             {(() => {
               const isSelectedSuccessful = selectedOrderForTicket.status === 'VERIFIED' || selectedOrderForTicket.status === 'COMPLETED' || selectedOrderForTicket.status === 'SUCCESS';
               const isSelectedRejected = selectedOrderForTicket.status === 'REJECTED' || selectedOrderForTicket.status === 'FAILED' || selectedOrderForTicket.status === 'EXPIRED';
@@ -3720,7 +3484,7 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
                         </p>
                       </div>
 
-                      <div className="p-3.5 bg-gray-50 dark:bg-gray-800/60 rounded-xl border border-gray-200 dark:border-gray-700 text-xs text-gray-600 dark:text-gray-300 space-y-1">
+                      <div className="p-3.5 bg-gray-50 dark:bg-[#151b23]/80 rounded-xl border border-gray-200 dark:border-white/[0.08] text-xs text-gray-600 dark:text-gray-300 space-y-1">
                         <p className="font-bold text-gray-900 dark:text-white">What happens next?</p>
                         <p className="text-[11px] text-gray-500 dark:text-gray-400">
                           {isSelectedSuccessful 
@@ -3742,7 +3506,7 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
                   ) : (
                     <div className="space-y-4">
                       {/* Order Summary Pill */}
-                      <div className="p-3.5 bg-gray-50 dark:bg-gray-800/60 rounded-2xl border border-gray-200 dark:border-gray-700/80 space-y-2 text-xs">
+                      <div className="p-3.5 bg-gray-50 dark:bg-[#151b23]/80 rounded-2xl border border-gray-200 dark:border-white/[0.08] space-y-2 text-xs">
                         <div className="flex justify-between items-center">
                           <span className="text-gray-500 font-bold">Order ID:</span>
                           <span className="font-mono font-bold text-gray-900 dark:text-white">{selectedOrderForTicket.orderId || selectedOrderForTicket.id}</span>
@@ -3784,7 +3548,7 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
                                 className={`p-3 rounded-2xl border text-left cursor-pointer transition-all duration-200 ${
                                   isSelected
                                     ? 'bg-black text-white dark:bg-white dark:text-black border-black dark:border-white shadow-md'
-                                    : 'bg-gray-50 dark:bg-gray-800/50 hover:bg-gray-100 dark:hover:bg-gray-800 border-gray-200 dark:border-gray-700 text-gray-900 dark:text-white'
+                                    : 'bg-gray-50 dark:bg-[#151b23]/80 hover:bg-gray-100 dark:hover:bg-[#1f242c] border-gray-200 dark:border-white/[0.08] text-gray-900 dark:text-white'
                                 }`}
                               >
                                 <div className="flex items-start gap-2.5">
@@ -3801,7 +3565,7 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
                                     </h5>
                                     <p className={`text-[11px] mt-0.5 leading-normal ${
                                       isSelected 
-                                        ? 'text-gray-300 dark:text-gray-700' 
+                                        ? 'text-gray-300 dark:text-gray-500' 
                                         : 'text-gray-500 dark:text-gray-400'
                                     }`}>
                                       {item.desc}
@@ -3824,7 +3588,7 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
                           value={ticketNotes}
                           onChange={(e) => setTicketNotes(e.target.value)}
                           placeholder="Enter payer bank account name, correct 12-digit UTR if mistyped, or extra details for PaperX Team..."
-                          className="w-full px-3 py-2 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl text-xs text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-black dark:focus:ring-white resize-none"
+                          className="w-full px-3 py-2 bg-gray-50 dark:bg-[#151b23]/80 border border-gray-200 dark:border-white/[0.08] rounded-xl text-xs text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-black dark:focus:ring-white resize-none"
                         />
                       </div>
 
@@ -3881,11 +3645,14 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
 
       {/* Export Data Payload Preview Modal */}
       {showExportPreview && exportJsonData && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-md">
-          <div className="bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-800 rounded-3xl p-5 sm:p-6 w-full max-w-xl shadow-2xl space-y-4 animate-in fade-in zoom-in duration-200 flex flex-col max-h-[90vh]">
+        <div 
+          onClick={(e) => { if (e.target === e.currentTarget) setShowExportPreview(false); }}
+          className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/70"
+        >
+          <div className="bg-white dark:bg-[#0d1117] border border-stone-200 dark:border-white/[0.08] rounded-3xl p-5 sm:p-6 w-full max-w-xl shadow-2xl space-y-4 animate-in fade-in zoom-in duration-200 flex flex-col max-h-[90vh]">
             <div className="flex items-center justify-between pb-2 border-b border-stone-200 dark:border-stone-800">
               <div className="flex items-center gap-2.5">
-                <div className="w-8 h-8 rounded-xl bg-stone-100 dark:bg-stone-800 text-stone-900 dark:text-white flex items-center justify-center font-bold">
+                <div className="w-8 h-8 rounded-xl bg-stone-100 dark:bg-[#1f242c] text-stone-900 dark:text-white flex items-center justify-center font-bold">
                   <Code size={16} />
                 </div>
                 <div>
@@ -3896,7 +3663,7 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
               <button
                 type="button"
                 onClick={() => setShowExportPreview(false)}
-                className="w-8 h-8 rounded-full hover:bg-stone-100 dark:hover:bg-stone-800 flex items-center justify-center text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 transition cursor-pointer"
+                className="w-8 h-8 rounded-full hover:bg-stone-100 dark:hover:bg-[#1f242c] flex items-center justify-center text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 transition cursor-pointer"
               >
                 <X size={16} />
               </button>
@@ -3932,8 +3699,8 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
               <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={handleGenerateFullAccountData}
-                  className="py-2.5 px-4 bg-stone-900 hover:bg-black text-white dark:bg-white dark:hover:bg-stone-100 dark:text-black rounded-xl text-xs font-bold transition flex items-center gap-2 cursor-pointer shadow-xs"
+                  onClick={() => { console.log("Modal Download button clicked"); handleGenerateFullAccountData(true); }}
+                  className="relative z-50 py-2.5 px-4 bg-stone-900 hover:bg-black text-white dark:bg-white dark:hover:bg-stone-100 dark:text-black rounded-xl text-xs font-bold transition flex items-center gap-2 cursor-pointer shadow-xs"
                 >
                   <DownloadCloud size={14} />
                   <span>Download .json</span>
@@ -3951,84 +3718,154 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({ isOpen, onClose, use
         </div>
       )}
 
-      {/* GDPR Data Erasure / Account Deletion Modal */}
-      {showDeleteAccountModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-md">
-          <div className="bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-800 rounded-3xl p-6 w-full max-w-md shadow-2xl space-y-4 animate-in fade-in zoom-in duration-200">
-            <div className="w-12 h-12 rounded-2xl bg-red-100 text-red-600 dark:bg-red-950/60 dark:text-red-400 flex items-center justify-center mx-auto font-bold shadow-xs">
-              <AlertTriangle size={24} />
-            </div>
+      {/* GDPR Data Erasure / Account Deletion Modal (10-Day Safe Grace Period) */}
+      {showDeleteAccountModal && (() => {
+        const targetDate = new Date(Date.now() + 10 * 24 * 60 * 60 * 1000);
+        const dynamicDateStr = targetDate.toLocaleDateString(undefined, {
+          weekday: 'long',
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric'
+        });
+        const dynamicTimeStr = targetDate.toLocaleTimeString(undefined, {
+          hour: '2-digit',
+          minute: '2-digit'
+        });
+        const fullDisplayDate = `${dynamicDateStr} at ${dynamicTimeStr}`;
 
-            <div className="text-center space-y-1.5">
-              <h3 className="font-heading font-black text-stone-900 dark:text-white text-base">GDPR Right to Erasure</h3>
-              <p className="text-xs text-stone-500 dark:text-stone-400 leading-relaxed">
-                Submit an irreversible request to purge your account credentials, 5-year document archive, and payment records from PaperX databases.
-              </p>
-            </div>
+        return (
+          <div 
+            onClick={(e) => { if (e.target === e.currentTarget) setShowDeleteAccountModal(false); }}
+            className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/70 overflow-y-auto"
+          >
+            <div className="relative bg-white dark:bg-[#0d1117] border border-stone-200 dark:border-white/[0.08] rounded-3xl p-6 w-full max-w-lg shadow-2xl space-y-4 animate-in fade-in zoom-in duration-200 my-8">
+              <button
+                type="button"
+                onClick={() => setShowDeleteAccountModal(false)}
+                className="absolute top-5 right-5 w-8 h-8 rounded-full hover:bg-stone-100 dark:hover:bg-[#1f242c] flex items-center justify-center text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 transition cursor-pointer"
+              >
+                <X size={16} />
+              </button>
 
-            {deletionSuccess ? (
-              <div className="p-4 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 rounded-2xl space-y-2 text-center">
-                <CheckCircle2 size={24} className="text-emerald-600 dark:text-emerald-400 mx-auto" />
-                <p className="text-xs font-bold text-emerald-900 dark:text-emerald-200">Erasure Request Logged</p>
-                <p className="text-[11px] text-emerald-700 dark:text-emerald-300">
-                  Your ticket has been transmitted to our Data Privacy compliance officers. Your account will be purged in compliance with GDPR Art. 17.
+              <div className="w-12 h-12 rounded-2xl bg-amber-100 text-amber-600 dark:bg-amber-950/60 dark:text-amber-400 flex items-center justify-center mx-auto font-bold shadow-xs">
+                <Clock size={24} />
+              </div>
+
+              <div className="text-center space-y-1">
+                <h3 className="font-heading font-black text-stone-900 dark:text-white text-base">Request Account Data Erasure</h3>
+                <p className="text-xs text-stone-500 dark:text-stone-400">
+                  Protected with an automatic 10-day safety grace period
                 </p>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowDeleteAccountModal(false);
-                    setDeletionSuccess(false);
-                  }}
-                  className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs transition cursor-pointer mt-2"
-                >
-                  Done
-                </button>
               </div>
-            ) : (
-              <div className="space-y-4">
-                <div className="p-3.5 bg-stone-50 dark:bg-stone-800/80 rounded-2xl border border-stone-200 dark:border-stone-700 text-xs text-stone-600 dark:text-stone-300 space-y-1.5">
-                  <p className="font-bold text-stone-900 dark:text-white flex items-center gap-1.5">
-                    <Shield size={13} className="text-amber-500" /> What will be deleted:
-                  </p>
-                  <ul className="text-[11px] space-y-1 pl-4 list-disc text-stone-500 dark:text-stone-400">
-                    <li>All saved PDFs and scanned documents in your archive</li>
-                    <li>Active login sessions across all devices</li>
-                    <li>User profile, biometric/2FA secrets, and billing records</li>
-                  </ul>
-                </div>
 
-                <div className="flex gap-2">
+              {deletionSuccess ? (
+                <div className="p-4 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 rounded-2xl space-y-3 text-center">
+                  <div className="w-10 h-10 rounded-full bg-emerald-100 dark:bg-emerald-900/60 text-emerald-600 dark:text-emerald-400 flex items-center justify-center mx-auto">
+                    <CheckCircle2 size={22} />
+                  </div>
+                  <div className="space-y-1">
+                    <p className="text-sm font-bold text-emerald-950 dark:text-emerald-100">Data Erasure Scheduled</p>
+                    <p className="text-xs font-semibold text-emerald-700 dark:text-emerald-300">
+                      Scheduled for permanent deletion on:
+                    </p>
+                    <div className="py-2 px-3 bg-white/80 dark:bg-[#0d1117]/80 rounded-xl border border-emerald-300 dark:border-emerald-700/50 font-bold text-stone-900 dark:text-white text-xs">
+                      {scheduledErasureDateString || fullDisplayDate}
+                    </div>
+                  </div>
+                  <div className="p-2.5 bg-emerald-100/50 dark:bg-emerald-900/30 rounded-xl text-left text-[11px] text-emerald-900 dark:text-emerald-200 space-y-1">
+                    <p className="font-bold flex items-center gap-1.5">
+                      <Shield size={12} className="text-emerald-600 dark:text-emerald-400" />
+                      10-Day Safe Cancellation:
+                    </p>
+                    <p className="leading-relaxed">
+                      Simply log back into your PaperX account before this date to cancel this erasure request. Your account and all stored documents will be immediately restored with nothing lost.
+                    </p>
+                  </div>
+                  <p className="text-[11px] text-stone-500 dark:text-stone-400">
+                    Signing you out and redirecting to the login dashboard...
+                  </p>
                   <button
                     type="button"
-                    onClick={() => setShowDeleteAccountModal(false)}
-                    className="flex-1 py-3 bg-stone-100 hover:bg-stone-200 dark:bg-stone-800 dark:hover:bg-stone-700 text-stone-700 dark:text-stone-300 font-bold rounded-xl text-xs transition cursor-pointer"
+                    onClick={handleProceedToLogin}
+                    className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs transition cursor-pointer flex items-center justify-center gap-2 shadow-xs"
                   >
-                    Cancel
-                  </button>
-                  <button
-                    type="button"
-                    disabled={isSubmittingDeletion}
-                    onClick={handleRequestAccountDeletion}
-                    className="flex-1 py-3 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl text-xs transition shadow-sm cursor-pointer disabled:opacity-50 flex items-center justify-center gap-2"
-                  >
-                    {isSubmittingDeletion ? (
-                      <>
-                        <RefreshCw size={13} className="animate-spin" />
-                        <span>Submitting...</span>
-                      </>
-                    ) : (
-                      <>
-                        <Trash2 size={13} />
-                        <span>Confirm Erasure</span>
-                      </>
-                    )}
+                    <span>Proceed to Login & Signup Page</span>
+                    <ArrowRight size={13} />
                   </button>
                 </div>
-              </div>
-            )}
+              ) : (
+                <div className="space-y-4">
+                  {/* Real Date Detection Banner */}
+                  <div className="p-3.5 bg-stone-50 dark:bg-[#151b23]/90 rounded-2xl border border-stone-200 dark:border-white/[0.08] space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[11px] font-bold uppercase tracking-wider text-stone-500 dark:text-stone-400 flex items-center gap-1.5">
+                        <Calendar size={13} className="text-amber-500" />
+                        Exact Deletion Date (10 Days)
+                      </span>
+                      <span className="px-2 py-0.5 bg-amber-100 text-amber-800 dark:bg-amber-950/80 dark:text-amber-300 rounded-full text-[10px] font-bold">
+                        10 Days Later
+                      </span>
+                    </div>
+                    <p className="text-sm font-black text-stone-900 dark:text-white">
+                      {fullDisplayDate}
+                    </p>
+                    <p className="text-[11px] text-stone-500 dark:text-stone-400 leading-relaxed">
+                      Your erasure request takes exactly 10 days before documents and credentials are permanently purged.
+                    </p>
+                  </div>
+
+                  {/* Grace Period Rules Card */}
+                  <div className="p-3.5 bg-amber-50/70 dark:bg-amber-950/20 rounded-2xl border border-amber-200/80 dark:border-amber-900/40 text-xs space-y-2">
+                    <p className="font-bold text-amber-950 dark:text-amber-200 flex items-center gap-1.5">
+                      <Shield size={13} className="text-amber-600 dark:text-amber-400" />
+                      How the 10-day safety grace period works:
+                    </p>
+                    <ul className="text-[11px] space-y-1.5 pl-3 list-disc text-amber-900/80 dark:text-amber-300/80 leading-relaxed">
+                      <li>
+                        <strong>Login cancels deletion:</strong> If you enter and sign into your account at any time before {dynamicDateStr}, the erasure is <strong>instantly cancelled</strong> and you can use your account again with <strong>nothing lost</strong>.
+                      </li>
+                      <li>
+                        <strong>Automatic permanent delete:</strong> If you do not sign in within exactly 10 days, your account, PDF archives, and settings will be permanently and irreversibly deleted.
+                      </li>
+                      <li>
+                        <strong>Immediate sign out:</strong> After confirming, your session will end and you will be moved directly to the login & signup page dashboard.
+                      </li>
+                    </ul>
+                  </div>
+
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setShowDeleteAccountModal(false)}
+                      className="flex-1 py-3 bg-stone-100 hover:bg-stone-200 dark:bg-stone-800 dark:hover:bg-stone-700 text-stone-700 dark:text-stone-300 font-bold rounded-xl text-xs transition cursor-pointer"
+                    >
+                      Keep Account Safe
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isSubmittingDeletion}
+                      onClick={handleRequestAccountDeletion}
+                      className="flex-1 py-3 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl text-xs transition shadow-sm cursor-pointer disabled:opacity-50 flex items-center justify-center gap-2"
+                    >
+                      {isSubmittingDeletion ? (
+                        <>
+                          <RefreshCw size={13} className="animate-spin" />
+                          <span>Scheduling...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Trash2 size={13} />
+                          <span>Confirm Erasure (10 Days)</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
     </>
   );
 };

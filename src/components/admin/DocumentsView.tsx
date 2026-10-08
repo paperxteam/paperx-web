@@ -1,29 +1,30 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   FileText, HardDrive, FileCheck, Search, Filter, Trash2, Download, 
   RefreshCw, CheckCircle2, XCircle, AlertTriangle, Cpu, Layers, BarChart3,
   Share2, Eye, ExternalLink
 } from 'lucide-react';
 import { shareOrOpenFullFile } from '../../utils/fileShare';
+import { subscribeToUserDocuments, deleteDocumentFromFirestore } from '../../../services/firebase';
 
 interface DocumentsViewProps {
+  uid: string;
   systemStats: any;
   showFeedback: (type: 'success' | 'error', text: string) => void;
 }
 
-const INITIAL_DOCS = [
-  { id: 'doc_101', name: 'Invoice_Aug_2026.pdf', user: 'paperx.team@gmail.com', type: 'Text → PDF', sizeKB: 450, status: 'Completed', downloads: 14, timestamp: Date.now() - 3600000 },
-  { id: 'doc_102', name: 'Scanned_Receipt_441.pdf', user: 'user.demo@example.com', type: 'Image → PDF', sizeKB: 1280, status: 'Completed', downloads: 3, timestamp: Date.now() - 7200000 },
-  { id: 'doc_103', name: 'Project_Proposal_Draft.pdf', user: 'enterprise.client@corp.com', type: 'PDF Merge', sizeKB: 3400, status: 'Completed', downloads: 28, timestamp: Date.now() - 14400000 },
-  { id: 'doc_104', name: 'Raw_Notes_OCR.pdf', user: 'student.free@univ.edu', type: 'OCR Scan', sizeKB: 890, status: 'Failed', downloads: 0, timestamp: Date.now() - 28800000 },
-  { id: 'doc_105', name: 'Identity_Document.pdf', user: 'client.mumbai@gmail.com', type: 'PDF Compress', sizeKB: 210, status: 'Completed', downloads: 5, timestamp: Date.now() - 43200000 },
-];
-
-export const DocumentsView: React.FC<DocumentsViewProps> = ({ systemStats, showFeedback }) => {
-  const [docsList, setDocsList] = useState(INITIAL_DOCS);
+export const DocumentsView: React.FC<DocumentsViewProps> = ({ uid, systemStats, showFeedback }) => {
+  const [docsList, setDocsList] = useState<any[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [typeFilter, setTypeFilter] = useState('ALL');
   const [statusFilter, setStatusFilter] = useState('ALL');
+
+  useEffect(() => {
+    if (!uid) return;
+    return subscribeToUserDocuments(uid, (docs) => {
+      setDocsList(docs);
+    });
+  }, [uid]);
 
   const filteredDocs = docsList.filter(d => {
     const matchesSearch = d.name.toLowerCase().includes(searchTerm.toLowerCase()) || d.user.toLowerCase().includes(searchTerm.toLowerCase());
@@ -65,7 +66,7 @@ startxref
     return `data:application/pdf;base64,${btoa(unescape(encodeURIComponent(pdfContent)))}`;
   };
 
-  const handleShareDoc = async (docItem: typeof INITIAL_DOCS[0]) => {
+  const handleShareDoc = async (docItem: any) => {
     await shareOrOpenFullFile({
       id: docItem.id,
       name: docItem.name,
@@ -100,10 +101,14 @@ startxref
     }
   };
 
-  const handleDeleteDoc = (docId: string, docName: string) => {
+  const handleDeleteDoc = async (docId: string, docName: string) => {
     if (window.confirm(`Delete document "${docName}" permanently from Cloud Storage?`)) {
-      setDocsList(prev => prev.filter(d => d.id !== docId));
-      showFeedback('success', `Document ${docName} deleted and storage freed.`);
+      try {
+        await deleteDocumentFromFirestore(uid, docId);
+        showFeedback('success', `Document "${docName}" deleted and storage freed.`);
+      } catch (e) {
+        showFeedback('error', `Failed to delete document "${docName}".`);
+      }
     }
   };
 

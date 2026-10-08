@@ -9,11 +9,11 @@ interface ResubscriptionModalProps {
   isOpen: boolean;
   onClose: () => void;
   user: User | null;
-  onSelectPlanAndRenew: (plan: 'Plus Plan' | 'Max Plan', amount: string, cycle: BillingCycle) => void;
+  onSelectPlanAndRenew: (plan: 'Pro Plan' | 'Max Plan', amount: string, cycle: BillingCycle) => void;
 }
 
-const PRICING_DATA: Record<'Plus Plan' | 'Max Plan', Record<BillingCycle, { amount: number; label: string; period: string; savings?: string }>> = {
-  'Plus Plan': {
+const PRICING_DATA: Record<'Pro Plan' | 'Max Plan', Record<BillingCycle, { amount: number; label: string; period: string; savings?: string }>> = {
+  'Pro Plan': {
     'month': { amount: 50, label: '1 Month', period: '30 days' },
     'half-year': { amount: 250, label: '6 Months', period: '180 days', savings: 'Save ₹50' },
     'year': { amount: 500, label: '1 Year', period: '365 days', savings: 'Save ₹100' },
@@ -31,14 +31,14 @@ export const ResubscriptionModal: React.FC<ResubscriptionModalProps> = ({
   user,
   onSelectPlanAndRenew,
 }) => {
-  const initialPlan = (user?.previousPlan === 'Max Plan' || user?.plan === 'Max Plan') ? 'Max Plan' : 'Plus Plan';
-  const [selectedPlan, setSelectedPlan] = useState<'Plus Plan' | 'Max Plan'>(initialPlan);
+  const initialPlan = (user?.previousPlan === 'Max Plan' || user?.plan === 'Max Plan') ? 'Max Plan' : 'Pro Plan';
+  const [selectedPlan, setSelectedPlan] = useState<'Pro Plan' | 'Max Plan'>(initialPlan);
   const [selectedCycle, setSelectedCycle] = useState<BillingCycle>((user?.billingCycle as BillingCycle) || 'month');
 
   if (!isOpen) return null;
 
   const currentPricing = PRICING_DATA[selectedPlan][selectedCycle];
-  const previousPlanName = user?.previousPlan || user?.plan || 'Plus Plan';
+  const previousPlanName = user?.previousPlan || user?.plan || 'Pro Plan';
 
   const handleRenewClick = () => {
     onSelectPlanAndRenew(selectedPlan, currentPricing.amount.toString(), selectedCycle);
@@ -49,7 +49,7 @@ export const ResubscriptionModal: React.FC<ResubscriptionModalProps> = ({
     <AnimatePresence>
       <div 
         id="resubscription-modal-backdrop" 
-        className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 md:p-6 overflow-y-auto bg-stone-950/80 backdrop-blur-md"
+        className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 md:p-6 overflow-y-auto bg-stone-950/80 "
       >
         <motion.div
           id="resubscription-modal-card"
@@ -60,8 +60,8 @@ export const ResubscriptionModal: React.FC<ResubscriptionModalProps> = ({
           className="relative w-full max-w-xl bg-stone-900 border border-stone-800 rounded-3xl shadow-2xl overflow-hidden text-stone-100 p-6 sm:p-8"
         >
           {/* Ambient background glow */}
-          <div className="absolute top-0 right-0 w-64 h-64 bg-amber-500/10 rounded-full blur-3xl pointer-events-none -mr-20 -mt-20" />
-          <div className="absolute bottom-0 left-0 w-64 h-64 bg-blue-500/10 rounded-full blur-3xl pointer-events-none -ml-20 -mb-20" />
+          <div className="absolute top-0 right-0 w-64 h-64 bg-amber-500/10 rounded-full  pointer-events-none -mr-20 -mt-20" />
+          <div className="absolute bottom-0 left-0 w-64 h-64 bg-blue-500/10 rounded-full  pointer-events-none -ml-20 -mb-20" />
 
           {/* Close button */}
           <button
@@ -103,19 +103,18 @@ export const ResubscriptionModal: React.FC<ResubscriptionModalProps> = ({
               <button
                 type="button"
                 id="resubscribe-select-plus-plan"
-                onClick={() => setSelectedPlan('Plus Plan')}
+                onClick={() => setSelectedPlan('Pro Plan')}
                 className={`p-3.5 rounded-2xl border text-left transition-all relative flex flex-col justify-between cursor-pointer ${
-                  selectedPlan === 'Plus Plan'
+                  selectedPlan === 'Pro Plan'
                     ? 'bg-blue-950/40 border-blue-500/80 shadow-lg shadow-blue-950/40'
                     : 'bg-stone-800/40 border-stone-800 hover:border-stone-700'
                 }`}
               >
                 <div className="flex items-center justify-between w-full mb-1">
-                  <span className="font-bold text-sm text-stone-100 flex items-center gap-1.5">
-                    <Crown size={15} className={selectedPlan === 'Plus Plan' ? 'text-blue-400' : 'text-stone-400'} />
-                    Plus Plan
+                  <span className="font-bold text-sm text-stone-100 flex items-center">
+                    Pro Plan
                   </span>
-                  {selectedPlan === 'Plus Plan' && (
+                  {selectedPlan === 'Pro Plan' && (
                     <CheckCircle2 size={16} className="text-blue-400" />
                   )}
                 </div>
@@ -135,8 +134,7 @@ export const ResubscriptionModal: React.FC<ResubscriptionModalProps> = ({
                 }`}
               >
                 <div className="flex items-center justify-between w-full mb-1">
-                  <span className="font-bold text-sm text-stone-100 flex items-center gap-1.5">
-                    <Zap size={15} className={selectedPlan === 'Max Plan' ? 'text-amber-400' : 'text-stone-400'} />
+                  <span className="font-bold text-sm text-stone-100 flex items-center">
                     Max Plan
                   </span>
                   {selectedPlan === 'Max Plan' && (

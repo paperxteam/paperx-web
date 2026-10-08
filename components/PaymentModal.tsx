@@ -9,7 +9,7 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { db } from '../services/firebase';
 import { doc, setDoc, onSnapshot } from 'firebase/firestore';
-import { playPaymentApprovedAudio, playPaymentRejectedAudio, triggerPaymentApprovedConfetti } from '../lib/paymentFeedback';
+import { playPaymentApprovedAudio, playPaymentRejectedAudio } from '../lib/paymentFeedback';
 import { downloadReceiptPdf } from '../src/utils/receiptPdf';
 import { UpiAppIconsStrip } from './UpiBrandIcons';
 
@@ -24,55 +24,55 @@ export interface PlanPricingItem {
   savingsBadge?: string;
 }
 
-export const PLAN_PRICING: Record<'Plus Plan' | 'Max Plan', Record<BillingCycle, PlanPricingItem>> = {
-  'Plus Plan': {
+export const PLAN_PRICING: Record<string, Record<BillingCycle, PlanPricingItem>> = {
+  'Pro Plan': {
     'month': {
-      amount: 50,
+      amount: 29,
       label: 'Month',
       cycleShort: '1 Month',
       perDurationText: '/ month',
       durationDays: 30,
     },
     'half-year': {
-      amount: 250,
+      amount: 145,
       label: 'Half-Year',
       cycleShort: '6 Months',
       perDurationText: '/ 6 months',
       durationDays: 180,
-      savingsBadge: 'Save ₹50',
+      savingsBadge: 'Save ₹29',
     },
     'year': {
-      amount: 500,
+      amount: 290,
       label: 'Year',
       cycleShort: '1 Year',
       perDurationText: '/ year',
       durationDays: 365,
-      savingsBadge: 'Save ₹100',
+      savingsBadge: 'Save ₹58',
     },
   },
   'Max Plan': {
     'month': {
-      amount: 100,
+      amount: 49,
       label: 'Month',
       cycleShort: '1 Month',
       perDurationText: '/ month',
       durationDays: 30,
     },
     'half-year': {
-      amount: 500,
+      amount: 245,
       label: 'Half-Year',
       cycleShort: '6 Months',
       perDurationText: '/ 6 months',
       durationDays: 180,
-      savingsBadge: 'Save ₹100',
+      savingsBadge: 'Save ₹49',
     },
     'year': {
-      amount: 1000,
+      amount: 490,
       label: 'Year',
       cycleShort: '1 Year',
       perDurationText: '/ year',
       durationDays: 365,
-      savingsBadge: 'Save ₹200',
+      savingsBadge: 'Save ₹98',
     },
   },
 };
@@ -80,7 +80,7 @@ export const PLAN_PRICING: Record<'Plus Plan' | 'Max Plan', Record<BillingCycle,
 interface PaymentModalProps {
   isOpen: boolean;
   onClose: () => void;
-  plan: 'Plus Plan' | 'Max Plan';
+  plan: 'Pro Plan' | 'Pro Plan' | 'Max Plan';
   amount?: string;
   billingCycle?: BillingCycle;
   onSuccess: () => void;
@@ -141,7 +141,13 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
   originalAmount,
   onOpenSupport
 }) => {
-  const [currentPlan, setCurrentPlan] = useState<'Plus Plan' | 'Max Plan'>(plan || 'Plus Plan');
+  const resolvePlanName = (p?: string): 'Pro Plan' | 'Max Plan' => {
+    if (!p) return 'Pro Plan';
+    if (p.toLowerCase().includes('max')) return 'Max Plan';
+    return 'Pro Plan';
+  };
+
+  const [currentPlan, setCurrentPlan] = useState<'Pro Plan' | 'Max Plan'>(() => resolvePlanName(plan));
   const [currentCycle, setCurrentCycle] = useState<BillingCycle>(billingCycle || 'month');
   
   const [step, setStep] = useState<'form' | 'processing' | 'pending' | 'success' | 'error' | 'ticket' | 'ticket_success'>('form');
@@ -162,6 +168,7 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
   // Real 10-Minute Timer & Guaranteed Instant Unique Order ID
   const [orderId, setOrderId] = useState<string>(() => forceResubmitOrderId || generateRareOrderId(uid, email));
   const [vpa] = useState<string>('7585813675@omni');
+  const [expiresAtTimestamp, setExpiresAtTimestamp] = useState<number>(() => Date.now() + 600000); // 10 minutes in ms
   const [timeLeft, setTimeLeft] = useState<number>(600); // 10 minutes = 600 seconds
   const [isExpired, setIsExpired] = useState<boolean>(false);
   
@@ -184,7 +191,7 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
 
       await downloadReceiptPdf(receiptElement, fileName, {
         orderId: orderIdStr,
-        plan: currentPlan || 'Plus Plan',
+        plan: currentPlan || 'Pro Plan',
         billingCycle: activePricing?.cycleShort || '1 Month',
         amount: activeAmountNumber || 50,
         userName: userName || email?.split('@')[0] || 'Subscriber',
@@ -219,7 +226,6 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
         if (['COMPLETED', 'VERIFIED', 'APPROVED', 'SUCCESS', 'PAID'].includes(normStatus)) {
           setStep('success');
           playPaymentApprovedAudio();
-          triggerPaymentApprovedConfetti();
         } else if (['FAILED', 'REJECTED', 'DISAPPROVED'].includes(normStatus)) {
           const rawR = sData.rejectionReason?.trim();
           const cleanReason = (rawR && !['fail', 'failed', 'rejected', 'error', 'null', 'undefined', 'utr'].includes(rawR.toLowerCase()))
@@ -244,7 +250,12 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
   // Sync props when modal opens or plan/cycle changes
   useEffect(() => {
     if (isOpen) {
-      setCurrentPlan(plan || 'Plus Plan');
+      setCurrentPlan(resolvePlanName(plan));
+      const targetExpiry = Date.now() + 600000; // Exact 10 minutes (600,000 ms)
+      setExpiresAtTimestamp(targetExpiry);
+      setIsExpired(false);
+      setTimeLeft(600);
+
       if (billingCycle) {
         setCurrentCycle(billingCycle);
       }
@@ -257,10 +268,10 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
       setUtrNumber('');
       setUtrError('');
     }
-  }, [isOpen, plan, billingCycle, email]);
+  }, [isOpen, plan, billingCycle, email, orderId]);
 
   // Derive active pricing config
-  const activePricing: PlanPricingItem = PLAN_PRICING[currentPlan]?.[currentCycle] || PLAN_PRICING['Plus Plan']['month'];
+  const activePricing: PlanPricingItem = PLAN_PRICING[currentPlan]?.[currentCycle] || PLAN_PRICING['Pro Plan']?.[currentCycle] || PLAN_PRICING['Pro Plan']['month'];
   const regularPrice = activePricing.amount;
 
   // Format and resolve human-friendly explanation for rejected/declined payment
@@ -280,7 +291,7 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
     ) {
       return {
         title: 'Wrong or Unmatched 12-Digit UTR',
-        description: 'The 12-digit UTR you entered was not found in our merchant bank account. Please check your UPI payment receipt (Google Pay, PhonePe, Paytm, BHIM) and re-enter the correct 12-digit reference number.',
+        description: 'The 12-digit UTR you entered was not found in our merchant bank account. Please check your UPI payment receipt (GPay, PhonePe, Paytm, BHIM) and re-enter the correct 12-digit reference number.',
         isUtrIssue: true,
       };
     }
@@ -365,9 +376,9 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
   }, [activeUpiUri, qrApiUrl]);
 
   // Initialize and persist order session whenever opened or changed
-  const syncOrderToBackend = async (freshId: string, planName: 'Plus Plan' | 'Max Plan', cycle: BillingCycle, cost: number) => {
+  const syncOrderToBackend = async (freshId: string, planName: 'Pro Plan' | 'Max Plan', cycle: BillingCycle, cost: number) => {
     try {
-      const cycleData = PLAN_PRICING[planName]?.[cycle] || PLAN_PRICING['Plus Plan']['month'];
+      const cycleData = PLAN_PRICING[planName]?.[cycle] || PLAN_PRICING['Pro Plan']['month'];
       const uri = `upi://pay?pa=${encodeURIComponent(vpa)}&pn=${encodeURIComponent('PaperX Cloud')}&am=${cost.toFixed(2)}&cu=INR&tr=${encodeURIComponent(freshId)}&tn=${encodeURIComponent(`PaperX ${planName} ${cycleData.cycleShort} ${freshId}`)}`;
 
       // Direct Firestore write for instant client persistence
@@ -434,12 +445,12 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
       const freshId = generateRareOrderId(uid, email);
       setOrderId(freshId);
 
-      const initialPlan = plan || 'Plus Plan';
+      const initialPlan = plan || 'Pro Plan';
       const initialCycle = (billingCycle || 'month') as BillingCycle;
       setCurrentPlan(initialPlan);
       setCurrentCycle(initialCycle);
 
-      const initialPricing = PLAN_PRICING[initialPlan]?.[initialCycle] || PLAN_PRICING['Plus Plan']['month'];
+      const initialPricing = PLAN_PRICING[initialPlan]?.[initialCycle] || PLAN_PRICING['Pro Plan']['month'];
       const initialPrice = amount ? Number(amount) : initialPricing.amount;
 
       syncOrderToBackend(freshId, initialPlan, initialCycle, initialPrice);
@@ -462,7 +473,7 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
     syncOrderToBackend(orderId, currentPlan, cycle, newPrice);
   };
 
-  const handlePlanChange = (newPlan: 'Plus Plan' | 'Max Plan') => {
+  const handlePlanChange = (newPlan: 'Pro Plan' | 'Max Plan') => {
     setCurrentPlan(newPlan);
     const newPricing = PLAN_PRICING[newPlan][currentCycle];
     const newPrice = forceResubmitOrderId && amount 
@@ -471,27 +482,27 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
     syncOrderToBackend(orderId, newPlan, currentCycle, newPrice);
   };
 
-  // Real 10-Minute Countdown Timer Loop
+  // Real 10-Minute Countdown Timer Loop (Calculated against exact Date.now() target)
   useEffect(() => {
     if (!isOpen || step !== 'form') return;
 
-    if (timerRef.current) clearInterval(timerRef.current);
+    const checkTimer = () => {
+      const now = Date.now();
+      const remainingSecs = Math.max(0, Math.floor((expiresAtTimestamp - now) / 1000));
+      setTimeLeft(remainingSecs);
+      if (remainingSecs <= 0) {
+        setIsExpired(true);
+        if (timerRef.current) clearInterval(timerRef.current);
+      }
+    };
 
-    timerRef.current = setInterval(() => {
-      setTimeLeft(prev => {
-        if (prev <= 1) {
-          clearInterval(timerRef.current);
-          setIsExpired(true);
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
+    checkTimer();
+    timerRef.current = setInterval(checkTimer, 1000);
 
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
     };
-  }, [isOpen, step, orderId]);
+  }, [isOpen, step, expiresAtTimestamp]);
 
   // Format seconds to mm:ss
   const formatTimer = (seconds: number) => {
@@ -534,15 +545,22 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const onSuccessRef = useRef(onSuccess);
+  const onCloseRef = useRef(onClose);
+  useEffect(() => {
+    onSuccessRef.current = onSuccess;
+    onCloseRef.current = onClose;
+  });
+
   // Gentle auto-redirect fallback after successful payment
   useEffect(() => {
     if (step !== 'success') return;
     const timer = setTimeout(() => {
-      onSuccess();
-      onClose();
+      onSuccessRef.current();
+      onCloseRef.current();
     }, 15000);
     return () => clearTimeout(timer);
-  }, [step, onSuccess, onClose]);
+  }, [step]);
 
   // Real UTR Verification Realtime Listener & Polling Fallback
   useEffect(() => {
@@ -556,7 +574,6 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
       if (['COMPLETED', 'VERIFIED', 'APPROVED', 'SUCCESS', 'PAID'].includes(normStatus)) {
         setStep('success');
         playPaymentApprovedAudio();
-        triggerPaymentApprovedConfetti();
       } else if (['FAILED', 'REJECTED', 'DISAPPROVED'].includes(normStatus)) {
         const rawR = reason?.trim();
         const cleanReason = (rawR && !['fail', 'failed', 'rejected', 'error', 'null', 'undefined', 'utr'].includes(rawR.toLowerCase()))
@@ -753,7 +770,7 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          className="fixed inset-0 bg-stone-950/90 backdrop-blur-lg" 
+          className="fixed inset-0 bg-stone-950/90 " 
           onClick={onClose} 
         />
 
@@ -838,8 +855,8 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
                 {isUpgradePathActive && calculatedDiscount > 0 && (
                   <div className="p-2.5 rounded-2xl bg-gradient-to-r from-emerald-50/90 via-amber-50/50 to-yellow-50/60 dark:from-emerald-950/40 dark:via-stone-800/60 dark:to-amber-950/30 border border-emerald-300 dark:border-emerald-700/60 text-stone-900 dark:text-white space-y-1.5 shadow-xs">
                     <div className="flex items-center justify-between text-[11px] font-medium">
-                      <span className="text-stone-500 dark:text-stone-400 flex items-center gap-1">
-                        {currentPlan === 'Max Plan' ? <Crown size={12} className="text-yellow-500" /> : <Zap size={12} className="text-indigo-500" />} {currentPlan} ({activePricing.cycleShort}) Standard:
+                      <span className="text-stone-500 dark:text-stone-400 flex items-center">
+                        {currentPlan} ({activePricing.cycleShort}) Standard:
                       </span>
                       <span className="line-through text-stone-400 font-bold font-mono">₹{regularPrice}</span>
                     </div>
@@ -883,7 +900,7 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
                         <motion.div 
                           initial={{ opacity: 0, scale: 0.95 }}
                           animate={{ opacity: 1, scale: 1 }}
-                          className="absolute inset-0 z-20 bg-white/95 dark:bg-stone-900/95 backdrop-blur-sm rounded-2xl flex flex-col items-center justify-center p-3 text-center"
+                          className="absolute inset-0 z-20 bg-white/95 dark:bg-stone-900/95 rounded-2xl flex flex-col items-center justify-center p-3 text-center"
                         >
                           <AlertTriangle size={24} className="text-red-500 mb-1" />
                           <h4 className="font-bold text-[11px] text-stone-900 dark:text-white">Session Expired</h4>
@@ -904,7 +921,7 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
                             <Loader2 size={22} className="animate-spin text-amber-500 mb-1" />
                             <span className="text-[9px] font-medium text-stone-400">Generating QR...</span>
                           </div>
-                        ) : (
+                        ) : (localQrUrl || qrApiUrl) ? (
                           <img 
                             src={localQrUrl || qrApiUrl} 
                             alt={`UPI Payment QR Code for ₹${activeAmountNumber}`}
@@ -913,7 +930,7 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
                             decoding="sync"
                             referrerPolicy="no-referrer"
                           />
-                        )}
+                        ) : null}
                       </motion.div>
 
                       {/* UPI VPA Pill with 1-Click Copy */}
@@ -972,7 +989,7 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
                               initial={{ scale: 0 }}
                               animate={{ scale: 1 }}
                               transition={{ type: "spring", stiffness: 400, damping: 15 }}
-                              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-emerald-500"
+                              className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center justify-center text-emerald-500"
                             >
                               <CheckCircle2 size={15} />
                             </motion.div>
@@ -1012,7 +1029,7 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
                               </div>
                               {isUpgradePathActive && calculatedDiscount > 0 && (
                                 <span className="text-[10px] font-bold text-stone-900/90 bg-black/10 dark:bg-black/25 px-2.5 py-0.5 rounded-full">
-                                  ✓ ₹{calculatedDiscount} Plus Member Discount Credited
+                                  ✓ ₹{calculatedDiscount} Pro Member Discount Credited
                                 </span>
                               )}
                             </>
@@ -1304,25 +1321,27 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
                 </div>
 
                 {/* Actions */}
-                <div className="space-y-2 pt-1">
-                  <button
+                <div className="space-y-2.5 pt-1">
+                  <motion.button
+                    whileHover={{ scale: 1.01 }}
+                    whileTap={{ scale: 0.98 }}
                     type="button"
                     disabled={isGeneratingPDF}
                     onClick={handleDownloadPDF}
-                    className="w-full py-2.5 px-4 rounded-2xl bg-stone-100 hover:bg-stone-200 dark:bg-stone-800 dark:hover:bg-stone-700 text-stone-800 dark:text-stone-100 font-bold text-xs sm:text-sm flex items-center justify-center gap-2 border border-stone-200 dark:border-stone-700 transition-colors cursor-pointer disabled:opacity-50"
+                    className="w-full min-h-[44px] py-2.5 px-4 rounded-2xl bg-stone-100 hover:bg-stone-200/90 dark:bg-stone-800 dark:hover:bg-stone-750 text-stone-800 dark:text-stone-100 font-bold text-xs sm:text-sm flex items-center justify-center gap-2 border border-stone-300/80 dark:border-stone-700 shadow-sm transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     {isGeneratingPDF ? (
                       <>
-                        <RefreshCw size={15} className="animate-spin" />
-                        <span>Generating PDF...</span>
+                        <RefreshCw size={15} className="animate-spin text-amber-500" />
+                        <span>Generating Official PDF...</span>
                       </>
                     ) : (
                       <>
-                        <Download size={15} />
-                        <span>Download PDF Receipt</span>
+                        <Download size={15} className="text-stone-600 dark:text-stone-300" />
+                        <span>Download Official PDF Receipt</span>
                       </>
                     )}
-                  </button>
+                  </motion.button>
 
                   <motion.button
                     whileHover={{ scale: 1.01 }}
@@ -1332,7 +1351,7 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
                       onSuccess();
                       onClose();
                     }}
-                    className="w-full py-3 px-4 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs sm:text-sm flex items-center justify-center gap-1.5 shadow-lg shadow-emerald-600/25 transition-all cursor-pointer"
+                    className="w-full min-h-[46px] py-3 px-4 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs sm:text-sm flex items-center justify-center gap-1.5 shadow-lg shadow-emerald-600/25 transition-all cursor-pointer"
                   >
                     <span>Start Using {currentPlan}</span>
                     <ArrowRight size={15} />
@@ -1768,7 +1787,7 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
                 </div>
                 <div className="flex justify-between items-center text-xs py-1">
                   <div>
-                    <strong className="text-gray-900 dark:text-white">{currentPlan || 'Plus Plan'}</strong>
+                    <strong className="text-gray-900 dark:text-white">{currentPlan || 'Pro Plan'}</strong>
                     <span className="text-gray-400 text-[11px] ml-1.5">({activePricing?.cycleShort || '1 Month'} Subscription)</span>
                   </div>
                   <span className="font-mono font-bold text-gray-900 dark:text-white">

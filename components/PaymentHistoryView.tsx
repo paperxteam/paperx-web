@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { motion } from 'motion/react';
 import { 
   Receipt, 
@@ -75,11 +75,13 @@ export interface PaymentOrder {
   refundReceipt?: any;
   refundReceiptId?: string;
   refundedAt?: string | number;
+  rejectionCode?: string;
+  updatedAt?: string | number;
 }
 
 interface PaymentHistoryViewProps {
   user: User | null;
-  onUpgrade?: (plan: 'Plus Plan' | 'Max Plan', amount?: number, cycle?: any, upgradeFromId?: string, oldAmount?: number) => void;
+  onUpgrade?: (plan: 'Pro Plan' | 'Max Plan', amount?: number, cycle?: any, upgradeFromId?: string, oldAmount?: number) => void;
   onResubmitPayment?: (order: PaymentOrder) => void;
   onOpenBilling?: () => void;
   onOpenSupport?: () => void;
@@ -89,9 +91,16 @@ interface PaymentHistoryViewProps {
 export const isOrderRefunded = (order: PaymentOrder | null | undefined): boolean => {
   if (!order) return false;
   if (order.isRefunded === true || order.status === 'REFUNDED') return true;
-  if (order.ticketStatus === 'COMPLETED' || order.ticketStatus === 'RESOLVED') return true;
   if (order.refundReceipt || order.refundReceiptId) return true;
   if (order.refundedAt) return true;
+  if ((order.ticketStatus === 'COMPLETED' || order.ticketStatus === 'RESOLVED') && 
+      order.ticketReason && (
+        String(order.ticketReason).toLowerCase().includes('refund') || 
+        String(order.ticketReason).toLowerCase().includes('payout') || 
+        String(order.ticketReason).toLowerCase().includes('return')
+      )) {
+    return true;
+  }
   return false;
 };
 
@@ -201,7 +210,7 @@ export const PaymentHistoryView: React.FC<PaymentHistoryViewProps> = ({
 
       await downloadReceiptPdf(receiptElement, fileName, {
         orderId: activeReceipt?.orderId || orderIdStr,
-        plan: activeReceipt?.plan || selectedOrderForInvoice.plan || 'Plus Plan',
+        plan: activeReceipt?.plan || selectedOrderForInvoice.plan || 'Pro Plan',
         billingCycle: activeReceipt?.billingCycle || selectedOrderForInvoice.billingCycle || 'Monthly',
         amount: activeReceipt?.amount || activeReceipt?.refundAmount || activeReceipt?.originalAmount || selectedOrderForInvoice.amount || 50,
         userName: activeReceipt?.userName || user?.name || user?.email?.split('@')[0] || 'Subscriber',
@@ -256,7 +265,7 @@ export const PaymentHistoryView: React.FC<PaymentHistoryViewProps> = ({
         uid: order.uid || user?.uid || 'user',
         userName: order.userName || user?.name || user?.email?.split('@')[0] || 'Subscriber',
         userEmail: order.userEmail || user?.email || '',
-        plan: order.plan || 'Plus Plan',
+        plan: order.plan || 'Pro Plan',
         billingCycle: order.billingCycle || 'month',
         durationDays,
         amount: Number(order.amount) || 50,
@@ -427,6 +436,137 @@ export const PaymentHistoryView: React.FC<PaymentHistoryViewProps> = ({
     setTimeout(() => setCopiedId(null), 2000);
   };
 
+  // Master persistent cache ref across all Firestore snapshots, backend API fetches, and optimistic updates
+  const masterOrdersMapRef = useRef<Map<string, PaymentOrder>>(new Map());
+  const userRef = useRef(user);
+  userRef.current = user;
+  const onRefundDowngradeRef = useRef(onRefundDowngrade);
+  onRefundDowngradeRef.current = onRefundDowngrade;
+
+  // Helper to calculate lifecycle priority score
+  const getOrderLifecycleScore = (o: PaymentOrder): number => {
+    if (isOrderRefunded(o) || o.status === 'REFUNDED') return 4;
+    if (o.status === 'VERIFIED' || o.status === 'COMPLETED' || o.status === 'SUCCESS') return 3;
+    if (o.status === 'REJECTED' || o.status === 'FAILED') return 2;
+    if (o.status === 'PENDING') return 1;
+    return 0; // EXPIRED or DRAFT
+  };
+
+  // Merge incoming records into master cache with intelligent status protection & deduplication
+  const processAndSetOrders = useCallback((incomingList: PaymentOrder[]) => {
+    const map = masterOrdersMapRef.current;
+    const now = Date.now();
+
+    for (const inc of incomingList) {
+      const id = inc.orderId || inc.id;
+      if (!id) continue;
+
+      const existing = map.get(id);
+      if (!existing) {
+        map.set(id, { ...inc, id, orderId: id });
+        continue;
+      }
+
+      const existingScore = getOrderLifecycleScore(existing);
+      const incomingScore = getOrderLifecycleScore(inc);
+
+      // Check if this is a fresh user resubmission (newer submittedAt)
+      const existingSubTime = new Date(existing.submittedAt || 0).getTime();
+      const incomingSubTime = new Date(inc.submittedAt || 0).getTime();
+      const isNewerSubmission = incomingSubTime > (existingSubTime + 1000) && inc.status === 'PENDING';
+
+      if (isNewerSubmission) {
+        // Allow reverting to PENDING on freshly resubmitted UTR
+        map.set(id, { ...existing, ...inc, id, orderId: id });
+      } else if (incomingScore >= existingScore) {
+        // Normal progression or same rank: update with incoming data
+        map.set(id, { ...existing, ...inc, id, orderId: id });
+      } else {
+        // Stale snapshot/response: preserve superior status (e.g. VERIFIED or REJECTED) while adopting non-conflicting fields
+        const safeInc = { ...inc };
+        delete safeInc.status;
+        map.set(id, { ...existing, ...safeInc, id, orderId: id, status: existing.status });
+      }
+    }
+
+    // Filter out unsubmitted phantom drafts that were never submitted
+    const all = Array.from(map.values()) as PaymentOrder[];
+    const submittedTimes: number[] = [];
+
+    for (const ord of all) {
+      const isFinal = ord.status === 'VERIFIED' || ord.status === 'COMPLETED' || ord.status === 'SUCCESS' || ord.status === 'REJECTED' || ord.status === 'REFUNDED' || isOrderRefunded(ord);
+      if (ord.utr || isFinal) {
+        const t = new Date(ord.createdAt || ord.submittedAt || 0).getTime();
+        if (t > 0) submittedTimes.push(t);
+      }
+    }
+
+    const filtered = all.filter((ord) => {
+      const hasUtr = typeof ord.utr === 'string' && ord.utr.trim().length >= 8;
+      const isFinalized = ord.status === 'VERIFIED' || ord.status === 'COMPLETED' || ord.status === 'SUCCESS' || ord.status === 'REJECTED' || ord.status === 'FAILED' || ord.status === 'REFUNDED' || isOrderRefunded(ord);
+      const createdTime = new Date(ord.createdAt || ord.submittedAt || 0).getTime();
+      const ageMs = now - createdTime;
+
+      if (hasUtr || isFinalized) return true;
+
+      // Drop ghost drafts created around the same time as a real submitted order
+      const isGhostNearReal = submittedTimes.some(st => Math.abs(st - createdTime) < 2 * 60 * 1000);
+      if (isGhostNearReal) return false;
+
+      // Drop expired unsubmitted sessions older than 5 minutes
+      if (ageMs > 5 * 60 * 1000) return false;
+
+      return true;
+    });
+
+    // Deduplicate by clean UTR if multiple drafts exist for the same transaction
+    const utrMap = new Map<string, PaymentOrder>();
+    const nonUtrOrders: PaymentOrder[] = [];
+
+    for (const ord of filtered) {
+      if (ord.utr && typeof ord.utr === 'string' && ord.utr.trim().length >= 8) {
+        const cleanUtr = ord.utr.trim();
+        if (utrMap.has(cleanUtr)) {
+          const prev = utrMap.get(cleanUtr)!;
+          const prevScore = getOrderLifecycleScore(prev);
+          const curScore = getOrderLifecycleScore(ord);
+          if (curScore >= prevScore) {
+            utrMap.set(cleanUtr, { ...prev, ...ord });
+          } else {
+            utrMap.set(cleanUtr, { ...ord, ...prev, status: prev.status });
+          }
+        } else {
+          utrMap.set(cleanUtr, ord);
+        }
+      } else {
+        nonUtrOrders.push(ord);
+      }
+    }
+
+    const result = [...Array.from(utrMap.values()), ...nonUtrOrders];
+
+    const sorted = result.sort((a, b) => {
+      const tA = typeof a.createdAt === 'number' ? a.createdAt : new Date(a.createdAt || a.submittedAt || 0).getTime();
+      const tB = typeof b.createdAt === 'number' ? b.createdAt : new Date(b.createdAt || b.submittedAt || 0).getTime();
+      return tB - tA;
+    });
+
+    setOrders(sorted);
+
+    // Check if any order is confirmed returned / refunded
+    const hasConfirmedReturn = sorted.some(o => 
+      o.status === 'REFUNDED' || 
+      Boolean(o.isRefunded) || 
+      (o.ticketStatus === 'COMPLETED' && Boolean(o.ticketReason && (String(o.ticketReason).toLowerCase().includes('refund') || String(o.ticketReason).toLowerCase().includes('payout') || String(o.ticketReason).toLowerCase().includes('return'))))
+    );
+    const curU = userRef.current;
+    if (hasConfirmedReturn && curU && curU.plan && curU.plan !== 'Basic Plan') {
+      if (onRefundDowngradeRef.current) {
+        onRefundDowngradeRef.current();
+      }
+    }
+  }, []);
+
   // Handle instant 12-digit UTR resubmission
   const handleResubmitUtr = async (order: PaymentOrder, inputUtr: string) => {
     const cleanUtr = String(inputUtr || '').trim().replace(/\D/g, '');
@@ -442,6 +582,36 @@ export const PaymentHistoryView: React.FC<PaymentHistoryViewProps> = ({
 
     setIsSubmittingResubmit(orderId);
     setResubmitFeedbackMap(prev => ({ ...prev, [orderId]: null }));
+
+    const updatedSubmittedAt = new Date().toISOString();
+
+    // 1. Direct optimistic update into master cache
+    const updatedOrder: PaymentOrder = {
+      ...order,
+      orderId,
+      id: orderId,
+      utr: cleanUtr,
+      status: 'PENDING',
+      rejectionReason: undefined,
+      rejectionCode: undefined as any,
+      submittedAt: updatedSubmittedAt,
+      updatedAt: updatedSubmittedAt
+    };
+    processAndSetOrders([updatedOrder]);
+
+    // 2. Direct Firestore update for instant real-time synchronization
+    try {
+      await setDoc(doc(db, 'orders', orderId), {
+        utr: cleanUtr,
+        status: 'PENDING',
+        rejectionReason: null,
+        rejectionCode: null,
+        submittedAt: updatedSubmittedAt,
+        updatedAt: updatedSubmittedAt
+      }, { merge: true });
+    } catch (fErr) {
+      console.warn('Direct Firestore resubmit write note:', fErr);
+    }
 
     try {
       const res = await fetch('/api/payments/resubmit-utr', {
@@ -467,21 +637,6 @@ export const PaymentHistoryView: React.FC<PaymentHistoryViewProps> = ({
             message: '✅ Corrected 12-digit UTR submitted! Telegram Admin has been notified for priority verification.' 
           }
         }));
-
-        // Optimistically update order in state
-        setOrders(prev => prev.map(o => {
-          if ((o.orderId || o.id) === orderId) {
-            return {
-              ...o,
-              utr: cleanUtr,
-              status: 'PENDING',
-              rejectionReason: undefined,
-              rejectionCode: undefined as any,
-              submittedAt: new Date().toISOString()
-            };
-          }
-          return o;
-        }));
       } else {
         setResubmitFeedbackMap(prev => ({
           ...prev,
@@ -498,109 +653,27 @@ export const PaymentHistoryView: React.FC<PaymentHistoryViewProps> = ({
     }
   };
 
-  // Sanitize and deduplicate orders list (removes ghost drafts, merges matching UTRs, protects REJECTED status)
-  const sanitizeOrdersList = (rawOrders: PaymentOrder[]): PaymentOrder[] => {
-    const map = new Map<string, PaymentOrder>();
-    const now = Date.now();
-
-    // Index by ID first, merging fields cleanly
-    for (const o of rawOrders) {
-      const id = o.orderId || o.id;
-      if (!id) continue;
-      const existing = map.get(id);
-      map.set(id, { ...existing, ...o, id, orderId: id });
-    }
-
-    const all = Array.from(map.values());
-    const submittedTimes: number[] = [];
-
-    for (const ord of all) {
-      const isFinal = ord.status === 'VERIFIED' || ord.status === 'COMPLETED' || ord.status === 'SUCCESS' || ord.status === 'REJECTED' || ord.status === 'REFUNDED' || isOrderRefunded(ord);
-      if (ord.utr || isFinal) {
-        const t = new Date(ord.createdAt || ord.submittedAt || 0).getTime();
-        if (t > 0) submittedTimes.push(t);
-      }
-    }
-
-    // Filter out unsubmitted phantom drafts that were never submitted
-    const filtered = all.filter((ord) => {
-      const hasUtr = typeof ord.utr === 'string' && ord.utr.trim().length >= 8;
-      const isFinalized = ord.status === 'VERIFIED' || ord.status === 'COMPLETED' || ord.status === 'SUCCESS' || ord.status === 'REJECTED' || ord.status === 'FAILED' || ord.status === 'REFUNDED' || isOrderRefunded(ord);
-      const createdTime = new Date(ord.createdAt || ord.submittedAt || 0).getTime();
-      const ageMs = now - createdTime;
-
-      if (hasUtr || isFinalized) return true;
-
-      // Drop ghost drafts created around the same time as a real submitted order
-      const isGhostNearReal = submittedTimes.some(st => Math.abs(st - createdTime) < 2 * 60 * 1000);
-      if (isGhostNearReal) return false;
-
-      // Drop expired unsubmitted sessions
-      if (ageMs > 10 * 60 * 1000) return false;
-
-      return true;
-    });
-
-    // Deduplicate by UTR or ID to ensure absolute uniqueness
-    const utrMap = new Map<string, PaymentOrder>();
-    const nonUtrOrders: PaymentOrder[] = [];
-
-    const getOrderScore = (o: PaymentOrder) => {
-      if (isOrderRefunded(o)) return 4;
-      if (o.status === 'VERIFIED' || o.status === 'COMPLETED' || o.status === 'SUCCESS') return 3;
-      if (o.status === 'REJECTED' || o.status === 'FAILED') return 2;
-      return 1;
-    };
-
-    for (const ord of filtered) {
-      if (ord.utr && typeof ord.utr === 'string' && ord.utr.trim().length >= 8) {
-        const cleanUtr = ord.utr.trim();
-        if (utrMap.has(cleanUtr)) {
-          const prev = utrMap.get(cleanUtr)!;
-          // Priority: REFUNDED (4) > VERIFIED (3) > REJECTED (2) > PENDING (1)
-          const prevScore = getOrderScore(prev);
-          const curScore = getOrderScore(ord);
-          if (curScore >= prevScore) {
-            utrMap.set(cleanUtr, { ...prev, ...ord });
-          } else {
-            utrMap.set(cleanUtr, { ...ord, ...prev });
-          }
-        } else {
-          utrMap.set(cleanUtr, ord);
-        }
-      } else {
-        nonUtrOrders.push(ord);
-      }
-    }
-
-    const result = [...Array.from(utrMap.values()), ...nonUtrOrders];
-
-    return result.sort((a, b) => {
-      const tA = typeof a.createdAt === 'number' ? a.createdAt : new Date(a.createdAt || a.submittedAt || 0).getTime();
-      const tB = typeof b.createdAt === 'number' ? b.createdAt : new Date(b.createdAt || b.submittedAt || 0).getTime();
-      return tB - tA;
-    });
-  };
-
   // Fetch from Server API as reliable sync layer
   const fetchServerOrders = useCallback(async () => {
     if (!user?.uid) return;
     try {
-      const res = await fetch(`/api/payments/user-orders?uid=${encodeURIComponent(user.uid)}&email=${encodeURIComponent(user.email || '')}`);
+      const emailParam = encodeURIComponent((user.email || '').trim().toLowerCase());
+      const res = await fetch(`/api/payments/user-orders?uid=${encodeURIComponent(user.uid)}&email=${emailParam}`);
       if (res.ok) {
         const data = await res.json();
         if (data.success && Array.isArray(data.orders)) {
-          setOrders(sanitizeOrdersList(data.orders));
+          processAndSetOrders(data.orders);
         }
       }
     } catch (err) {
       console.warn('Backend payment history fetch note:', err);
     }
-  }, [user?.uid, user?.email]);
+  }, [user?.uid, user?.email, processAndSetOrders]);
 
-  // Primary Real-time Firestore Listener + Background Sync
+  // Primary Real-time Firestore Multi-Listener + High Speed Sync Loop
   useEffect(() => {
     if (!user?.uid) {
+      masterOrdersMapRef.current.clear();
       setOrders([]);
       setLoading(false);
       return;
@@ -609,31 +682,67 @@ export const PaymentHistoryView: React.FC<PaymentHistoryViewProps> = ({
     setLoading(true);
 
     const ordersRef = collection(db, 'orders');
-    const q = query(ordersRef, where('uid', '==', user.uid));
+    const userEmail = (user.email || '').trim().toLowerCase();
 
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const fetched: PaymentOrder[] = [];
-      snapshot.forEach((docSnap) => {
-        fetched.push({ id: docSnap.id, orderId: docSnap.id, ...docSnap.data() } as PaymentOrder);
+    const qUid = query(ordersRef, where('uid', '==', user.uid));
+    const qUserId = query(ordersRef, where('userId', '==', user.uid));
+
+    const handleSnapshot = (snapshot: any) => {
+      const incoming: PaymentOrder[] = [];
+      snapshot.forEach((docSnap: any) => {
+        const data = docSnap.data();
+        const id = docSnap.id || data.orderId;
+        incoming.push({ id, orderId: id, ...data } as PaymentOrder);
       });
 
-      setOrders(sanitizeOrdersList(fetched));
+      if (incoming.length > 0) {
+        processAndSetOrders(incoming);
+      }
       setLoading(false);
-    }, (err) => {
-      console.warn('Firestore orders real-time listener notice:', err);
-      // Fallback to server endpoint
+    };
+
+    const unsubUid = onSnapshot(qUid, handleSnapshot, (err) => {
+      console.warn('Firestore orders uid real-time listener note:', err);
       fetchServerOrders().finally(() => setLoading(false));
     });
 
-    // Also call server endpoint initially to merge any non-uid indexed records
-    fetchServerOrders();
+    const unsubUserId = onSnapshot(qUserId, handleSnapshot, (err) => {
+      console.warn('Firestore orders userId real-time listener note:', err);
+    });
 
-    // Set real-time background sync interval (every 4 seconds) to guarantee instant Telegram Admin action sync
+    let unsubEmail: (() => void) | null = null;
+    let unsubUserEmail: (() => void) | null = null;
+
+    if (userEmail) {
+      try {
+        const qEmail = query(ordersRef, where('email', '==', userEmail));
+        unsubEmail = onSnapshot(qEmail, handleSnapshot, () => {});
+      } catch (_) {}
+
+      try {
+        const qUserEmail = query(ordersRef, where('userEmail', '==', userEmail));
+        unsubUserEmail = onSnapshot(qUserEmail, handleSnapshot, () => {});
+      } catch (_) {}
+    }
+
+    // Initial server fetch to capture non-indexed records
+    fetchServerOrders().finally(() => setLoading(false));
+
+    // High-speed background polling (every 2.5 seconds) to ensure Telegram actions appear in real-time
     const syncInterval = setInterval(() => {
       fetchServerOrders();
-    }, 4000);
+    }, 2500);
 
-    // Listen to custom window events for immediate refresh
+    // Instant sync on tab focus or visibility return
+    const handleFocusSync = () => {
+      if (document.visibilityState === 'visible') {
+        fetchServerOrders();
+      }
+    };
+    window.addEventListener('visibilitychange', handleFocusSync);
+    window.addEventListener('focus', handleFocusSync);
+
+    // Listen to window custom sync events
     const handleSyncEvent = () => {
       fetchServerOrders();
     };
@@ -643,14 +752,19 @@ export const PaymentHistoryView: React.FC<PaymentHistoryViewProps> = ({
     window.addEventListener('refresh_payments', handleSyncEvent);
 
     return () => {
-      unsubscribe();
+      unsubUid();
+      unsubUserId();
+      if (unsubEmail) unsubEmail();
+      if (unsubUserEmail) unsubUserEmail();
       clearInterval(syncInterval);
+      window.removeEventListener('visibilitychange', handleFocusSync);
+      window.removeEventListener('focus', handleFocusSync);
       window.removeEventListener('order-updated', handleSyncEvent);
       window.removeEventListener('admin_action', handleSyncEvent);
       window.removeEventListener('ticket-updated', handleSyncEvent);
       window.removeEventListener('refresh_payments', handleSyncEvent);
     };
-  }, [user?.uid, fetchServerOrders]);
+  }, [user?.uid, user?.email, fetchServerOrders, processAndSetOrders]);
 
   // Manual Refresh
   const handleManualRefresh = async () => {
@@ -672,7 +786,7 @@ export const PaymentHistoryView: React.FC<PaymentHistoryViewProps> = ({
         uid: user.uid,
         userEmail: user.email || '',
         userName: user.name || user.email?.split('@')[0] || 'User',
-        plan: selectedOrderForTicket.plan || 'Plus Plan',
+        plan: selectedOrderForTicket.plan || 'Pro Plan',
         amount: selectedOrderForTicket.amount || 50,
         utr: selectedOrderForTicket.utr || '',
         orderStatus: selectedOrderForTicket.status || 'PENDING',
@@ -827,7 +941,7 @@ export const PaymentHistoryView: React.FC<PaymentHistoryViewProps> = ({
         uid: user.uid,
         userEmail: user.email || '',
         userName: user.name || user.email?.split('@')[0] || 'User',
-        plan: selectedOrderForRefund.plan || 'Plus Plan',
+        plan: selectedOrderForRefund.plan || 'Pro Plan',
         amount: selectedOrderForRefund.amount || 50,
         utr: selectedOrderForRefund.utr || '',
         orderStatus: selectedOrderForRefund.status || 'SUCCESS',
@@ -865,6 +979,11 @@ export const PaymentHistoryView: React.FC<PaymentHistoryViewProps> = ({
         if (onRefundDowngrade) {
           onRefundDowngrade();
         }
+
+        try {
+          window.dispatchEvent(new CustomEvent('order-updated', { detail: { status: 'REFUNDED', isRefunded: true } }));
+          window.dispatchEvent(new CustomEvent('ticket-updated', { detail: { status: 'COMPLETED', isRefunded: true } }));
+        } catch (e) {}
 
         // Direct Firestore ledger write for consistency
         try {
@@ -909,7 +1028,7 @@ export const PaymentHistoryView: React.FC<PaymentHistoryViewProps> = ({
   };
 
   const processRefundFile = (file: File) => {
-    if (!file.type.startsWith('image/')) {
+    if (!file || !file.type || !file.type.startsWith('image/')) {
       setRefundFeedback({
         type: 'error',
         message: 'Wrong UPI QR format: Please upload a valid image file (PNG, JPEG, WEBP) containing your UPI QR code.'
@@ -1007,9 +1126,9 @@ export const PaymentHistoryView: React.FC<PaymentHistoryViewProps> = ({
         <div className="shrink-0">
           <button
             onClick={() => setShowRefundPolicy(!showRefundPolicy)}
-            className="w-full sm:w-auto px-4 py-2 text-xs font-bold rounded-xl bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-400 border border-emerald-200/50 dark:border-emerald-800/30 hover:bg-emerald-100 dark:hover:bg-emerald-900/40 transition-all flex items-center justify-center gap-2 cursor-pointer shadow-sm"
+            className="w-full sm:w-auto px-4 py-2.5 text-xs font-extrabold rounded-xl bg-gradient-to-b from-emerald-50 via-emerald-100/60 to-emerald-100/90 dark:from-emerald-900/60 dark:via-emerald-950/80 dark:to-emerald-950 text-emerald-800 dark:text-emerald-300 border-t border-t-emerald-200/90 dark:border-t-emerald-700/60 border-x border-x-emerald-200/60 dark:border-x-emerald-800/50 border-b-[3.5px] border-b-emerald-300/90 dark:border-b-emerald-950 shadow-[0_6px_16px_-2px_rgba(16,185,129,0.22),0_2px_6px_rgba(0,0,0,0.06),inset_0_1.5px_1px_rgba(255,255,255,0.9)] dark:shadow-[0_8px_18px_-2px_rgba(0,0,0,0.5),inset_0_1.5px_1px_rgba(255,255,255,0.15)] hover:-translate-y-0.5 active:translate-y-[2px] active:border-b-[1.5px] active:shadow-[0_2px_6px_rgba(16,185,129,0.15)] transition-all duration-150 flex items-center justify-center gap-2 cursor-pointer select-none"
           >
-            <Info size={14} />
+            <Info size={14} className="shrink-0 drop-shadow-[0_1px_1px_rgba(16,185,129,0.2)]" />
             <span>{showRefundPolicy ? "Hide Refund Policy" : "View Upgrade & Refund Policy"}</span>
           </button>
         </div>
@@ -1020,11 +1139,85 @@ export const PaymentHistoryView: React.FC<PaymentHistoryViewProps> = ({
           {/* Welcome Card */}
           <div className="p-6 bg-emerald-50/50 dark:bg-emerald-950/15 border border-emerald-200/50 dark:border-emerald-900/30 rounded-3xl space-y-2">
             <div className="flex items-center gap-2 text-emerald-800 dark:text-emerald-300">
-              <Sparkles size={16} className="text-emerald-600 dark:text-emerald-400" />
+              <RotateCcw size={16} className="text-emerald-600 dark:text-emerald-400" />
               <h3 className="font-extrabold font-heading text-sm">2-Day Upgrade Refund Guarantee</h3>
             </div>
             <p className="text-[11px] sm:text-xs text-emerald-700/95 dark:text-emerald-300/90 leading-relaxed">
               We want to make sure your learning or professional workspace fits you perfectly. If you subscribed to a membership plan and decided to upgrade to a higher tier membership within <strong>2 days (48 hours)</strong>, we will issue a full, seamless refund on your original plan.
+            </p>
+          </div>
+
+          {/* Refund Eligibility Section */}
+          <div className="border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 rounded-3xl p-6 space-y-4">
+            <div className="flex items-center gap-2 text-gray-900 dark:text-white border-b border-gray-100 dark:border-gray-800 pb-3">
+              <ShieldCheck className="text-emerald-500" size={18} />
+              <h4 className="font-bold text-xs">Refund Eligibility</h4>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 text-xs">
+              <div className="flex items-start gap-3 p-3 bg-gray-50/60 dark:bg-gray-800/40 rounded-2xl border border-gray-100 dark:border-gray-800/60">
+                <div className="p-1.5 bg-emerald-50 dark:bg-emerald-950/40 rounded-lg text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5">
+                  <CheckCircle2 size={14} />
+                </div>
+                <div>
+                  <h5 className="font-bold text-gray-900 dark:text-white text-xs">Subscription Upgrades</h5>
+                  <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5 leading-relaxed">
+                    Full refund on original plan when upgrading to a higher membership tier within 48 hours (2 days).
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-start gap-3 p-3 bg-gray-50/60 dark:bg-gray-800/40 rounded-2xl border border-gray-100 dark:border-gray-800/60">
+                <div className="p-1.5 bg-emerald-50 dark:bg-emerald-950/40 rounded-lg text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5">
+                  <CheckCircle2 size={14} />
+                </div>
+                <div>
+                  <h5 className="font-bold text-gray-900 dark:text-white text-xs">Duplicate Charges</h5>
+                  <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5 leading-relaxed">
+                    Automatic full refund for any duplicate or redundant transactions processed for the same billing cycle.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-start gap-3 p-3 bg-gray-50/60 dark:bg-gray-800/40 rounded-2xl border border-gray-100 dark:border-gray-800/60">
+                <div className="p-1.5 bg-emerald-50 dark:bg-emerald-950/40 rounded-lg text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5">
+                  <CheckCircle2 size={14} />
+                </div>
+                <div>
+                  <h5 className="font-bold text-gray-900 dark:text-white text-xs">Failed Payments & Deductions</h5>
+                  <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5 leading-relaxed">
+                    Guaranteed refund or instant manual credit if money was debited from your bank but plan upgrade failed.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-start gap-3 p-3 bg-gray-50/60 dark:bg-gray-800/40 rounded-2xl border border-gray-100 dark:border-gray-800/60">
+                <div className="p-1.5 bg-emerald-50 dark:bg-emerald-950/40 rounded-lg text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5">
+                  <CheckCircle2 size={14} />
+                </div>
+                <div>
+                  <h5 className="font-bold text-gray-900 dark:text-white text-xs">Unauthorized Transactions</h5>
+                  <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5 leading-relaxed">
+                    Full reimbursement for verified fraudulent or unauthorized payment attempts submitted with valid proof.
+                  </p>
+                </div>
+              </div>
+
+              <div className="sm:col-span-2 flex items-start gap-3 p-3 bg-gray-50/60 dark:bg-gray-800/40 rounded-2xl border border-gray-100 dark:border-gray-800/60">
+                <div className="p-1.5 bg-emerald-50 dark:bg-emerald-950/40 rounded-lg text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5">
+                  <CheckCircle2 size={14} />
+                </div>
+                <div>
+                  <h5 className="font-bold text-gray-900 dark:text-white text-xs">Qualifying Technical & Payment Failures</h5>
+                  <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5 leading-relaxed">
+                    Eligible for refund or service credit if persistent server, processing, or conversion errors prevent access to paid tools.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <p className="text-[10.5px] text-gray-400 dark:text-gray-500 pt-1 leading-relaxed border-t border-gray-100 dark:border-gray-800/60 italic">
+              * Refund eligibility is subject to PaperX's Terms of Service, transaction verification protocols, and applicable law.
             </p>
           </div>
 
@@ -1036,34 +1229,58 @@ export const PaymentHistoryView: React.FC<PaymentHistoryViewProps> = ({
                 <h4 className="font-bold text-xs">Refund Processing Timeline</h4>
               </div>
 
-              <div className="relative pl-6 border-l border-emerald-100 dark:border-emerald-950/30 space-y-4 text-xs">
+              <div className="space-y-4 text-xs">
                 {/* Stage 1 */}
-                <div className="relative">
-                  <div className="absolute -left-[30px] top-0.5 w-4 h-4 rounded-full bg-emerald-500 flex items-center justify-center text-white text-[8px] font-bold">1</div>
-                  <h5 className="font-bold text-gray-900 dark:text-white text-xs">Ticket Submission (Instant)</h5>
-                  <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-1 leading-relaxed">
-                    Submit your payout request. Include your name, active UPI ID (VPA), and the associated Order ID.
-                  </p>
+                <div className="flex items-start gap-3 relative">
+                  <div className="flex flex-col items-center shrink-0">
+                    <div className="w-5 h-5 rounded-full bg-emerald-500 text-white flex items-center justify-center text-[9px] font-black shadow-sm z-10">
+                      1
+                    </div>
+                    <div className="w-0.5 bg-emerald-200 dark:bg-emerald-800/60 grow my-1 min-h-[44px]" />
+                  </div>
+                  <div className="pb-1 pt-0.5">
+                    <h5 className="font-bold text-gray-900 dark:text-white text-xs">Prompt Request Review</h5>
+                    <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-1 leading-relaxed">
+                      PaperX aims to review eligible refund requests promptly upon submission. Transaction records and order details are verified against our billing ledger.
+                    </p>
+                  </div>
                 </div>
 
                 {/* Stage 2 */}
-                <div className="relative">
-                  <div className="absolute -left-[30px] top-0.5 w-4 h-4 rounded-full bg-emerald-500 flex items-center justify-center text-white text-[8px] font-bold">2</div>
-                  <h5 className="font-bold text-gray-900 dark:text-white text-xs">Verification & Processing (1-12 Hours)</h5>
-                  <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-1 leading-relaxed">
-                    Our billing desk cross-references your transaction records and links the order to ensure instant clearance.
-                  </p>
+                <div className="flex items-start gap-3 relative">
+                  <div className="flex flex-col items-center shrink-0">
+                    <div className="w-5 h-5 rounded-full bg-emerald-500 text-white flex items-center justify-center text-[9px] font-black shadow-sm z-10">
+                      2
+                    </div>
+                    <div className="w-0.5 bg-emerald-200 dark:bg-emerald-800/60 grow my-1 min-h-[44px]" />
+                  </div>
+                  <div className="pb-1 pt-0.5">
+                    <h5 className="font-bold text-gray-900 dark:text-white text-xs">Internal Payout Processing (1–12 Hours)</h5>
+                    <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-1 leading-relaxed">
+                      Once approved, PaperX processes and dispatches the refund through our payment gateway desk within our stated operational timeframe.
+                    </p>
+                  </div>
                 </div>
 
                 {/* Stage 3 */}
-                <div className="relative">
-                  <div className="absolute -left-[30px] top-0.5 w-4 h-4 rounded-full bg-emerald-500 flex items-center justify-center text-white text-[8px] font-bold">3</div>
-                  <h5 className="font-bold text-gray-900 dark:text-white text-xs">Bank Settlement (Within 24 Hours)</h5>
-                  <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-1 leading-relaxed">
-                    The refund is approved and transferred directly back to your provided bank account or UPI VPA address.
-                  </p>
+                <div className="flex items-start gap-3 relative">
+                  <div className="flex flex-col items-center shrink-0">
+                    <div className="w-5 h-5 rounded-full bg-emerald-500 text-white flex items-center justify-center text-[9px] font-black shadow-sm z-10">
+                      3
+                    </div>
+                  </div>
+                  <div className="pt-0.5">
+                    <h5 className="font-bold text-gray-900 dark:text-white text-xs">Provider & Bank Settlement</h5>
+                    <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-1 leading-relaxed">
+                      The actual time for funds to appear in your account depends on your payment provider, bank, card issuer, or UPI app and is outside PaperX's direct control.
+                    </p>
+                  </div>
                 </div>
               </div>
+
+              <p className="text-[10.5px] text-gray-400 dark:text-gray-500 pt-1 leading-relaxed border-t border-gray-100 dark:border-gray-800/60 italic">
+                * Note: Inter-bank clearance times vary by payment network and card issuer. PaperX cannot guarantee exact bank settlement completion times once remitted.
+              </p>
             </div>
 
             {/* Documentation Requirements */}
@@ -1112,6 +1329,327 @@ export const PaymentHistoryView: React.FC<PaymentHistoryViewProps> = ({
               </div>
             </div>
           </div>
+
+          {/* Non-Refundable Purchases Section */}
+          <div className="border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 rounded-3xl p-6 space-y-4">
+            <div className="flex items-center gap-2 text-gray-900 dark:text-white border-b border-gray-100 dark:border-gray-800 pb-3">
+              <AlertCircle className="text-amber-500 dark:text-amber-400" size={18} />
+              <h4 className="font-bold text-xs">Non-Refundable Purchases</h4>
+            </div>
+
+            <p className="text-[11px] sm:text-xs text-gray-600 dark:text-gray-300 leading-relaxed">
+              Refunds may not be available for purchases that do not meet PaperX eligibility criteria. The following purchases and scenarios are non-refundable:
+            </p>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5 text-xs">
+              <div className="p-3 bg-gray-50/60 dark:bg-gray-800/40 rounded-2xl border border-gray-100 dark:border-gray-800/60 space-y-1">
+                <h5 className="font-bold text-gray-900 dark:text-white text-xs">Substantially Consumed Usage</h5>
+                <p className="text-[11px] text-gray-500 dark:text-gray-400 leading-relaxed">
+                  Subscription plans or tool quotas that have already been substantially consumed during the active billing period.
+                </p>
+              </div>
+
+              <div className="p-3 bg-gray-50/60 dark:bg-gray-800/40 rounded-2xl border border-gray-100 dark:border-gray-800/60 space-y-1">
+                <h5 className="font-bold text-gray-900 dark:text-white text-xs">Expired Refund Periods</h5>
+                <p className="text-[11px] text-gray-500 dark:text-gray-400 leading-relaxed">
+                  Refund requests or payout claims submitted outside the applicable 48-hour refund window.
+                </p>
+              </div>
+
+              <div className="p-3 bg-gray-50/60 dark:bg-gray-800/40 rounded-2xl border border-gray-100 dark:border-gray-800/60 space-y-1">
+                <h5 className="font-bold text-gray-900 dark:text-white text-xs">Excluded Terms & Services</h5>
+                <p className="text-[11px] text-gray-500 dark:text-gray-400 leading-relaxed">
+                  Custom add-ons or special promotional features explicitly excluded under PaperX terms and conditions.
+                </p>
+              </div>
+            </div>
+
+            <p className="text-[10.5px] text-gray-400 dark:text-gray-500 pt-1 leading-relaxed border-t border-gray-100 dark:border-gray-800/60 italic">
+              * Note: This policy does not limit or affect any statutory consumer rights or refund protections required by applicable law.
+            </p>
+          </div>
+
+          {/* Subscription Cancellation Section */}
+          <div className="border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 rounded-3xl p-6 space-y-4">
+            <div className="flex items-center gap-2 text-gray-900 dark:text-white border-b border-gray-100 dark:border-gray-800 pb-3">
+              <RotateCcw className="text-emerald-500" size={18} />
+              <h4 className="font-bold text-xs">Subscription Cancellation</h4>
+            </div>
+
+            <p className="text-[11px] sm:text-xs text-gray-600 dark:text-gray-300 leading-relaxed">
+              PaperX provides full flexibility over your membership auto-renewals and subscription lifecycle:
+            </p>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5 text-xs">
+              <div className="p-3 bg-gray-50/60 dark:bg-gray-800/40 rounded-2xl border border-gray-100 dark:border-gray-800/60 space-y-1">
+                <h5 className="font-bold text-gray-900 dark:text-white text-xs">How to Cancel</h5>
+                <p className="text-[11px] text-gray-500 dark:text-gray-400 leading-relaxed">
+                  Cancel your active membership anytime via Account Settings &gt; Billing & Membership or through Live Support Chat.
+                </p>
+              </div>
+
+              <div className="p-3 bg-gray-50/60 dark:bg-gray-800/40 rounded-2xl border border-gray-100 dark:border-gray-800/60 space-y-1">
+                <h5 className="font-bold text-gray-900 dark:text-white text-xs">Stops Future Renewals</h5>
+                <p className="text-[11px] text-gray-500 dark:text-gray-400 leading-relaxed">
+                  Cancellation immediately halts future auto-renewals. You retain full plan benefits through the end of your paid term.
+                </p>
+              </div>
+
+              <div className="p-3 bg-gray-50/60 dark:bg-gray-800/40 rounded-2xl border border-gray-100 dark:border-gray-800/60 space-y-1">
+                <h5 className="font-bold text-gray-900 dark:text-white text-xs">Cancellation vs. Refund</h5>
+                <p className="text-[11px] text-gray-500 dark:text-gray-400 leading-relaxed">
+                  Canceling stops future billing but does not automatically issue a refund unless eligible under this policy or applicable law.
+                </p>
+              </div>
+            </div>
+
+            <p className="text-[10.5px] text-gray-400 dark:text-gray-500 pt-1 leading-relaxed border-t border-gray-100 dark:border-gray-800/60 italic">
+              * Note: If you believe a recent charge qualifies for a refund under our 2-Day Upgrade Guarantee or due to a payment failure, please submit a support ticket.
+            </p>
+          </div>
+
+          {/* Auto-Renewal & Recurring Billing Section */}
+          <div className="border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 rounded-3xl p-6 space-y-4">
+            <div className="flex items-center gap-2 text-gray-900 dark:text-white border-b border-gray-100 dark:border-gray-800 pb-3">
+              <RefreshCw className="text-emerald-500" size={18} />
+              <h4 className="font-bold text-xs">Auto-Renewal & Recurring Billing</h4>
+            </div>
+
+            <p className="text-[11px] sm:text-xs text-gray-600 dark:text-gray-300 leading-relaxed">
+              Understand how recurring billing cycles and renewal schedules operate for active PaperX plans:
+            </p>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5 text-xs">
+              <div className="p-3 bg-gray-50/60 dark:bg-gray-800/40 rounded-2xl border border-gray-100 dark:border-gray-800/60 space-y-1">
+                <h5 className="font-bold text-gray-900 dark:text-white text-xs">Automatic Renewal Cycle</h5>
+                <p className="text-[11px] text-gray-500 dark:text-gray-400 leading-relaxed">
+                  Eligible subscriptions automatically renew at the end of each billing period (monthly or annually) according to your selected plan terms.
+                </p>
+              </div>
+
+              <div className="p-3 bg-gray-50/60 dark:bg-gray-800/40 rounded-2xl border border-gray-100 dark:border-gray-800/60 space-y-1">
+                <h5 className="font-bold text-gray-900 dark:text-white text-xs">Upfront Renewal Pricing</h5>
+                <p className="text-[11px] text-gray-500 dark:text-gray-400 leading-relaxed">
+                  The applicable renewal price and billing cycle are explicitly presented before purchase confirmation and in your payment receipts.
+                </p>
+              </div>
+
+              <div className="p-3 bg-gray-50/60 dark:bg-gray-800/40 rounded-2xl border border-gray-100 dark:border-gray-800/60 space-y-1">
+                <h5 className="font-bold text-gray-900 dark:text-white text-xs">Cancel Before Renewal</h5>
+                <p className="text-[11px] text-gray-500 dark:text-gray-400 leading-relaxed">
+                  Cancel anytime before your next renewal date to prevent future recurring charges. Cancellation stops future renewals but does not automatically refund prior charges unless eligible.
+                </p>
+              </div>
+            </div>
+
+            <p className="text-[10.5px] text-gray-400 dark:text-gray-500 pt-1 leading-relaxed border-t border-gray-100 dark:border-gray-800/60 italic">
+              * Note: Refunds for past recurring charges are subject to our 2-Day Upgrade Guarantee, technical error verification, or mandatory rights under applicable law.
+            </p>
+          </div>
+
+          {/* Refund Method Section */}
+          <div className="border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 rounded-3xl p-6 space-y-4">
+            <div className="flex items-center gap-2 text-gray-900 dark:text-white border-b border-gray-100 dark:border-gray-800 pb-3">
+              <Wallet className="text-emerald-500" size={18} />
+              <h4 className="font-bold text-xs">Refund Method</h4>
+            </div>
+
+            <p className="text-[11px] sm:text-xs text-gray-600 dark:text-gray-300 leading-relaxed">
+              Understand how approved payout amounts are remitted back to your account:
+            </p>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5 text-xs">
+              <div className="p-3 bg-gray-50/60 dark:bg-gray-800/40 rounded-2xl border border-gray-100 dark:border-gray-800/60 space-y-1">
+                <h5 className="font-bold text-gray-900 dark:text-white text-xs">Original Payment Source</h5>
+                <p className="text-[11px] text-gray-500 dark:text-gray-400 leading-relaxed">
+                  Approved refunds are returned directly to the original payment method (UPI VPA, card, or bank account) used for the initial purchase.
+                </p>
+              </div>
+
+              <div className="p-3 bg-gray-50/60 dark:bg-gray-800/40 rounded-2xl border border-gray-100 dark:border-gray-800/60 space-y-1">
+                <h5 className="font-bold text-gray-900 dark:text-white text-xs">Bank & Processor Timelines</h5>
+                <p className="text-[11px] text-gray-500 dark:text-gray-400 leading-relaxed">
+                  The actual time required for credited funds to appear depends on your bank, UPI provider, card issuer, or clearing network.
+                </p>
+              </div>
+
+              <div className="p-3 bg-gray-50/60 dark:bg-gray-800/40 rounded-2xl border border-gray-100 dark:border-gray-800/60 space-y-1">
+                <h5 className="font-bold text-gray-900 dark:text-white text-xs">No New Details Required</h5>
+                <p className="text-[11px] text-gray-500 dark:text-gray-400 leading-relaxed">
+                  You do not need to provide new payment details unless your original payment account is closed, expired, or unable to receive funds.
+                </p>
+              </div>
+            </div>
+
+            <p className="text-[10.5px] text-gray-400 dark:text-gray-500 pt-1 leading-relaxed border-t border-gray-100 dark:border-gray-800/60 italic">
+              * Note: In rare cases where the original payment source is unavailable, support will verify your identity before routing funds to an alternate destination.
+            </p>
+          </div>
+
+          {/* Failed, Duplicate & Reversed Payments Section */}
+          <div className="border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 rounded-3xl p-6 space-y-4">
+            <div className="flex items-center gap-2 text-gray-900 dark:text-white border-b border-gray-100 dark:border-gray-800 pb-3">
+              <AlertTriangle className="text-amber-500 dark:text-amber-400" size={18} />
+              <h4 className="font-bold text-xs">Failed, Duplicate & Reversed Payments</h4>
+            </div>
+
+            <p className="text-[11px] sm:text-xs text-gray-600 dark:text-gray-300 leading-relaxed">
+              Guidelines for handling debited funds, uncredited plan upgrades, duplicate transactions, and bank network reversals:
+            </p>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5 text-xs">
+              <div className="p-3 bg-gray-50/60 dark:bg-gray-800/40 rounded-2xl border border-gray-100 dark:border-gray-800/60 space-y-1">
+                <h5 className="font-bold text-gray-900 dark:text-white text-xs">Money Deducted, Plan Inactive</h5>
+                <p className="text-[11px] text-gray-500 dark:text-gray-400 leading-relaxed">
+                  Submit your 12-digit UPI UTR / RRN in the Upgrade modal or Live Chat for automated bank settlement matching and instant plan activation.
+                </p>
+              </div>
+
+              <div className="p-3 bg-gray-50/60 dark:bg-gray-800/40 rounded-2xl border border-gray-100 dark:border-gray-800/60 space-y-1">
+                <h5 className="font-bold text-gray-900 dark:text-white text-xs">Duplicate & Reversed Charges</h5>
+                <p className="text-[11px] text-gray-500 dark:text-gray-400 leading-relaxed">
+                  Duplicate charges are automatically refunded. Inter-bank network clearance failures are generally auto-reversed by your bank within 24–72 hours.
+                </p>
+              </div>
+
+              <div className="p-3 bg-gray-50/60 dark:bg-gray-800/40 rounded-2xl border border-gray-100 dark:border-gray-800/60 space-y-1">
+                <h5 className="font-bold text-gray-900 dark:text-white text-xs">Contact PaperX Support</h5>
+                <p className="text-[11px] text-gray-500 dark:text-gray-400 leading-relaxed">
+                  If a debited amount does not return automatically or upgrade your plan within the standard window, reach out to PaperX Support or email paperx.assist@gmail.com with your UTR.
+                </p>
+              </div>
+            </div>
+
+            <p className="text-[10.5px] text-gray-400 dark:text-gray-500 pt-1 leading-relaxed border-t border-gray-100 dark:border-gray-800/60 italic">
+              * Note: Please keep your 12-digit bank reference (UTR/RRN) or UPI receipt screenshot handy to expedite ticket processing.
+            </p>
+          </div>
+
+          {/* Refund Support & Grievance Section */}
+          <div className="border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 rounded-3xl p-6 space-y-4">
+            <div className="flex items-center gap-2 text-gray-900 dark:text-white border-b border-gray-100 dark:border-gray-800 pb-3">
+              <Ticket className="text-emerald-500" size={18} />
+              <h4 className="font-bold text-xs">Refund Support & Grievance</h4>
+            </div>
+
+            <p className="text-[11px] sm:text-xs text-gray-600 dark:text-gray-300 leading-relaxed">
+              How to submit refund inquiries, log billing grievances, and track resolution tickets with the PaperX support team:
+            </p>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5 text-xs">
+              <div className="p-3 bg-gray-50/60 dark:bg-gray-800/40 rounded-2xl border border-gray-100 dark:border-gray-800/60 space-y-1">
+                <h5 className="font-bold text-gray-900 dark:text-white text-xs">Contact Helpdesk Channels</h5>
+                <p className="text-[11px] text-gray-500 dark:text-gray-400 leading-relaxed">
+                  Submit refund questions or payment complaints via in-app 24/7 Live Support Chat or email us directly at <strong className="text-gray-700 dark:text-gray-300">paperx.assist@gmail.com</strong>.
+                </p>
+              </div>
+
+              <div className="p-3 bg-gray-50/60 dark:bg-gray-800/40 rounded-2xl border border-gray-100 dark:border-gray-800/60 space-y-1">
+                <h5 className="font-bold text-gray-900 dark:text-white text-xs">Unique Ticket Tracking</h5>
+                <p className="text-[11px] text-gray-500 dark:text-gray-400 leading-relaxed">
+                  Upon submitting a refund request or payment proof, an official Ticket ID (e.g. TICK-XXXX) or Order Reference is generated to track your issue through resolution.
+                </p>
+              </div>
+
+              <div className="p-3 bg-gray-50/60 dark:bg-gray-800/40 rounded-2xl border border-gray-100 dark:border-gray-800/60 space-y-1">
+                <h5 className="font-bold text-gray-900 dark:text-white text-xs">Executive Grievance Escalation</h5>
+                <p className="text-[11px] text-gray-500 dark:text-gray-400 leading-relaxed">
+                  For complex billing disputes or unresolved refund tickets, request "Talk with CEO" in Live Chat to escalate directly to CEO Sayan Biswas's executive desk.
+                </p>
+              </div>
+            </div>
+
+            <p className="text-[10.5px] text-gray-400 dark:text-gray-500 pt-1 leading-relaxed border-t border-gray-100 dark:border-gray-800/60 italic">
+              * Note: Please include your registered email address, Order ID, and 12-digit UPI UTR number in all support emails for fast-track processing.
+            </p>
+          </div>
+
+          {/* How to Request a Refund Section */}
+          <div className="border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 rounded-3xl p-6 space-y-4">
+            <div className="flex items-center gap-2 text-gray-900 dark:text-white border-b border-gray-100 dark:border-gray-800 pb-3">
+              <RotateCcw className="text-emerald-500" size={18} />
+              <h4 className="font-bold text-xs">How to Request a Refund</h4>
+            </div>
+
+            <p className="text-[11px] sm:text-xs text-gray-600 dark:text-gray-300 leading-relaxed">
+              Follow these simple steps to submit an in-app refund request for eligible transactions:
+            </p>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5 text-xs">
+              <div className="p-3 bg-gray-50/60 dark:bg-gray-800/40 rounded-2xl border border-gray-100 dark:border-gray-800/60 space-y-1">
+                <h5 className="font-bold text-gray-900 dark:text-white text-xs">1. Open Account &amp; Purchase</h5>
+                <p className="text-[11px] text-gray-500 dark:text-gray-400 leading-relaxed">
+                  Open PaperX, go to Account or Subscription &gt; Payment History, and select the relevant order or purchase.
+                </p>
+              </div>
+
+              <div className="p-3 bg-gray-50/60 dark:bg-gray-800/40 rounded-2xl border border-gray-100 dark:border-gray-800/60 space-y-1">
+                <h5 className="font-bold text-gray-900 dark:text-white text-xs">2. Choose &ldquo;Request Refund&rdquo;</h5>
+                <p className="text-[11px] text-gray-500 dark:text-gray-400 leading-relaxed">
+                  Select &ldquo;Request Refund,&rdquo; provide the required reason along with your payment details, and submit.
+                </p>
+              </div>
+
+              <div className="p-3 bg-gray-50/60 dark:bg-gray-800/40 rounded-2xl border border-gray-100 dark:border-gray-800/60 space-y-1">
+                <h5 className="font-bold text-gray-900 dark:text-white text-xs">3. Review &amp; Confirmation</h5>
+                <p className="text-[11px] text-gray-500 dark:text-gray-400 leading-relaxed">
+                  Submit the request and wait for PaperX Support to review it. You will receive an instant Ticket ID and confirmation.
+                </p>
+              </div>
+            </div>
+
+            <p className="text-[10.5px] text-gray-400 dark:text-gray-500 pt-1 leading-relaxed border-t border-gray-100 dark:border-gray-800/60 italic">
+              * Note: If the in-app refund option is unavailable, you may also contact PaperX Support directly via 24/7 Live Chat or email paperx.assist@gmail.com.
+            </p>
+          </div>
+
+          {/* Policy Information Section */}
+          <div className="border border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-900 rounded-3xl p-6 space-y-4">
+            <div className="flex items-center gap-2 text-gray-900 dark:text-white border-b border-gray-100 dark:border-gray-800 pb-3">
+              <FileText className="text-emerald-500" size={18} />
+              <h4 className="font-bold text-xs">Policy Information</h4>
+            </div>
+
+            <p className="text-[11px] sm:text-xs text-gray-600 dark:text-gray-300 leading-relaxed">
+              Official metadata and release audit specifications for the PaperX Upgrade &amp; Refund Policy:
+            </p>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5 text-xs">
+              <div className="p-3 bg-gray-50/60 dark:bg-gray-800/40 rounded-2xl border border-gray-100 dark:border-gray-800/60 space-y-1">
+                <h5 className="font-bold text-gray-900 dark:text-white text-xs">Effective Date</h5>
+                <p className="text-[11px] text-emerald-600 dark:text-emerald-400 font-bold">
+                  October 6, 2026
+                </p>
+                <p className="text-[10.5px] text-gray-400 dark:text-gray-500">
+                  Official active date
+                </p>
+              </div>
+
+              <div className="p-3 bg-gray-50/60 dark:bg-gray-800/40 rounded-2xl border border-gray-100 dark:border-gray-800/60 space-y-1">
+                <h5 className="font-bold text-gray-900 dark:text-white text-xs">Last Updated</h5>
+                <p className="text-[11px] text-emerald-600 dark:text-emerald-400 font-bold">
+                  October 6, 2026
+                </p>
+                <p className="text-[10.5px] text-gray-400 dark:text-gray-500">
+                  Current policy revision
+                </p>
+              </div>
+
+              <div className="p-3 bg-gray-50/60 dark:bg-gray-800/40 rounded-2xl border border-gray-100 dark:border-gray-800/60 space-y-1">
+                <h5 className="font-bold text-gray-900 dark:text-white text-xs">Policy Version</h5>
+                <p className="text-[11px] text-emerald-600 dark:text-emerald-400 font-bold">
+                  v2.4.0 (Production)
+                </p>
+                <p className="text-[10.5px] text-gray-400 dark:text-gray-500">
+                  PaperX Global Ecosystem
+                </p>
+              </div>
+            </div>
+
+            <p className="text-[10.5px] text-gray-400 dark:text-gray-500 pt-1 leading-relaxed border-t border-gray-100 dark:border-gray-800/60 italic">
+              * Note: Revisions to this policy apply to subsequent subscription billing cycles and purchases upon publication.
+            </p>
+          </div>
         </div>
       )}
 
@@ -1137,11 +1675,11 @@ export const PaymentHistoryView: React.FC<PaymentHistoryViewProps> = ({
           <div className="flex items-center justify-center gap-3">
             {onUpgrade && (
               <button
-                onClick={() => onUpgrade('Plus Plan', 50, 'month')}
-                className="px-5 py-2.5 bg-black text-white dark:bg-white dark:text-black rounded-xl text-xs font-bold hover:opacity-90 transition shadow-sm cursor-pointer flex items-center gap-2"
+                onClick={() => onUpgrade('Pro Plan', 50, 'month')}
+                className="group relative px-6 py-3 bg-gradient-to-b from-[#222428] via-[#16171a] to-[#0c0d0e] dark:from-white dark:via-stone-50 dark:to-stone-100 text-white dark:text-stone-950 rounded-xl text-xs font-heading font-black tracking-wide border-t-2 border-t-white/35 dark:border-t-white border-x border-x-white/10 dark:border-x-stone-200 border-b-[4px] border-b-black dark:border-b-stone-350 shadow-[0_10px_24px_-3px_rgba(0,0,0,0.45),0_4px_10px_rgba(0,0,0,0.25),inset_0_1.5px_1px_rgba(255,255,255,0.25)] dark:shadow-[0_10px_24px_-3px_rgba(0,0,0,0.15),0_4px_10px_rgba(0,0,0,0.08),inset_0_1.5px_1px_rgba(255,255,255,0.95)] hover:shadow-[0_14px_28px_-3px_rgba(0,0,0,0.55)] dark:hover:shadow-[0_14px_28px_-3px_rgba(0,0,0,0.2)] hover:-translate-y-0.5 active:translate-y-[2px] active:border-b-[2px] active:shadow-[0_3px_8px_rgba(0,0,0,0.3)] transition-all duration-150 cursor-pointer flex items-center gap-2 select-none overflow-hidden"
               >
-                <span>Upgrade to Plus (₹50)</span>
-                <ArrowUpRight size={14} />
+                <span>Upgrade to Pro (₹50)</span>
+                <ArrowUpRight size={14} className="group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-transform" />
               </button>
             )}
           </div>
@@ -1883,7 +2421,7 @@ export const PaymentHistoryView: React.FC<PaymentHistoryViewProps> = ({
 
       {/* Ticket Raising Modal with Real Ready-Made Reasons */}
       {selectedOrderForTicket && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-md">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 ">
           <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-3xl p-6 w-full max-w-lg shadow-2xl relative animate-in fade-in zoom-in duration-200 max-h-[92vh] overflow-y-auto">
             {(() => {
               const isSelectedRejected = selectedOrderForTicket.status === 'REJECTED' || selectedOrderForTicket.status === 'FAILED' || selectedOrderForTicket.status === 'EXPIRED';
@@ -2115,7 +2653,7 @@ export const PaymentHistoryView: React.FC<PaymentHistoryViewProps> = ({
       {selectedOrderForRefund && (
         <div 
           onPaste={handleRefundPaste}
-          className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/70 backdrop-blur-md overflow-y-auto animate-in fade-in duration-200"
+          className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/70 overflow-y-auto animate-in fade-in duration-200"
         >
           <div className="bg-white dark:bg-stone-900 border border-stone-200/90 dark:border-stone-800 rounded-3xl w-full max-w-lg shadow-2xl relative overflow-hidden animate-in zoom-in-95 duration-200 max-h-[92vh] flex flex-col my-auto">
             
@@ -2394,7 +2932,7 @@ export const PaymentHistoryView: React.FC<PaymentHistoryViewProps> = ({
                   </div>
 
                   {/* Upgrade Path Suggestion */}
-                  {selectedOrderForRefund.plan === 'Plus Plan' && ((user as any)?.featureUsageCount || 0) < 10 && (
+                  {selectedOrderForRefund.plan === 'Pro Plan' && ((user as any)?.featureUsageCount || 0) < 10 && (
                     <div className="p-4 bg-gradient-to-br from-amber-50 to-orange-50 dark:from-amber-950/20 dark:to-orange-950/20 border border-amber-200/80 dark:border-amber-800/60 rounded-2xl space-y-2.5">
                       <div className="flex gap-3">
                         <div className="p-2 bg-amber-100 dark:bg-amber-900/50 rounded-xl text-amber-700 dark:text-amber-300 shrink-0">
@@ -2413,7 +2951,7 @@ export const PaymentHistoryView: React.FC<PaymentHistoryViewProps> = ({
                         type="button"
                         onClick={() => {
                           setSelectedOrderForRefund(null);
-                          onUpgrade?.('Max Plan', undefined, 'month', selectedOrderForRefund.orderId || selectedOrderForRefund.id, Number(selectedOrderForRefund.amount) || 50);
+                          onUpgrade?.('Max Plan', 100, 'month', selectedOrderForRefund.orderId || selectedOrderForRefund.id, Number(selectedOrderForRefund.amount) || 50);
                         }}
                         className="w-full h-9 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-xl text-xs transition shadow-xs flex items-center justify-center gap-2 cursor-pointer"
                       >
@@ -2651,7 +3189,7 @@ export const PaymentHistoryView: React.FC<PaymentHistoryViewProps> = ({
 
       {/* Official Receipt Modal */}
       {selectedOrderForInvoice && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-md">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 ">
           <div className="bg-white dark:bg-gray-950 border border-gray-200 dark:border-gray-800 rounded-3xl p-5 sm:p-7 w-full max-w-xl shadow-2xl relative animate-in fade-in zoom-in duration-200 max-h-[90vh] overflow-y-auto">
             {/* Modal Header: Title on Left, Close Button on Top Right */}
             <div className="flex items-center justify-between gap-3 pb-3.5 mb-3 border-b border-gray-100 dark:border-gray-800/80">
@@ -2832,7 +3370,7 @@ export const PaymentHistoryView: React.FC<PaymentHistoryViewProps> = ({
                         <div className="flex justify-between items-start text-xs py-1">
                           <div>
                             <strong className="text-gray-900 dark:text-white font-bold">Subscription Refund</strong>
-                            <p className="text-gray-400 text-[10px] mt-0.5">Original Item: {activeReceipt.plan || 'Plus Plan'} Subscription</p>
+                            <p className="text-gray-400 text-[10px] mt-0.5">Original Item: {activeReceipt.plan || 'Pro Plan'} Subscription</p>
                             <p className="text-gray-400 text-[10px]">Reason: {activeReceipt.reason || 'Requested by customer'}</p>
                             <p className="text-gray-400 text-[10px]">Membership status after refund: <strong className="text-amber-500">{activeReceipt.subscriptionStatusAfter || 'Basic Plan'}</strong></p>
                           </div>
@@ -2849,7 +3387,7 @@ export const PaymentHistoryView: React.FC<PaymentHistoryViewProps> = ({
                       /* PAYMENT RECEIPT LINE ITEMS */
                       <div className="flex justify-between items-center text-xs py-1">
                         <div>
-                          <strong className="text-gray-900 dark:text-white font-bold">{activeReceipt.plan || 'Plus Plan'}</strong>
+                          <strong className="text-gray-900 dark:text-white font-bold">{activeReceipt.plan || 'Pro Plan'}</strong>
                           <span className="text-gray-400 text-[10px] ml-1.5">({activeReceipt.billingCycle === 'year' ? 'Annual' : activeReceipt.billingCycle === 'half-year' ? '6-Month' : 'Monthly'} Subscription)</span>
                           <div className="text-[10px] text-gray-400 mt-1">
                             Duration: {activeReceipt.durationDays || 30} days

@@ -178,7 +178,7 @@ export function generateReceiptPdf(data: ReceiptData): void {
     doc.setFontSize(6.5);
     doc.setTextColor(156, 163, 175);
     doc.text('Thank you for subscribing to PaperX!', pageWidth / 2, y, { align: 'center' });
-    doc.text('Support: paperx.team@gmail.com • www.paperx.app', pageWidth / 2, y + 3.5, { align: 'center' });
+    doc.text('Support: paperx.assist@gmail.com • www.paperx.app', pageWidth / 2, y + 3.5, { align: 'center' });
 
     // Save PDF
     const cleanId = (data.invoiceNumber || 'receipt').replace(/[^a-zA-Z0-9_-]/g, '_');

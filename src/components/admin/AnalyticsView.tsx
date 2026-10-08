@@ -32,7 +32,7 @@ const COLORS = ['#f97316', '#3b82f6', '#10b981', '#a855f7'];
 
 const EMAIL_LOGS = [
   { id: 'm_101', email: 'user.demo@example.com', type: 'Password Reset OTP', status: 'Delivered', timestamp: Date.now() - 1200000 },
-  { id: 'm_102', email: 'paperx.team@gmail.com', type: 'Welcome Email', status: 'Delivered', timestamp: Date.now() - 3600000 },
+  { id: 'm_102', email: 'paperx.dev@gmail.com', type: 'Welcome Email', status: 'Delivered', timestamp: Date.now() - 3600000 },
   { id: 'm_103', email: 'client.mumbai@gmail.com', type: 'UTR Payment Receipt', status: 'Delivered', timestamp: Date.now() - 7200000 },
 ];
 

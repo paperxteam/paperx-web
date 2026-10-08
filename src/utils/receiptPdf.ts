@@ -260,7 +260,7 @@ export async function generateDirectVectorReceiptPdf(data: ReceiptData): Promise
 
   // Table Item
   currentY -= 22;
-  page.drawText(`${data.plan || 'Plus Plan'} (${data.billingCycle || 'Monthly'} Subscription)`, {
+  page.drawText(`${data.plan || 'Pro Plan'} (${data.billingCycle || 'Monthly'} Subscription)`, {
     x: margin + 20,
     y: currentY,
     size: 11,
@@ -347,7 +347,7 @@ export async function generateDirectVectorReceiptPdf(data: ReceiptData): Promise
     color: rgb(0.5, 0.55, 0.6),
   });
 
-  page.drawText('Support Contact: paperx.assist@gmail.com | Verification Portal: https://paperx.team', {
+  page.drawText('Support Contact: paperx.dev@gmail.com | Verification Portal: https://paperx.team', {
     x: margin + 20,
     y: 32,
     size: 7.5,

@@ -253,7 +253,7 @@ export const PaymentsView: React.FC<PaymentsViewProps> = ({
                           </div>
                           <h5 className="text-base font-black text-white mt-1.5 flex items-center gap-2">
                             {ticket.userName || ticket.userEmail || 'User'} 
-                            <span className="text-xs font-normal text-stone-400">({ticket.plan || 'Plus Plan'})</span>
+                            <span className="text-xs font-normal text-stone-400">({ticket.plan || 'Pro Plan'})</span>
                           </h5>
                         </div>
 
@@ -389,7 +389,7 @@ export const PaymentsView: React.FC<PaymentsViewProps> = ({
 
       {/* QR Code Zoom Modal */}
       {selectedImageModal && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => setSelectedImageModal(null)}>
+        <div className="fixed inset-0 z-50 bg-black/80  flex items-center justify-center p-4" onClick={() => setSelectedImageModal(null)}>
           <div className="bg-stone-900 border border-stone-800 rounded-3xl p-6 max-w-md w-full relative shadow-2xl" onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-4">
               <h5 className="text-sm font-black text-white flex items-center gap-2">
@@ -573,12 +573,12 @@ export const PaymentsView: React.FC<PaymentsViewProps> = ({
             </button>
           </div>
 
-          {/* Plus Plan */}
+          {/* Pro Plan */}
           <div className="bg-stone-900/60 border-2 border-indigo-500/50 rounded-2xl p-5 shadow-2xl relative overflow-hidden flex flex-col justify-between">
             <span className="absolute top-3 right-3 bg-indigo-500 text-white text-[9px] font-black uppercase px-2 py-0.5 rounded-full">Popular</span>
             <div>
-              <span className="text-[10px] font-extrabold uppercase text-indigo-400 tracking-wider">Plus Tier</span>
-              <h4 className="text-xl font-black text-white mt-1">Plus Plan</h4>
+              <span className="text-[10px] font-extrabold uppercase text-indigo-400 tracking-wider">Pro Tier</span>
+              <h4 className="text-xl font-black text-white mt-1">Pro Plan</h4>
               <p className="text-2xl font-black text-white mt-3">₹50 <span className="text-xs text-stone-400 font-normal">/ month</span></p>
 
               <ul className="mt-4 space-y-2 text-xs text-stone-200">
@@ -589,7 +589,7 @@ export const PaymentsView: React.FC<PaymentsViewProps> = ({
               </ul>
             </div>
             <button className="w-full mt-6 py-2 bg-indigo-600 text-white font-extrabold text-xs rounded-xl hover:bg-indigo-500 transition flex items-center justify-center gap-1.5">
-              <Edit3 size={14} /> Update Plus Features
+              <Edit3 size={14} /> Update Pro Features
             </button>
           </div>
 

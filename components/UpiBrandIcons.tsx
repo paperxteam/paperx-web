@@ -62,7 +62,7 @@ export const UpiAppIconsStrip: React.FC<UpiAppIconsStripProps> = ({
   payeeName = 'PaperX Cloud',
   amount,
   orderId,
-  membershipName = 'PaperX Plus Plan',
+  membershipName = 'PaperX Pro Plan',
   billingCycle = '1 Year',
   onAppClick,
 }) => {

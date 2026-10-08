@@ -1,4 +1,5 @@
 import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
+import { fetchDocumentBinaryFromFirestore, auth } from '../../services/firebase';
 
 export interface ShareableFile {
   id: string;
@@ -162,8 +163,8 @@ export async function createPdfBlobFromMetadata(file: {
     return new Blob([pdfBytes], { type: 'application/pdf' });
   } catch (e) {
     console.error('Error generating PDF via pdf-lib:', e);
-    // Minimal valid standard PDF-1.4 binary fallback
-    const minimalPdf = `%PDF-1.4\n1 0 obj<< /Type /Catalog /Pages 2 0 R >>endobj\n2 0 obj<< /Type /Pages /Kids [3 0 R] /Count 1 >>endobj\n3 0 obj<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R >>endobj\n4 0 obj<< /Length 75 >>stream\nBT /F1 16 Tf 50 720 Td (PaperX Document: ${file.name}) Tj ET\nendstream\nendobj\nxref\n0 5\n0000000000 65535 f\n0000000009 00000 n\n0000000058 00000 n\n0000000115 00000 n\n0000000215 00000 n\ntrailer<< /Size 5 /Root 1 0 R >>\nstartxref\n340\n%%EOF`;
+    // Minimal valid standard PDF-1.4 binary fallback with Helvetica font resource
+    const minimalPdf = `%PDF-1.4\n1 0 obj<< /Type /Catalog /Pages 2 0 R >>endobj\n2 0 obj<< /Type /Pages /Kids [3 0 R] /Count 1 >>endobj\n3 0 obj<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >> >> /MediaBox [0 0 612 792] /Contents 4 0 R >>endobj\n4 0 obj<< /Length 75 >>stream\nBT /F1 16 Tf 50 720 Td (PaperX Document: ${file.name}) Tj ET\nendstream\nendobj\nxref\n0 5\n0000000000 65535 f\n0000000009 00000 n\n0000000058 00000 n\n0000000115 00000 n\n0000000215 00000 n\ntrailer<< /Size 5 /Root 1 0 R >>\nstartxref\n340\n%%EOF`;
     return new Blob([minimalPdf], { type: 'application/pdf' });
   }
 }
@@ -186,6 +187,21 @@ export async function getDocumentBlob(
       if (retrieved) dataUrl = retrieved;
     } catch (e) {
       console.warn('Could not read from local store:', e);
+    }
+  }
+
+  // If still not found, try fetching directly from Firestore subcollection chunks
+  if (!dataUrl && file.id) {
+    try {
+      const currentUid = auth.currentUser?.uid;
+      if (currentUid) {
+        const cloudBinary = await fetchDocumentBinaryFromFirestore(currentUid, file.id);
+        if (cloudBinary) {
+          dataUrl = cloudBinary;
+        }
+      }
+    } catch (e) {
+      console.warn('Could not fetch cloud document chunks:', e);
     }
   }
 

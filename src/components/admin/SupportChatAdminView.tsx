@@ -312,7 +312,7 @@ export const SupportChatAdminView: React.FC<SupportChatAdminViewProps> = ({ show
         sender: 'admin',
         senderName: 'PaperX Official Support',
         text: isPro 
-          ? `🎉 Great news! Your membership plan has been set to **${newPlan}** by PaperX Support. All premium features (Neural OCR, Unlimited PDF Translation, 500MB upload limits, VIP queues) are now active on your account!`
+          ? `Great news! Your membership plan has been set to **${newPlan}** by PaperX Support. All premium features (Neural OCR, Unlimited PDF Translation, 500MB upload limits, VIP queues) are now active on your account!`
           : `ℹ️ Your account membership plan has been updated to **${newPlan}**.`,
         timestamp: now
       };
@@ -409,12 +409,12 @@ export const SupportChatAdminView: React.FC<SupportChatAdminViewProps> = ({ show
     {
       title: "💳 Payment & UPI Settlement Policy",
       category: "Billing",
-      text: `**Payment Verification & Settlement Details:**\n• UPI settlements take 5-20 minutes depending on the banking gateway.\n• If your money was debited, please provide your **12-digit UTR transaction number** and bank name here in this chat.\n• Our administrator will immediately cross-match with our banking ledger and upgrade your account to Plus/Max plan with lifetime access!`
+      text: `**Payment Verification & Settlement Details:**\n• UPI settlements take 5-20 minutes depending on the banking gateway.\n• If your money was debited, please provide your **12-digit UTR transaction number** and bank name here in this chat.\n• Our administrator will immediately cross-match with our banking ledger and upgrade your account to Pro/Max plan with lifetime access!`
     },
     {
       title: "📦 File Size & Page Limits Advice",
       category: "Limits",
-      text: `**Document Processing Limits & Recommendations:**\n• **Free Tier:** Up to 50MB per file, 100 pages per conversion.\n• **Plus Plan:** Up to 250MB per file, unlimited pages, priority queue.\n• **Max VIP:** Up to 500MB per file, parallel batch processing.\n\n*Tip:* If your file exceeds 50MB on Free Tier, use our **Split PDF** or **Compress PDF** tool first, or upgrade to Plus for instant large file processing.`
+      text: `**Document Processing Limits & Recommendations:**\n• **Free Tier:** Up to 50MB per file, 100 pages per conversion.\n• **Pro Plan:** Up to 250MB per file, unlimited pages, priority queue.\n• **Max VIP:** Up to 500MB per file, parallel batch processing.\n\n*Tip:* If your file exceeds 50MB on Free Tier, use our **Split PDF** or **Compress PDF** tool first, or upgrade to Pro for instant large file processing.`
     },
     {
       title: "🔐 PDF Password & Security Guide",
@@ -973,12 +973,12 @@ export const SupportChatAdminView: React.FC<SupportChatAdminViewProps> = ({ show
 
                       <div className="flex items-center gap-1.5 flex-wrap">
                         <button
-                          onClick={() => handleSetUserMembership('Plus Plan', 30)}
+                          onClick={() => handleSetUserMembership('Pro Plan', 30)}
                           disabled={isSettingPlan}
                           className="px-2.5 py-1 bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/30 rounded-lg text-xs font-bold transition cursor-pointer flex items-center gap-1"
-                          title="Grant Plus Plan (30 Days)"
+                          title="Grant Pro Plan (30 Days)"
                         >
-                          <Crown size={12} /> Plus (30D)
+                          <Crown size={12} /> Pro (30D)
                         </button>
 
                         <button

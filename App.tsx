@@ -1,5 +1,5 @@
 // App.tsx
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { io, Socket } from 'socket.io-client';
 import { 
   Menu, 
@@ -97,105 +97,171 @@ import {
   FileUp,
   PenTool,
   AlertCircle,
-  Eye
+  Eye,
+  Sun
 } from 'lucide-react';
 import { TOOLS, APP_NAME } from './constants';
-import { Tool, ToolCategory, User, FileData, getUserPurchasedTier, isBillingCycleCovered, BILLING_CYCLE_LABELS, BillingCycleType, getPlanCreditValue } from './types';
+import { Tool, ToolCategory, User, FileData, DocxMergeOptions, getUserPurchasedTier, isBillingCycleCovered, BILLING_CYCLE_LABELS, BillingCycleType, getPlanCreditValue } from './types';
 import { ProfilePanel } from './components/ProfilePanel';
 import { UpgradeView } from './components/UpgradeView';
+import { AnimatedToolIcon } from './components/AnimatedToolIcon';
+import { DocumentPreviewModal } from './components/DocumentPreviewModal';
+import { DocxMergeOptionsPanel } from './components/DocxMergeOptionsPanel';
+import { TxtToPdfWorkspace } from './components/workspaces/TxtToPdfWorkspace';
+import { MarkdownToPdfWorkspace } from './components/workspaces/MarkdownToPdfWorkspace';
+import { WordToPdfWorkspace } from './components/workspaces/WordToPdfWorkspace';
+import { ExcelToPdfWorkspace } from './components/workspaces/ExcelToPdfWorkspace';
+import { CsvToPdfWorkspace } from './components/workspaces/CsvToPdfWorkspace';
+import { PowerPointToPdfWorkspace } from './components/workspaces/PowerPointToPdfWorkspace';
+import { JpgToPdfWorkspace } from './components/workspaces/JpgToPdfWorkspace';
+import { HtmlToPdfWorkspace } from './components/workspaces/HtmlToPdfWorkspace';
+import { UsageService } from './services/usageService';
 import { FileUpload } from './components/FileUpload';
 import { SupportChat } from './components/SupportChat';
+import { AppBanOverlay } from './components/AppBanOverlay';
 import { shareOrOpenFullFile, getDocumentBlob } from './src/utils/fileShare';
+import { safeStorage } from './src/utils/safeStorage';
+import { applyUserBanFor1Hour, checkPermanentSuspendedStatus } from './src/utils/profanityFilter';
 import { AdminPanel } from './src/components/AdminPanel';
-import { db, auth, syncUserProfile, logoutUser, subscribeToUserProfile, updateUserInFirestore, subscribeToUserDocuments, addDocumentToFirestore, deleteDocumentFromFirestore, getLocalSession, onPaperXAuthStateChanged, recordUserSession, monitorCurrentSession } from './services/firebase';
+import { db, auth, syncUserProfile, logoutUser, subscribeToUserProfile, updateUserInFirestore, subscribeToUserDocuments, addDocumentToFirestore, deleteDocumentFromFirestore, getLocalSession, clearLocalSession, dispatchPaperXAuthChange, onPaperXAuthStateChanged, recordUserSession, monitorCurrentSession, fetchDocumentBinaryFromFirestore, saveLocalFileBinary } from './services/firebase';
 import { generateFormattedFileName } from './lib/namingUtils';
-import { onAuthStateChanged } from 'firebase/auth';
-import { doc, onSnapshot, setDoc, updateDoc, arrayUnion, query, collection, where } from 'firebase/firestore';
+import { onAuthStateChanged, setPersistence, browserLocalPersistence, browserSessionPersistence } from 'firebase/auth';
+import { doc, onSnapshot, setDoc, updateDoc, arrayUnion, query, collection, where, addDoc, deleteDoc } from 'firebase/firestore';
 
 const AZ_FEATURES = [
   {
     group: 'A – C',
     features: [
-      { name: 'Annotations', desc: 'Highlight, underline, and add digital sticky notes.', icon: Highlighter },
-      { name: 'Auto-Crop', desc: 'Smart edge detection that snaps to document borders during scanning.', icon: Crop },
-      { name: 'Archive', desc: 'Compress files into ZIP formats for easier storage.', icon: Archive },
-      { name: 'Batch Processing', desc: 'Convert or scan multiple documents simultaneously.', icon: Layers },
-      { name: 'Biometric Lock', desc: 'Secure files using Fingerprint or Face ID.', icon: Fingerprint },
-      { name: 'Cloud Sync', desc: 'Automatic backup to Google Drive, Dropbox, or OneDrive.', icon: Cloud },
-      { name: 'Comments', desc: 'Tag collaborators and hold discussions within the document.', icon: MessageSquare }
+      { id: 'annotations', name: 'Annotations', desc: 'Highlight, underline, and add digital sticky notes.', icon: Highlighter },
+      { id: 'autoCrop', name: 'Auto-Crop', desc: 'Smart edge detection that snaps to document borders during scanning.', icon: Crop },
+      { id: 'archive', name: 'Archive', desc: 'Compress files into ZIP formats for easier storage.', icon: Archive },
+      { id: 'batch', name: 'Batch Processing', desc: 'Convert or scan multiple documents simultaneously.', icon: Layers },
+      { id: 'biometric', name: 'Biometric Lock', desc: 'Secure files using Fingerprint or Face ID.', icon: Fingerprint },
+      { id: 'cloud', name: 'Cloud Sync', desc: 'Automatic backup to Google Drive, Dropbox, or OneDrive.', icon: Cloud },
+      { id: 'comments', name: 'Comments', desc: 'Tag collaborators and hold discussions within the document.', icon: MessageSquare }
     ]
   },
   {
     group: 'D – F',
     features: [
-      { name: 'Dark Mode', desc: 'A low-light interface to reduce eye strain.', icon: Moon },
-      { name: 'Dictation', desc: 'Convert your spoken voice into written text (Voice-to-Text).', icon: Mic },
-      { name: 'Digital Signature', desc: 'Draw or upload your signature to legalise forms.', icon: FileSignature },
-      { name: 'Encryption', desc: 'Password-protect files with high-level security.', icon: Lock },
-      { name: 'Export', desc: 'Save files in various formats (PDF, DOCX, JPG, TXT).', icon: Download },
-      { name: 'File Compression', desc: 'Reduce file size without losing visual quality.', icon: Minimize2 },
-      { name: 'Font Customization', desc: 'Access to hundreds of professional typefaces.', icon: Type }
+      { id: 'darkMode', name: 'Dark Mode', desc: 'A low-light interface to reduce eye strain.', icon: Moon },
+      { id: 'dictation', name: 'Dictation', desc: 'Convert your spoken voice into written text (Voice-to-Text).', icon: Mic },
+      { id: 'digitalSignature', name: 'Digital Signature', desc: 'Draw or upload your signature to legalise forms.', icon: FileSignature },
+      { id: 'encryption', name: 'Encryption', desc: 'Password-protect files with high-level security.', icon: Lock },
+      { id: 'export', name: 'Export', desc: 'Save files in various formats (PDF, DOCX, JPG, TXT).', icon: Download },
+      { id: 'fileCompression', name: 'File Compression', desc: 'Reduce file size without losing visual quality.', icon: Minimize2 },
+      { id: 'fontCustomization', name: 'Font Customization', desc: 'Access to hundreds of professional typefaces.', icon: Type }
     ]
   },
   {
     group: 'G – I',
     features: [
-      { name: 'Grammar Check', desc: 'Real-time AI correction for spelling and syntax.', icon: CheckCircle },
-      { name: 'Grayscale Filter', desc: 'Convert colour scans to black and white for clarity.', icon: Droplet },
-      { name: 'Headers & Footers', desc: 'Add page numbers, dates, or titles to every page.', icon: LayoutTemplate },
-      { name: 'Hyperlinks', desc: 'Insert clickable web links or internal document bookmarks.', icon: Link },
-      { name: 'ID Card Mode', desc: 'Scan both sides of an ID and place them on a single page.', icon: CreditCard },
-      { name: 'Image Enhancement', desc: 'AI-powered cleanup of blurry or faded scans.', icon: ImageIcon },
-      { name: 'Image-to-Text', desc: 'Extract editable text from any photo.', icon: FileText }
+      { id: 'grammarCheck', name: 'Grammar Check', desc: 'Real-time AI correction for spelling and syntax.', icon: CheckCircle },
+      { id: 'grayscale', name: 'Grayscale Filter', desc: 'Convert colour scans to black and white for clarity.', icon: Droplet },
+      { id: 'headersFooters', name: 'Headers & Footers', desc: 'Add page numbers, dates, or titles to every page.', icon: LayoutTemplate },
+      { id: 'hyperlinks', name: 'Hyperlinks', desc: 'Insert clickable web links or internal document bookmarks.', icon: Link },
+      { id: 'idCard', name: 'ID Card Mode', desc: 'Scan both sides of an ID and place them on a single page.', icon: CreditCard },
+      { id: 'imageEnhancement', name: 'Image Enhancement', desc: 'AI-powered cleanup of blurry or faded scans.', icon: ImageIcon },
+      { id: 'imageToText', name: 'Image-to-Text', desc: 'Extract editable text from any photo.', icon: FileText }
     ]
   },
   {
     group: 'L – O',
     features: [
-      { name: 'Layout Templates', desc: 'Pre-designed formats for resumes, invoices, and letters.', icon: Layout },
-      { name: 'Line Spacing', desc: 'Adjust the vertical gap between sentences.', icon: AlignJustify },
-      { name: 'Merge Files', desc: 'Combine several PDFs or images into one document.', icon: Combine },
-      { name: 'Multi-language Support', desc: 'Interface and OCR support for dozens of languages.', icon: Languages },
-      { name: 'Night Mode Scanning', desc: 'Uses the flash to capture clear docs in the dark.', icon: Moon },
-      { name: 'OCR', desc: 'Technology that makes scanned text searchable.', icon: Search },
-      { name: 'Offline Access', desc: 'Edit and view files without an internet connection.', icon: WifiOff }
+      { id: 'layoutTemplates', name: 'Layout Templates', desc: 'Pre-designed formats for resumes, invoices, and letters.', icon: Layout },
+      { id: 'lineSpacing', name: 'Line Spacing', desc: 'Adjust the vertical gap between sentences.', icon: AlignJustify },
+      { id: 'mergeFiles', name: 'Merge Files', desc: 'Combine several PDFs or images into one document.', icon: Combine },
+      { id: 'multiLanguage', name: 'Multi-language Support', desc: 'Interface and OCR support for dozens of languages.', icon: Languages },
+      { id: 'nightMode', name: 'Night Mode Scanning', desc: 'Uses the flash to capture clear docs in the dark.', icon: Moon },
+      { id: 'ocr', name: 'OCR', desc: 'Technology that makes scanned text searchable.', icon: Search },
+      { id: 'offlineAccess', name: 'Offline Access', desc: 'Edit and view files without an internet connection.', icon: WifiOff }
     ]
   },
   {
     group: 'P – S',
     features: [
-      { name: 'Page Reordering', desc: 'Drag and drop pages to change their sequence.', icon: ArrowUpDown },
-      { name: 'PDF Splitting', desc: 'Cut a large PDF into multiple smaller files.', icon: Scissors },
-      { name: 'QR Code Scanner', desc: 'Built-in tool to read links and barcodes.', icon: QrCode },
-      { name: 'Read Mode', desc: 'A distraction-free view for reading eBooks or long reports.', icon: BookOpen },
-      { name: 'Redaction', desc: 'Permanently black out sensitive or private information.', icon: Eraser },
-      { name: 'Smart Summaries', desc: 'AI-generated bullet points of long documents.', icon: List },
-      { name: 'Suggestion Mode', desc: 'Track changes without permanently editing the text.', icon: MessageCircleQuestion }
+      { id: 'pageReordering', name: 'Page Reordering', desc: 'Drag and drop pages to change their sequence.', icon: ArrowUpDown },
+      { id: 'pdfSplitting', name: 'PDF Splitting', desc: 'Cut a large PDF into multiple smaller files.', icon: Scissors },
+      { id: 'qrScanner', name: 'QR Code Scanner', desc: 'Built-in tool to read links and barcodes.', icon: QrCode },
+      { id: 'readMode', name: 'Read Mode', desc: 'A distraction-free view for reading eBooks or long reports.', icon: BookOpen },
+      { id: 'redaction', name: 'Redaction', desc: 'Permanently black out sensitive or private information.', icon: Eraser },
+      { id: 'smartSummaries', name: 'Smart Summaries', desc: 'AI-generated bullet points of long documents.', icon: List },
+      { id: 'suggestionMode', name: 'Suggestion Mode', desc: 'Track changes without permanently editing the text.', icon: MessageCircleQuestion }
     ]
   },
   {
     group: 'T – Z',
     features: [
-      { name: 'Table Extraction', desc: 'Scan a printed table and turn it into an Excel sheet.', icon: Table },
-      { name: 'Translation', desc: 'Instantly translate document content into another language.', icon: Globe },
-      { name: 'Version History', desc: 'See and restore every edit made to a file.', icon: History },
-      { name: 'Watermarking', desc: 'Overlay "Draft" or "Confidential" stamps on pages.', icon: Stamp },
-      { name: 'Web-to-PDF', desc: 'Save a live website as a document for offline use.', icon: Globe },
-      { name: 'Wireless Printing', desc: 'Send documents directly to a Wi-Fi printer.', icon: Printer },
-      { name: 'Z-Ordering', desc: 'Layer images and text boxes on top of each other.', icon: Layers }
+      { id: 'tableExtraction', name: 'Table Extraction', desc: 'Scan a printed table and turn it into an Excel sheet.', icon: Table },
+      { id: 'translation', name: 'Translation', desc: 'Instantly translate document content into another language.', icon: Globe },
+      { id: 'versionHistory', name: 'Version History', desc: 'See and restore every edit made to a file.', icon: History },
+      { id: 'watermarking', name: 'Watermarking', desc: 'Overlay "Draft" or "Confidential" stamps on pages.', icon: Stamp },
+      { id: 'webToPdf', name: 'Web-to-PDF', desc: 'Save a live website as a document for offline use.', icon: Globe },
+      { id: 'wirelessPrinting', name: 'Wireless Printing', desc: 'Send documents directly to a Wi-Fi printer.', icon: Printer },
+      { id: 'zOrdering', name: 'Z-Ordering', desc: 'Layer images and text boxes on top of each other.', icon: Layers }
     ]
+  }
+];
+
+export const FEATURE_SHORTCUT_CATEGORIES = [
+  {
+    id: ToolCategory.CONVERT_TO,
+    name: 'Convert to PDF',
+    icon: FileUp,
+    badgeColor: 'bg-blue-100 text-blue-800 dark:bg-blue-950/80 dark:text-blue-300',
+    iconColor: 'text-blue-600 dark:text-blue-400'
+  },
+  {
+    id: ToolCategory.CONVERT_FROM,
+    name: 'Convert from PDF',
+    icon: ArrowRightLeft,
+    badgeColor: 'bg-amber-100 text-amber-800 dark:bg-amber-950/80 dark:text-amber-300',
+    iconColor: 'text-amber-600 dark:text-amber-400'
+  },
+  {
+    id: ToolCategory.OPTIMIZE,
+    name: 'Optimize and OCR',
+    icon: Minimize2,
+    badgeColor: 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/80 dark:text-emerald-300',
+    iconColor: 'text-emerald-600 dark:text-emerald-400'
+  },
+  {
+    id: ToolCategory.ORGANIZE,
+    name: 'Organize and Pages',
+    icon: Combine,
+    badgeColor: 'bg-purple-100 text-purple-800 dark:bg-purple-950/80 dark:text-purple-300',
+    iconColor: 'text-purple-600 dark:text-purple-400'
+  },
+  {
+    id: ToolCategory.SECURITY,
+    name: 'Security and Sign',
+    icon: ShieldCheck,
+    badgeColor: 'bg-rose-100 text-rose-800 dark:bg-rose-950/80 dark:text-rose-300',
+    iconColor: 'text-rose-600 dark:text-rose-400'
+  },
+  {
+    id: ToolCategory.INTELLIGENCE,
+    name: 'PDF Intelligence',
+    icon: Sparkles,
+    badgeColor: 'bg-indigo-100 text-indigo-800 dark:bg-indigo-950/80 dark:text-indigo-300',
+    iconColor: 'text-indigo-600 dark:text-indigo-400'
+  },
+  {
+    id: ToolCategory.EDIT,
+    name: 'Edit and Markup',
+    icon: Edit3,
+    badgeColor: 'bg-teal-100 text-teal-800 dark:bg-teal-950/80 dark:text-teal-300',
+    iconColor: 'text-teal-600 dark:text-teal-400'
   }
 ];
 import { Button } from './components/Button';
 import { TextWorkspace } from './components/TextWorkspace';
-import { VoiceWorkspace } from './components/VoiceWorkspace';
 import { AuthPage } from './components/AuthPage';
 import { CameraScanner } from './components/CameraScanner';
-import { GuestToolView } from './components/GuestToolView';
 import { DocumentService } from './services/documentService';
 import { getSupportChatResponse } from './services/automatedService';
 import { PaymentModal } from './components/PaymentModal';
-import { playPaymentApprovedAudio, playPaymentRejectedAudio, triggerPaymentApprovedConfetti } from './lib/paymentFeedback';
+import { playPaymentApprovedAudio, playPaymentRejectedAudio } from './lib/paymentFeedback';
 import { PaymentHistoryView } from './components/PaymentHistoryView';
 import { ResubscriptionModal } from './components/ResubscriptionModal';
 import { BatchCompleteModal } from './components/BatchCompleteModal';
@@ -204,34 +270,37 @@ import { ToastManager } from './components/ToastManager';
 import { ReceiptVerificationView } from './components/ReceiptVerificationView';
 import { ToastNotificationItem, BatchProcessResult } from './types';
 import { getTranslation, useAppTranslation, translateTool } from './translations';
+import { LanguageSelector } from './components/LanguageSelector';
 import { motion, AnimatePresence } from 'motion/react';
 
 // --- Professional Specular Brand Logo ---
-export const BrandLogo = ({ className = "text-xl sm:text-2xl" }: { className?: string }) => {
+export const BrandLogo = ({
+  className = "",
+  size = "md"
+}: {
+  className?: string;
+  size?: 'xs' | 'sm' | 'md' | 'lg';
+  showIcon?: boolean;
+}) => {
+  const sizeMap: Record<string, string> = {
+    xs: "16px",
+    sm: "20px",
+    md: "24px",
+    lg: "28px"
+  };
+  const targetPx = sizeMap[size] || "24px";
+
   return (
-    <motion.span
-      className={`font-heading font-black tracking-tight select-none relative inline-block drop-shadow-sm ${className}`}
-      style={{
-        backgroundImage: "linear-gradient(115deg, #4338ca 0%, #4f46e5 25%, #6366f1 50%, #38bdf8 65%, #ffffff 70%, #38bdf8 75%, #6366f1 85%, #4338ca 100%)",
-        backgroundSize: "200% 100%",
-        WebkitBackgroundClip: "text",
-        WebkitTextFillColor: "transparent",
-        willChange: "background-position",
-        transform: "translateZ(0)",
-      }}
-      animate={{
-        backgroundPosition: ["200% 0%", "0% 0%"],
-      }}
-      transition={{
-        duration: 3.2,
-        repeat: Infinity,
-        ease: "easeInOut",
-      }}
-      whileHover={{ scale: 1.03, transition: { type: "spring", stiffness: 400, damping: 22 } }}
-      whileTap={{ scale: 0.96 }}
-    >
-      {APP_NAME}
-    </motion.span>
+    <div className="flex items-center select-none group cursor-pointer shrink-0">
+      <motion.img
+        src="/PaperXtransparent_cropped.png"
+        alt="PaperX"
+        className={`w-auto max-w-[120px] sm:max-w-[150px] object-contain drop-shadow-xs transition-transform duration-200 group-hover:scale-105 shrink-0 ${className}`}
+        style={{ height: targetPx, maxHeight: targetPx }}
+        whileHover={{ scale: 1.03, transition: { type: "spring", stiffness: 400, damping: 22 } }}
+        whileTap={{ scale: 0.97 }}
+      />
+    </div>
   );
 };
 
@@ -319,23 +388,32 @@ const LocalFileStore = {
 };
 
 // Universal Path and Router Implementation for direct search-engine / SEO tool landing
-export const getNormalizedPath = () => {
+export const getNormalizedPath = (): string => {
   if (typeof window === 'undefined') return '/';
-  const hash = window.location.hash.replace(/^#/, '').trim();
-  if (hash && hash !== '/') {
-    return hash.startsWith('/') ? hash : `/${hash}`;
+  const rawHash = (window.location.hash || '').replace(/^#/, '').trim();
+  if (rawHash) {
+    const cleanHash = rawHash.split('?')[0].replace(/^\/+|\/+$/g, '').toLowerCase();
+    if (!cleanHash || cleanHash === 'dashboard') {
+      return '/dashboard';
+    }
+    return `/${cleanHash}`;
   }
-  const pathname = window.location.pathname.trim();
-  if (pathname && pathname !== '/' && pathname !== '/index.html') {
-    return pathname.startsWith('/') ? pathname : `/${pathname}`;
+  const rawPathname = (window.location.pathname || '').trim();
+  if (rawPathname && rawPathname !== '/' && rawPathname !== '/index.html') {
+    const cleanPath = rawPathname.split('?')[0].replace(/^\/+|\/+$/g, '').toLowerCase();
+    if (cleanPath && cleanPath !== 'dashboard') {
+      return `/${cleanPath}`;
+    }
   }
-  return '/';
+  return '/dashboard';
 };
 
-export const findToolFromPath = (path: string) => {
+export const findToolFromPath = (path: any) => {
   if (!path) return null;
-  const clean = path.split('?')[0].replace(/^#/, '').replace(/^\/+|\/+$/g, '').toLowerCase();
-  if (!clean) return null;
+  const strPath = typeof path === 'string' ? path : String(path || '');
+  if (!strPath) return null;
+  const clean = strPath.split('?')[0].replace(/^#/, '').replace(/^\/+|\/+$/g, '').toLowerCase();
+  if (!clean || clean === 'dashboard') return null;
   if (clean.startsWith('tool/')) {
     const id = clean.replace('tool/', '');
     return TOOLS.find(t => t.id.toLowerCase() === id) || null;
@@ -361,9 +439,30 @@ const useHashLocation = () => {
   return loc;
 };
 
-const navigate = (path: string) => {
-  const clean = path.startsWith('/') ? path : `/${path}`;
-  window.location.hash = clean;
+const navigate = (path: any) => {
+  if (path && typeof path === 'object' && 'preventDefault' in path && typeof path.preventDefault === 'function') {
+    try { path.preventDefault(); } catch (_) {}
+  }
+  const strPath = typeof path === 'string' 
+    ? path 
+    : (path && typeof path === 'object' && 'pathname' in path ? String(path.pathname) : (path && (typeof path === 'string' || typeof path === 'number') ? String(path) : '/'));
+  
+  const cleanStr = strPath.split('?')[0].replace(/^#/, '').replace(/^\/+|\/+$/g, '').toLowerCase();
+  const targetHash = (!cleanStr || cleanStr === 'dashboard') ? 'dashboard' : cleanStr;
+  const targetHashPath = `/${targetHash}`;
+  
+  if (typeof window === 'undefined') return;
+
+  const currentRaw = (window.location.hash || '').replace(/^#/, '').trim();
+  const currentClean = currentRaw.split('?')[0].replace(/^\/+|\/+$/g, '').toLowerCase();
+
+  if (currentClean !== targetHash) {
+    window.location.hash = targetHashPath;
+  } else {
+    try {
+      window.dispatchEvent(new Event('hashchange'));
+    } catch (_) {}
+  }
 };
 
 // --- Knowledge Base for Support Chat ---
@@ -386,13 +485,15 @@ const SUPPORT_REASONS = [
 ];
 
 // --- Premium Logo Component ---
-const PaperXLogo = ({ className = "w-8 h-8", color = "currentColor" }: { className?: string, color?: string }) => (
-  <svg viewBox="0 0 100 100" className={`${className} animate-pulse-soft group-hover:scale-110 transition-transform duration-500`} fill="none" xmlns="http://www.w3.org/2000/svg">
-    {/* Stylized Folded 'P' - Abstract Paper Concept */}
-    <path d="M25 20 C 25 10, 40 10, 55 10 L 70 10 C 85 10, 90 25, 90 40 C 90 60, 75 65, 60 65 L 50 65 L 50 90 L 25 90 L 25 20" fill={color} opacity="0.9" />
-    <path d="M25 20 L 50 20 L 50 65 L 25 45 Z" fill="white" opacity="0.3" />
-    <path d="M50 65 L 60 65 C 75 65, 90 60, 90 40 C 90 35, 88 30, 85 28 L 50 50 Z" fill="black" opacity="0.2" />
-  </svg>
+const PaperXLogo = ({ className = "w-8 h-8" }: { className?: string; color?: string }) => (
+  <img 
+    src="/PaperXtransparent_cropped.png" 
+    alt="PaperX Logo" 
+    className={`${className} object-contain max-h-8 max-w-[120px] group-hover:scale-105 transition-transform duration-300 shrink-0`} 
+    onError={(e) => {
+      (e.target as HTMLImageElement).src = '/PaperXtransparent_cropped.png';
+    }}
+  />
 );
 
 // --- Premium Processing Overlay Component ---
@@ -401,7 +502,7 @@ const ProcessingOverlay = ({ status, progress, onClose }: { status: string, prog
   const isError = status === 'Error' || status.includes('Failed');
 
   return (
-    <div className="absolute inset-0 z-50 bg-black/20 backdrop-blur-3xl flex flex-col items-center justify-center rounded-[2.5rem] animate-fade-in-up border border-white/10 p-10 text-center shadow-2xl relative">
+    <div className="absolute inset-0 z-50 bg-black/20 flex flex-col items-center justify-center rounded-[2.5rem] animate-fade-in-up border border-white/10 p-10 text-center shadow-2xl relative">
        {onClose && (
          <button 
            onClick={onClose}
@@ -447,7 +548,7 @@ const ProcessingOverlay = ({ status, progress, onClose }: { status: string, prog
            </div>
        ) : (
            <div className="w-full max-w-sm mt-6">
-              <div className="h-3 bg-gray-100/50 rounded-full overflow-hidden mb-4 relative shadow-inner backdrop-blur-sm">
+              <div className="h-3 bg-gray-100/50 rounded-full overflow-hidden mb-4 relative shadow-inner ">
                   <div 
                       className={`absolute top-0 left-0 h-full transition-all duration-700 ease-out ${isCompleted ? 'bg-stone-900' : 'bg-black'}`} 
                       style={{ width: `${progress}%` }} 
@@ -478,13 +579,13 @@ const executeDirectAppDownload = async (
   onProgress?: (progress: number) => void,
   onComplete?: () => void
 ) => {
-  const navUserAgent = (typeof window !== 'undefined' && window.navigator && window.navigator.userAgent) ? window.navigator.userAgent : '';
-  const userAgent = typeof navUserAgent === 'string' ? navUserAgent : '';
+  const navUserAgent = (typeof window !== 'undefined' && window.navigator && typeof window.navigator.userAgent === 'string') ? window.navigator.userAgent : '';
+  const userAgent = navUserAgent;
   const validPlatform = typeof platformOverride === 'string' ? platformOverride : undefined;
   let targetPlatform = validPlatform || 'Android';
   let ext = 'apk';
 
-  if (!validPlatform && userAgent && typeof userAgent.indexOf === 'function') {
+  if (!validPlatform && userAgent) {
     if (userAgent.indexOf("Mac") !== -1) {
       targetPlatform = 'macOS';
       ext = 'dmg';
@@ -559,6 +660,7 @@ const executeDirectAppDownload = async (
 // --- StoredDocument Interface ---
 interface StoredDocument {
     id: string;
+    userId?: string;
     name: string;
     date: string;
     timestamp: number;
@@ -593,15 +695,15 @@ const LiveDemo = () => {
     ];
 
     const variants = {
-        enter: { opacity: 0, scale: 0.92, filter: "blur(12px)", y: 15 },
-        center: { opacity: 1, scale: 1, filter: "blur(0px)", y: 0, transition: { duration: 0.6, ease: [0.16, 1, 0.3, 1] } },
-        exit: { opacity: 0, scale: 1.08, filter: "blur(12px)", y: -15, transition: { duration: 0.4, ease: [0.16, 1, 0.3, 1] } }
+        enter: { opacity: 0, scale: 0.92, filter: "none", y: 15 },
+        center: { opacity: 1, scale: 1, filter: "none", y: 0, transition: { duration: 0.6, ease: [0.16, 1, 0.3, 1] } },
+        exit: { opacity: 0, scale: 1.08, filter: "none", y: -15, transition: { duration: 0.4, ease: [0.16, 1, 0.3, 1] } }
     };
 
     return (
-        <div className="relative w-full min-h-[340px] max-w-xl mx-auto bg-white/40 dark:bg-black/40 backdrop-blur-3xl rounded-[2rem] shadow-[0_24px_60px_-12px_rgba(0,0,0,0.15)] dark:shadow-[0_24px_60px_-12px_rgba(0,0,0,0.6)] border border-white/60 dark:border-white/10 overflow-hidden select-none ring-1 ring-black/5 flex flex-col justify-between transition-all duration-500 group">
+        <div className="relative w-full min-h-[340px] max-w-xl mx-auto bg-white/40 dark:bg-black/40 rounded-[2rem] shadow-[0_24px_60px_-12px_rgba(0,0,0,0.15)] dark:shadow-[0_24px_60px_-12px_rgba(0,0,0,0.6)] border border-white/60 dark:border-white/10 overflow-hidden select-none ring-1 ring-black/5 flex flex-col justify-between transition-all duration-500 group">
             {/* Window Top Bar */}
-            <div className="h-12 bg-white/50 dark:bg-white/5 backdrop-blur-md border-b border-white/40 dark:border-white/5 flex items-center justify-between px-5 z-20 relative shadow-sm">
+            <div className="h-12 bg-white/50 dark:bg-white/5 border-b border-white/40 dark:border-white/5 flex items-center justify-between px-5 z-20 relative shadow-sm">
                 <div className="flex items-center gap-2 z-10">
                     <div className="w-3 h-3 rounded-full bg-rose-400/90 border border-rose-500/20 shadow-sm" />
                     <div className="w-3 h-3 rounded-full bg-amber-400/90 border border-amber-500/20 shadow-sm" />
@@ -610,7 +712,7 @@ const LiveDemo = () => {
                 
                 {/* Centered URL Address Bar */}
                 <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                    <div className="px-4 py-1.5 bg-white/60 dark:bg-black/40 backdrop-blur-md rounded-xl border border-white/60 dark:border-white/10 text-[11px] font-bold text-gray-700 dark:text-gray-300 flex items-center gap-1.5 shadow-sm tracking-tight transition-all duration-300 group-hover:w-64 justify-center group-hover:bg-white/90 dark:group-hover:bg-stone-800/80">
+                    <div className="px-4 py-1.5 bg-white/60 dark:bg-black/40 rounded-xl border border-white/60 dark:border-white/10 text-[11px] font-bold text-gray-700 dark:text-gray-300 flex items-center gap-1.5 shadow-sm tracking-tight transition-all duration-300 group-hover:w-64 justify-center group-hover:bg-white/90 dark:group-hover:bg-stone-800/80">
                         <Lock size={12} className="text-emerald-500" /> <span className="opacity-80">paperx.io</span>
                     </div>
                 </div>
@@ -663,7 +765,7 @@ const LiveDemo = () => {
                                     boxShadow: ["0px 0px 0px rgba(99,102,241,0)", "0px 0px 30px rgba(99,102,241,0.15)", "0px 0px 0px rgba(99,102,241,0)"]
                                 }}
                                 transition={{ repeat: Infinity, duration: 2.5 }}
-                                className="w-full max-w-sm p-8 bg-white/80 dark:bg-stone-800/80 backdrop-blur-md rounded-3xl border-2 border-dashed border-stone-300 dark:border-stone-600 shadow-xl flex flex-col items-center text-center relative overflow-hidden group"
+                                className="w-full max-w-sm p-8 bg-white/80 dark:bg-stone-800/80 rounded-3xl border-2 border-dashed border-stone-300 dark:border-stone-600 shadow-xl flex flex-col items-center text-center relative overflow-hidden group"
                             >
                                 <motion.div 
                                     animate={{ y: [-6, 0, -6], scale: [1, 1.05, 1] }}
@@ -747,7 +849,7 @@ const LiveDemo = () => {
                                 >
                                     <div className="flex items-center gap-3">
                                         <div className="p-2 bg-indigo-500/20 rounded-lg">
-                                            <Sparkles size={18} className="text-indigo-400 animate-pulse" />
+                                            <Sparkles size={18} className="text-indigo-400" />
                                         </div>
                                         <div className="flex flex-col">
                                             <span className="text-sm font-bold">Extracting Data</span>
@@ -772,7 +874,7 @@ const LiveDemo = () => {
                         >
                             <div className="bg-white dark:bg-stone-800 rounded-3xl p-6 border border-stone-200 dark:border-stone-700 shadow-2xl relative overflow-hidden">
                                 {/* Background glow */}
-                                <div className="absolute -inset-10 bg-gradient-to-tr from-emerald-500/10 to-transparent blur-3xl rounded-full" />
+                                <div className="absolute -inset-10 bg-gradient-to-tr from-emerald-500/10 to-transparent  rounded-full" />
                                 
                                 <div className="relative z-10 flex justify-between items-center text-sm font-bold text-stone-500 mb-6">
                                     <span>Original: <strong className="text-stone-900 dark:text-white">14.8 MB</strong></span>
@@ -867,367 +969,7 @@ const LiveDemo = () => {
     );
 };
 
-import * as pdfjsLib from 'pdfjs-dist';
-
-// Configure pdfjs worker
-if (typeof window !== 'undefined') {
-    pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js`;
-}
-
-interface PdfCanvasViewerProps {
-    fileUrl: string;
-    onRenderError?: () => void;
-}
-
-const PdfCanvasViewer = ({ fileUrl, onRenderError }: PdfCanvasViewerProps) => {
-    const [numPages, setNumPages] = useState<number>(0);
-    const [pdfDoc, setPdfDoc] = useState<any>(null);
-    const [loading, setLoading] = useState<boolean>(true);
-    const [hasError, setHasError] = useState<boolean>(false);
-
-    useEffect(() => {
-        let isCancelled = false;
-        setLoading(true);
-        setHasError(false);
-
-        (async () => {
-            try {
-                let arrayBuffer: ArrayBuffer;
-                if (fileUrl.startsWith('data:')) {
-                    const base64Part = fileUrl.split(',')[1];
-                    if (!base64Part) throw new Error('Invalid base64 string');
-                    const binaryString = atob(base64Part);
-                    const len = binaryString.length;
-                    const bytes = new Uint8Array(len);
-                    for (let i = 0; i < len; i++) {
-                        bytes[i] = binaryString.charCodeAt(i);
-                    }
-                    arrayBuffer = bytes.buffer;
-                } else {
-                    const res = await fetch(fileUrl);
-                    arrayBuffer = await res.arrayBuffer();
-                }
-
-                const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(arrayBuffer) });
-                const doc = await loadingTask.promise;
-
-                if (!isCancelled) {
-                    setPdfDoc(doc);
-                    setNumPages(doc.numPages);
-                    setLoading(false);
-                }
-            } catch (err) {
-                console.warn('PDF canvas loading error:', err);
-                if (!isCancelled) {
-                    setHasError(true);
-                    setLoading(false);
-                    if (onRenderError) onRenderError();
-                }
-            }
-        })();
-
-        return () => {
-            isCancelled = true;
-        };
-    }, [fileUrl]);
-
-    if (loading) {
-        return (
-            <div className="my-auto flex flex-col items-center gap-3 text-stone-400 p-8">
-                <Loader2 size={32} className="animate-spin text-indigo-600" />
-                <p className="text-xs font-semibold">Rendering PDF pages...</p>
-            </div>
-        );
-    }
-
-    if (hasError || !pdfDoc || numPages === 0) {
-        return null;
-    }
-
-    return (
-        <div className="w-full flex flex-col items-center gap-6 py-4">
-            {Array.from({ length: numPages }, (_, i) => i + 1).map((pageNum) => (
-                <PdfSinglePageCanvas key={pageNum} pdfDoc={pdfDoc} pageNum={pageNum} totalPages={numPages} />
-            ))}
-        </div>
-    );
-};
-
-const PdfSinglePageCanvas = ({ pdfDoc, pageNum, totalPages }: { pdfDoc: any; pageNum: number; totalPages: number; key?: React.Key }) => {
-    const canvasRef = useRef<HTMLCanvasElement | null>(null);
-
-    useEffect(() => {
-        let isCancelled = false;
-        let renderTask: any = null;
-        (async () => {
-            try {
-                const page = await pdfDoc.getPage(pageNum);
-                if (isCancelled || !canvasRef.current) return;
-
-                const viewport = page.getViewport({ scale: 1.3 });
-                const canvas = canvasRef.current;
-                const context = canvas.getContext('2d');
-                if (!context) return;
-
-                canvas.height = viewport.height;
-                canvas.width = viewport.width;
-
-                renderTask = page.render({ canvasContext: context, viewport });
-                await renderTask.promise;
-            } catch (err: any) {
-                if (err?.name !== 'RenderingCancelledException') {
-                    console.warn(`Error rendering PDF page ${pageNum}:`, err);
-                }
-            }
-        })();
-
-        return () => {
-            isCancelled = true;
-            if (renderTask && typeof renderTask.cancel === 'function') {
-                try { renderTask.cancel(); } catch (_) {}
-            }
-        };
-    }, [pdfDoc, pageNum]);
-
-    return (
-        <div className="flex flex-col items-center gap-2 max-w-full">
-            <div className="bg-white rounded-xl shadow-2xl overflow-hidden border border-stone-200 dark:border-stone-800">
-                <canvas ref={canvasRef} className="max-w-full h-auto block" />
-            </div>
-            {totalPages > 1 && (
-                <span className="text-[11px] font-bold text-stone-500 dark:text-stone-400 bg-stone-200/60 dark:bg-stone-800 px-3 py-0.5 rounded-full shadow-xs">
-                    Page {pageNum} of {totalPages}
-                </span>
-            )}
-        </div>
-    );
-};
-
-const DocumentPreviewModal = ({
-    file,
-    isOpen,
-    onClose,
-    onDownload,
-    onShare
-}: {
-    file: StoredDocument | null;
-    isOpen: boolean;
-    onClose: () => void;
-    onDownload: (id: string, name: string) => void;
-    onShare: (file: StoredDocument) => void;
-}) => {
-    const [fileUrl, setFileUrl] = useState<string | null>(null);
-    const [imageDataUrl, setImageDataUrl] = useState<string | null>(null);
-    const [isLoading, setIsLoading] = useState(false);
-    const [pdfRenderFailed, setPdfRenderFailed] = useState(false);
-
-    useEffect(() => {
-        if (!isOpen || !file) return;
-        let isMounted = true;
-        let createdBlobUrl: string | null = null;
-        setIsLoading(true);
-        setFileUrl(null);
-        setImageDataUrl(null);
-        setPdfRenderFailed(false);
-
-        (async () => {
-            try {
-                // 1. Check if raw dataUrl exists in IndexedDB or on file directly
-                const storedDataUrl = (await LocalFileStore.get(file.id)) || file.dataUrl;
-                if (storedDataUrl && isMounted) {
-                    // Cache to local store if not already stored
-                    LocalFileStore.save(file.id, storedDataUrl);
-
-                    if (storedDataUrl.startsWith('data:image/') || file.type === 'IMAGE') {
-                        setImageDataUrl(storedDataUrl);
-                        setFileUrl(storedDataUrl);
-                        setIsLoading(false);
-                        return;
-                    } else if (storedDataUrl.startsWith('data:application/pdf') || storedDataUrl.startsWith('data:application/octet-stream')) {
-                        setFileUrl(storedDataUrl);
-                        setIsLoading(false);
-                        return;
-                    }
-                }
-
-                // 2. Fetch/create standard PDF blob
-                const blob = await getDocumentBlob(file, LocalFileStore.get);
-                const url = URL.createObjectURL(blob);
-                createdBlobUrl = url;
-                if (isMounted) {
-                    setFileUrl(url);
-                    setIsLoading(false);
-                }
-            } catch (e) {
-                console.warn('Error loading document preview blob', e);
-                if (isMounted) {
-                    setIsLoading(false);
-                }
-            }
-        })();
-
-        return () => {
-            isMounted = false;
-            if (createdBlobUrl) {
-                try { URL.revokeObjectURL(createdBlobUrl); } catch (_) {}
-            }
-        };
-    }, [isOpen, file]);
-
-    if (!isOpen || !file) return null;
-
-    return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 md:p-6 bg-black/70 backdrop-blur-md">
-            <motion.div
-                initial={{ opacity: 0, scale: 0.95, y: 20 }}
-                animate={{ opacity: 1, scale: 1, y: 0 }}
-                exit={{ opacity: 0, scale: 0.95, y: 20 }}
-                className="bg-white dark:bg-stone-900 rounded-2xl sm:rounded-3xl max-w-3xl w-full max-h-[92vh] sm:max-h-[90vh] flex flex-col shadow-2xl overflow-hidden border border-stone-200 dark:border-stone-800"
-            >
-                {/* Header */}
-                <div className="p-3.5 sm:p-5 border-b border-stone-100 dark:border-stone-800 flex items-center justify-between gap-3 bg-stone-50/80 dark:bg-stone-900/80">
-                    <div className="flex items-center gap-2.5 sm:gap-3 min-w-0 flex-1">
-                        <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-indigo-50 dark:bg-indigo-950/50 text-indigo-600 dark:text-indigo-400 flex items-center justify-center shrink-0">
-                            <FileText size={18} className="sm:w-5 sm:h-5" />
-                        </div>
-                        <div className="min-w-0 flex-1">
-                            <h3 className="font-bold text-stone-900 dark:text-white truncate text-sm sm:text-base leading-tight">{file.name}</h3>
-                            <div className="flex items-center flex-wrap gap-x-2 gap-y-1 text-[11px] sm:text-xs text-stone-500 dark:text-stone-400 font-medium mt-1">
-                                <span className="whitespace-nowrap">{file.date}</span>
-                                <span className="text-stone-300 dark:text-stone-600 select-none">•</span>
-                                <span className="whitespace-nowrap">{file.size}</span>
-                                <span className="text-stone-300 dark:text-stone-600 select-none">•</span>
-                                <span className="uppercase px-1.5 py-0.5 bg-stone-200/80 dark:bg-stone-800 rounded font-bold text-[10px] text-stone-700 dark:text-stone-300 whitespace-nowrap">{file.type}</span>
-                                {file.action && (
-                                    <>
-                                        <span className="text-stone-300 dark:text-stone-600 select-none">•</span>
-                                        <span className="text-indigo-600 dark:text-indigo-400 font-bold whitespace-nowrap">{file.action}</span>
-                                    </>
-                                )}
-                            </div>
-                        </div>
-                    </div>
-                    <button
-                        onClick={onClose}
-                        className="p-2 text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 rounded-full hover:bg-stone-200/60 dark:hover:bg-stone-800 transition-colors cursor-pointer shrink-0 -mr-1"
-                        aria-label="Close Preview"
-                    >
-                        <X size={18} className="sm:w-5 sm:h-5" />
-                    </button>
-                </div>
-
-                {/* Preview Content Area */}
-                <div className="flex-1 p-3 sm:p-6 overflow-y-auto bg-stone-200/80 dark:bg-stone-950 flex flex-col items-center justify-start min-h-[360px] sm:min-h-[460px]">
-                    {isLoading ? (
-                        <div className="my-auto flex flex-col items-center gap-3 text-stone-400">
-                            <Loader2 size={32} className="animate-spin text-indigo-600" />
-                            <p className="text-sm font-medium">Loading document preview...</p>
-                        </div>
-                    ) : imageDataUrl ? (
-                        <div className="w-full flex justify-center my-auto">
-                            <img
-                                src={imageDataUrl}
-                                alt={file.name}
-                                className="max-h-[380px] sm:max-h-[480px] max-w-full rounded-xl object-contain shadow-2xl border border-stone-300 dark:border-stone-800 bg-white"
-                            />
-                        </div>
-                    ) : fileUrl && !pdfRenderFailed ? (
-                        <PdfCanvasViewer
-                            fileUrl={fileUrl}
-                            onRenderError={() => setPdfRenderFailed(true)}
-                        />
-                    ) : (
-                        /* Authentic A4 Document Preview Sheet Fallback */
-                        <div className="w-full max-w-xl bg-white text-stone-900 rounded-2xl shadow-2xl border border-stone-200 overflow-hidden my-2 flex flex-col transition-all">
-                            {/* Paper Banner */}
-                            <div className="bg-stone-900 text-white px-6 py-4 flex items-center justify-between border-b border-stone-800">
-                                <div className="flex items-center gap-2.5">
-                                    <div className="w-7 h-7 rounded-lg bg-white/10 flex items-center justify-center font-bold text-amber-400 text-xs">
-                                        PX
-                                    </div>
-                                    <div>
-                                        <h4 className="font-bold text-xs uppercase tracking-wider text-stone-200">PaperX Document Cloud</h4>
-                                        <p className="text-[10px] text-stone-400">Verified Electronic Document Record</p>
-                                    </div>
-                                </div>
-                                <span className="text-[10px] font-bold px-2 py-0.5 bg-emerald-500/20 text-emerald-400 rounded-full border border-emerald-500/30">
-                                    VERIFIED PDF
-                                </span>
-                            </div>
-
-                            {/* Sheet Body */}
-                            <div className="p-6 sm:p-8 space-y-6">
-                                {/* Title & Divider */}
-                                <div className="border-b border-stone-200 pb-4">
-                                    <span className="text-[10px] font-extrabold text-stone-400 uppercase tracking-widest block mb-1">Document Name</span>
-                                    <h2 className="text-lg sm:text-xl font-bold text-stone-900 break-words">{file.name}</h2>
-                                </div>
-
-                                {/* Metadata Grid */}
-                                <div className="grid grid-cols-2 gap-4 bg-stone-50 p-4 rounded-xl border border-stone-200/80 text-xs">
-                                    <div>
-                                        <span className="text-stone-400 font-medium block text-[10px] uppercase">Document ID</span>
-                                        <span className="font-mono font-bold text-stone-800 truncate block">{file.id}</span>
-                                    </div>
-                                    <div>
-                                        <span className="text-stone-400 font-medium block text-[10px] uppercase">Created Date</span>
-                                        <span className="font-bold text-stone-800 block">{file.date}</span>
-                                    </div>
-                                    <div>
-                                        <span className="text-stone-400 font-medium block text-[10px] uppercase">File Size</span>
-                                        <span className="font-bold text-stone-800 block">{file.size}</span>
-                                    </div>
-                                    <div>
-                                        <span className="text-stone-400 font-medium block text-[10px] uppercase">Engine Action</span>
-                                        <span className="font-bold text-indigo-600 block">{file.action || 'Processed PDF'}</span>
-                                    </div>
-                                </div>
-
-                                {/* Status & Security */}
-                                <div className="flex items-center gap-2 p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-emerald-800 text-xs font-semibold">
-                                    <Check size={16} className="text-emerald-600 shrink-0" />
-                                    <span>Cryptographically Verified & Sealed (SHA-256 Validated)</span>
-                                </div>
-
-                                {/* Document Record Notice */}
-                                <div className="p-4 bg-stone-50 rounded-xl border border-stone-200 text-xs text-stone-600 space-y-2">
-                                    <p className="font-bold text-stone-800">Document Specification:</p>
-                                    <p>
-                                        This document is formatted in ISO 32000-1 (PDF) standardized specification. It is ready for universal reading, printing, and digital distribution.
-                                    </p>
-                                </div>
-                            </div>
-
-                            {/* Sheet Footer */}
-                            <div className="bg-stone-50 border-t border-stone-200 px-6 py-3 flex items-center justify-between text-[11px] text-stone-500 font-medium">
-                                <span>PaperX PDF Suite v2.0</span>
-                                <span>Page 1 of 1</span>
-                            </div>
-                        </div>
-                    )}
-                </div>
-
-                {/* Footer Controls */}
-                <div className="p-3.5 sm:p-4 bg-white dark:bg-stone-900 border-t border-stone-100 dark:border-stone-800 flex items-center justify-between gap-2 sm:gap-3">
-                    <button
-                        onClick={onClose}
-                        className="px-4 py-2.5 bg-stone-100 dark:bg-stone-800 hover:bg-stone-200 dark:hover:bg-stone-700 text-stone-700 dark:text-stone-300 font-bold rounded-xl text-xs flex items-center justify-center gap-2 transition-all active:scale-95 cursor-pointer min-h-[40px]"
-                    >
-                        <span>Close Preview</span>
-                    </button>
-                    <button
-                        onClick={() => onDownload(file.id, file.name)}
-                        className="px-5 sm:px-6 py-2.5 bg-black dark:bg-white text-white dark:text-black hover:opacity-90 font-bold rounded-xl text-xs flex items-center justify-center gap-2 shadow-lg transition-transform active:scale-95 cursor-pointer whitespace-nowrap min-h-[40px]"
-                        title="Download file directly"
-                    >
-                        <Download size={15} />
-                        <span>Download File</span>
-                    </button>
-                </div>
-            </motion.div>
-        </div>
-    );
-};
+// DocumentPreviewModal is imported from components/DocumentPreviewModal
 
 const MONTH_NAMES: { [key: string]: string } = {
     '1': 'January', '2': 'February', '3': 'March', '4': 'April',
@@ -1276,11 +1018,26 @@ const getStoredDocTimestamp = (f: any): number => {
     if (f.date) {
         const parsed = new Date(f.date).getTime();
         if (!isNaN(parsed) && parsed > 0) return parsed;
+        if (typeof f.date === 'string') {
+            const parts = f.date.split(/[/.-]/);
+            if (parts.length === 3) {
+                const p1 = parseInt(parts[0], 10);
+                const p2 = parseInt(parts[1], 10);
+                const p3 = parseInt(parts[2], 10);
+                if (!isNaN(p1) && !isNaN(p2) && !isNaN(p3)) {
+                    const year = p3 > 1000 ? p3 : p1 > 1000 ? p1 : 2026;
+                    const month = (p1 <= 12 && p1 > 0 && p2 > 12) ? p1 - 1 : (p2 <= 12 && p2 > 0) ? p2 - 1 : 0;
+                    const day = (p1 > 12) ? p1 : p2 > 12 ? p2 : p2;
+                    const d = new Date(year, month, day).getTime();
+                    if (!isNaN(d) && d > 0) return d;
+                }
+            }
+        }
     }
-    if (typeof f.id === 'string' && f.id.startsWith('doc_')) {
-        const parts = f.id.split('_');
-        if (parts.length >= 2) {
-            const parsedIdTs = parseInt(parts[1], 10);
+    if (typeof f.id === 'string') {
+        const numbers = f.id.match(/\d{12,14}/);
+        if (numbers && numbers[0]) {
+            const parsedIdTs = parseInt(numbers[0], 10);
             if (!isNaN(parsedIdTs) && parsedIdTs > 1000000000000) {
                 return parsedIdTs;
             }
@@ -1293,7 +1050,7 @@ const getStoredDocTimestamp = (f: any): number => {
 };
 
 const DocumentsView = ({ 
-    files, 
+    files = [], 
     onDownload, 
     onDelete, 
     onOpen, 
@@ -1326,53 +1083,143 @@ const DocumentsView = ({
     }, []);
 
     const getDocTimestamp = (f: StoredDocument): number => getStoredDocTimestamp(f);
+
+    const getToolIdForFile = (file: StoredDocument): string => {
+        const action = (file.action || '').toLowerCase().trim();
+        const name = (file.name || '').toLowerCase().trim();
+        const tags = (file.tags || []).map(t => String(t).toLowerCase().trim());
+        const ext = name.split('.').pop() || '';
+
+        // 1. Check exact match of action with tool name or ID
+        if (action) {
+            const matched = TOOLS.find(t => t.name.toLowerCase() === action || t.id.toLowerCase() === action);
+            if (matched) return matched.id;
+        }
+
+        // 2. Scan name, action, or tags for specific tool keywords
+        if (name.includes('jpg_to_pdf') || name.includes('jpg-to-pdf') || name.includes('jpg to pdf') || action.includes('jpg to pdf') || tags.includes('jpg to pdf') || name.includes('jpeg_to_pdf') || name.includes('jpeg-to-pdf') || name.includes('png_to_pdf') || name.includes('png-to-pdf')) {
+            return 'jpg-to-pdf';
+        }
+        if (name.includes('word_to_pdf') || name.includes('word-to-pdf') || name.includes('word to pdf') || action.includes('word to pdf') || tags.includes('word to pdf') || name.includes('docx_to_pdf') || name.includes('doc_to_pdf') || name.includes('docx-to-pdf')) {
+            return 'word-to-pdf';
+        }
+        if (name.includes('excel_to_pdf') || name.includes('excel-to-pdf') || name.includes('excel to pdf') || action.includes('excel to pdf') || tags.includes('excel to pdf') || name.includes('xlsx_to_pdf') || name.includes('xls_to_pdf') || name.includes('xlsx-to-pdf')) {
+            return 'excel-to-pdf';
+        }
+        if (name.includes('powerpoint_to_pdf') || name.includes('powerpoint-to-pdf') || name.includes('powerpoint to pdf') || action.includes('powerpoint to pdf') || tags.includes('powerpoint to pdf') || name.includes('ppt_to_pdf') || name.includes('pptx_to_pdf') || name.includes('pptx-to-pdf')) {
+            return 'powerpoint-to-pdf';
+        }
+        if (name.includes('html_to_pdf') || name.includes('html-to-pdf') || name.includes('html to pdf') || action.includes('html to pdf') || tags.includes('html to pdf')) {
+            return 'html-to-pdf';
+        }
+        if (name.includes('txt_to_pdf') || name.includes('txt-to-pdf') || name.includes('txt to pdf') || action.includes('txt to pdf') || tags.includes('txt to pdf')) {
+            return 'txt-to-pdf';
+        }
+        if (name.includes('markdown_to_pdf') || name.includes('markdown-to-pdf') || name.includes('markdown to pdf') || action.includes('markdown to pdf') || tags.includes('markdown to pdf') || name.includes('md_to_pdf') || name.includes('md-to-pdf')) {
+            return 'markdown-to-pdf';
+        }
+        if (name.includes('pdf_to_jpg') || name.includes('pdf-to-jpg') || name.includes('pdf to jpg') || action.includes('pdf to jpg') || tags.includes('pdf to jpg')) {
+            return 'pdf-to-jpg';
+        }
+        if (name.includes('pdf_to_png') || name.includes('pdf-to-png') || name.includes('pdf to png') || action.includes('pdf to png') || tags.includes('pdf to png')) {
+            return 'pdf-to-png';
+        }
+        if (name.includes('pdf_to_word') || name.includes('pdf-to-word') || name.includes('pdf to word') || action.includes('pdf to word') || tags.includes('pdf to word') || name.includes('pdf_to_docx') || name.includes('pdf-to-docx')) {
+            return 'pdf-to-word';
+        }
+        if (name.includes('pdf_to_excel') || name.includes('pdf-to-excel') || name.includes('pdf to excel') || action.includes('pdf to excel') || tags.includes('pdf to excel') || name.includes('pdf_to_xlsx') || name.includes('pdf-to-xlsx')) {
+            return 'pdf-to-excel';
+        }
+        if (name.includes('pdf_to_powerpoint') || name.includes('pdf-to-powerpoint') || name.includes('pdf to powerpoint') || action.includes('pdf to powerpoint') || tags.includes('pdf to powerpoint') || name.includes('pdf_to_pptx') || name.includes('pdf-to-pptx')) {
+            return 'pdf-to-powerpoint';
+        }
+        if (name.includes('merge') || action.includes('merge') || tags.includes('merge') || name.includes('combine') || action.includes('combine') || tags.includes('combine')) {
+            return 'merge-pdf';
+        }
+        if (name.includes('split') || action.includes('split') || tags.includes('split') || name.includes('scissors') || action.includes('scissors') || tags.includes('scissors')) {
+            return 'split-pdf';
+        }
+        if (name.includes('compress') || action.includes('compress') || tags.includes('compress') || name.includes('optimize') || action.includes('optimize') || tags.includes('optimize')) {
+            return 'compress-pdf';
+        }
+        if (name.includes('sign') || action.includes('sign') || tags.includes('sign') || name.includes('signature') || action.includes('signature') || tags.includes('signature')) {
+            return 'sign-pdf';
+        }
+        if (name.includes('watermark') || action.includes('watermark') || tags.includes('watermark')) {
+            return 'watermark-pdf';
+        }
+        if (name.includes('protect') || action.includes('protect') || tags.includes('protect') || name.includes('encrypt') || action.includes('encrypt') || tags.includes('encrypt')) {
+            return 'protect-pdf';
+        }
+        if (name.includes('unlock') || action.includes('unlock') || tags.includes('unlock') || name.includes('decrypt') || action.includes('decrypt') || tags.includes('decrypt')) {
+            return 'unlock-pdf';
+        }
+        if (name.includes('rotate') || action.includes('rotate') || tags.includes('rotate')) {
+            return 'rotate-pdf';
+        }
+        if (name.includes('organize') || action.includes('organize') || tags.includes('organize')) {
+            return 'organize-pdf';
+        }
+        if (name.includes('ocr') || action.includes('ocr') || tags.includes('ocr') || name.includes('scan') || action.includes('scan') || tags.includes('scan')) {
+            return 'ocr-pdf';
+        }
+        if (name.includes('compare') || action.includes('compare') || tags.includes('compare')) {
+            return 'compare-pdf';
+        }
+
+        // 3. Extension fallback
+        if (ext === 'docx' || ext === 'doc') return 'word-to-pdf';
+        if (ext === 'xlsx' || ext === 'xls') return 'excel-to-pdf';
+        if (ext === 'pptx' || ext === 'ppt') return 'powerpoint-to-pdf';
+        if (ext === 'html' || ext === 'htm') return 'html-to-pdf';
+        if (ext === 'md') return 'markdown-to-pdf';
+        if (ext === 'txt') return 'txt-to-pdf';
+        if (ext === 'zip') return 'pdf-to-jpg';
+        if (['png', 'jpg', 'jpeg', 'webp', 'svg', 'gif'].includes(ext)) return 'jpg-to-pdf';
+
+        return 'merge-pdf';
+    };
+
     const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
     const fiveYearsMs = 5 * 365.25 * 24 * 60 * 60 * 1000;
-    const thirtyDaysAgo = now - thirtyDaysMs;
-    const fiveYearsAgo = now - fiveYearsMs;
 
     const isSearching = !!(searchQuery || searchYear || searchMonth || searchDate);
 
-    const allMappedFiles = files.map(f => ({
-        ...f,
-        timestamp: getDocTimestamp(f)
-    }));
+    const { recentActivityFiles, myDocumentsFiles, displayFiles } = useMemo(() => {
+        const thirtyDaysAgo = now - thirtyDaysMs;
+        const fiveYearsAgo = now - fiveYearsMs;
 
-    // Files during their first 30 days of creation/activity
-    const recentActivityFiles = allMappedFiles.filter(f => f.timestamp >= thirtyDaysAgo);
+        const allMappedFiles = files.map(f => ({
+            ...f,
+            timestamp: getDocTimestamp(f)
+        }));
 
-    // Files that completed 30 days in Recent Activity, automatically saved in My Documents for 5 years
-    const myDocumentsFiles = allMappedFiles.filter(f => f.timestamp < thirtyDaysAgo && f.timestamp >= fiveYearsAgo);
+        const recentActivityFiles = allMappedFiles.filter(f => f.timestamp >= thirtyDaysAgo);
+        const myDocumentsFiles = allMappedFiles.filter(f => f.timestamp < thirtyDaysAgo && f.timestamp >= fiveYearsAgo);
 
-    let displayFiles = filter === 'recent' ? recentActivityFiles : myDocumentsFiles;
+        let list = filter === 'recent' ? recentActivityFiles : myDocumentsFiles;
 
-    if (searchQuery) {
-        const query = searchQuery.toLowerCase().trim();
-        displayFiles = displayFiles.filter(f => f.name.toLowerCase().includes(query));
-    }
+        if (searchQuery) {
+            const query = searchQuery.toLowerCase().trim();
+            list = list.filter(f => f.name.toLowerCase().includes(query));
+        }
 
-    if (searchYear && filter !== 'recent') {
-        displayFiles = displayFiles.filter(f => {
-            const year = new Date(f.timestamp).getFullYear().toString();
-            return year === searchYear;
-        });
-    }
+        if (searchYear && filter !== 'recent') {
+            list = list.filter(f => new Date(f.timestamp).getFullYear().toString() === searchYear);
+        }
 
-    if (searchMonth) {
-        displayFiles = displayFiles.filter(f => {
-            const month = (new Date(f.timestamp).getMonth() + 1).toString();
-            return month === searchMonth;
-        });
-    }
+        if (searchMonth) {
+            list = list.filter(f => (new Date(f.timestamp).getMonth() + 1).toString() === searchMonth);
+        }
 
-    if (searchDate) {
-        displayFiles = displayFiles.filter(f => {
-            const date = new Date(f.timestamp).getDate().toString();
-            return date === searchDate;
-        });
-    }
+        if (searchDate) {
+            list = list.filter(f => new Date(f.timestamp).getDate().toString() === searchDate);
+        }
 
-    displayFiles.sort((a, b) => b.timestamp - a.timestamp);
+        list.sort((a, b) => b.timestamp - a.timestamp);
+
+        return { recentActivityFiles, myDocumentsFiles, displayFiles: list };
+    }, [files, filter, searchQuery, searchYear, searchMonth, searchDate, now]);
 
     const clearAllFilters = () => {
         setSearchQuery('');
@@ -1380,10 +1227,6 @@ const DocumentsView = ({
         setSearchMonth('');
         setSearchDate('');
     };
-
-    if (!isSearching) {
-        displayFiles = displayFiles.slice(0, 100);
-    }
 
     // Generate days 1-31
     const days = Array.from({ length: 31 }, (_, i) => i + 1);
@@ -1393,57 +1236,57 @@ const DocumentsView = ({
     const years = Array.from({ length: 5 }, (_, i) => currentYear - i);
 
     return (
-        <div className="animate-fade-in-up">
+        <div className="w-full">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 sm:gap-4 mb-6">
                 <div>
-                    <h2 className="text-xl sm:text-2xl font-heading font-black tracking-tight">
+                    <h2 className="text-xl sm:text-2xl font-heading font-black tracking-tight text-stone-900 dark:text-white">
                         {filter === 'recent' ? 'Recent Activity (Last 30 Days)' : 'My Documents (Last 5 years)'}
                     </h2>
-                    <p className="text-xs text-stone-500 font-medium mt-0.5">
+                    <p className="text-xs sm:text-sm text-stone-700 dark:text-stone-300 font-semibold mt-0.5">
                         {filter === 'recent' 
-                            ? 'Files created or processed in the last 30 days — synced to Cloud & saved for offline view & download.' 
-                            : 'All saved documents — offline view & instant download ready.'}
+                            ? 'Files created or processed in the last 30 days — saved in Recent Activity for 30 days & retained in My Documents for 5 years.' 
+                            : 'All saved documents — unlimited 5-year vault storage, offline view & instant download ready.'}
                     </p>
                 </div>
-                <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 w-full sm:w-auto">
+                <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 sm:gap-2.5 w-full sm:w-auto">
                     {isSearching && (
                         <button 
                             onClick={clearAllFilters}
-                            className="px-3 py-2 bg-stone-100 hover:bg-stone-200 dark:bg-stone-800 dark:hover:bg-stone-700 text-stone-600 dark:text-stone-300 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1 cursor-pointer"
+                            className="px-3.5 py-2 bg-stone-900 hover:bg-black dark:bg-stone-100 dark:hover:bg-white text-white dark:text-black rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 shadow-xs cursor-pointer shrink-0"
                             title="Reset all search filters"
                         >
-                            <X size={14} /> Clear Filters
+                            <X size={14} strokeWidth={2} /> Clear Filters
                         </button>
                     )}
-                    <div className={`grid ${filter === 'recent' ? 'grid-cols-2' : 'grid-cols-3'} sm:flex gap-1.5 sm:gap-2`}>
+                    <div className={`grid ${filter === 'recent' ? 'grid-cols-2' : 'grid-cols-3'} sm:flex gap-2`}>
                         <select 
                             value={searchMonth}
                             onChange={(e) => setSearchMonth(e.target.value)}
-                            className="px-2.5 sm:px-3 py-2 bg-white dark:bg-stone-900 border border-gray-200 dark:border-stone-800 rounded-xl text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-black/5 dark:focus:ring-white/5 focus:border-black dark:focus:border-white transition-all text-gray-900 dark:text-white"
+                            className="px-3 py-2 bg-white/95 dark:bg-stone-900/95 backdrop-blur-xs border border-stone-300 dark:border-stone-700 hover:border-stone-400 dark:hover:border-stone-500 rounded-xl text-xs sm:text-sm font-bold focus:outline-none focus:ring-2 focus:ring-stone-500/20 text-stone-900 dark:text-stone-100 shadow-[0_2px_5px_rgba(0,0,0,0.06),0_1px_0_rgba(255,255,255,0.8)_inset] dark:shadow-[0_2px_5px_rgba(0,0,0,0.3),0_1px_0_rgba(255,255,255,0.05)_inset] hover:shadow-[0_4px_8px_rgba(0,0,0,0.09)] transition-all cursor-pointer"
                         >
-                            <option value="">Month</option>
-                            <option value="1">Jan</option>
-                            <option value="2">Feb</option>
-                            <option value="3">Mar</option>
-                            <option value="4">Apr</option>
-                            <option value="5">May</option>
-                            <option value="6">Jun</option>
-                            <option value="7">Jul</option>
-                            <option value="8">Aug</option>
-                            <option value="9">Sep</option>
-                            <option value="10">Oct</option>
-                            <option value="11">Nov</option>
-                            <option value="12">Dec</option>
+                            <option value="" className="bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 font-bold">Month</option>
+                            <option value="1" className="bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 font-bold">Jan</option>
+                            <option value="2" className="bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 font-bold">Feb</option>
+                            <option value="3" className="bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 font-bold">Mar</option>
+                            <option value="4" className="bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 font-bold">Apr</option>
+                            <option value="5" className="bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 font-bold">May</option>
+                            <option value="6" className="bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 font-bold">Jun</option>
+                            <option value="7" className="bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 font-bold">Jul</option>
+                            <option value="8" className="bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 font-bold">Aug</option>
+                            <option value="9" className="bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 font-bold">Sep</option>
+                            <option value="10" className="bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 font-bold">Oct</option>
+                            <option value="11" className="bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 font-bold">Nov</option>
+                            <option value="12" className="bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 font-bold">Dec</option>
                         </select>
                         
                         <select 
                             value={searchDate}
                             onChange={(e) => setSearchDate(e.target.value)}
-                            className="px-2.5 sm:px-3 py-2 bg-white dark:bg-stone-900 border border-gray-200 dark:border-stone-800 rounded-xl text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-black/5 dark:focus:ring-white/5 focus:border-black dark:focus:border-white transition-all text-gray-900 dark:text-white"
+                            className="px-3 py-2 bg-white/95 dark:bg-stone-900/95 backdrop-blur-xs border border-stone-300 dark:border-stone-700 hover:border-stone-400 dark:hover:border-stone-500 rounded-xl text-xs sm:text-sm font-bold focus:outline-none focus:ring-2 focus:ring-stone-500/20 text-stone-900 dark:text-stone-100 shadow-[0_2px_5px_rgba(0,0,0,0.06),0_1px_0_rgba(255,255,255,0.8)_inset] dark:shadow-[0_2px_5px_rgba(0,0,0,0.3),0_1px_0_rgba(255,255,255,0.05)_inset] hover:shadow-[0_4px_8px_rgba(0,0,0,0.09)] transition-all cursor-pointer"
                         >
-                            <option value="">Date</option>
+                            <option value="" className="bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 font-bold">Date</option>
                             {days.map(d => (
-                                <option key={d} value={d.toString()}>{d}</option>
+                                <option key={d} value={d.toString()} className="bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 font-bold">{d}</option>
                             ))}
                         </select>
 
@@ -1451,85 +1294,30 @@ const DocumentsView = ({
                             <select 
                                 value={searchYear}
                                 onChange={(e) => setSearchYear(e.target.value)}
-                                className="px-2.5 sm:px-3 py-2 bg-white dark:bg-stone-900 border border-gray-200 dark:border-stone-800 rounded-xl text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-black/5 dark:focus:ring-white/5 focus:border-black dark:focus:border-white transition-all text-gray-900 dark:text-white"
+                                className="px-3 py-2 bg-white/95 dark:bg-stone-900/95 backdrop-blur-xs border border-stone-300 dark:border-stone-700 hover:border-stone-400 dark:hover:border-stone-500 rounded-xl text-xs sm:text-sm font-bold focus:outline-none focus:ring-2 focus:ring-stone-500/20 text-stone-900 dark:text-stone-100 shadow-[0_2px_5px_rgba(0,0,0,0.06),0_1px_0_rgba(255,255,255,0.8)_inset] dark:shadow-[0_2px_5px_rgba(0,0,0,0.3),0_1px_0_rgba(255,255,255,0.05)_inset] hover:shadow-[0_4px_8px_rgba(0,0,0,0.09)] transition-all cursor-pointer"
                             >
-                                <option value="">Year</option>
+                                <option value="" className="bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 font-bold">Year</option>
                                 {years.map(y => (
-                                    <option key={y} value={y.toString()}>{y}</option>
+                                    <option key={y} value={y.toString()} className="bg-white dark:bg-stone-900 text-stone-900 dark:text-stone-100 font-bold">{y}</option>
                                 ))}
                             </select>
                         )}
                     </div>
-                    <div className="relative w-full sm:w-64">
-                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+                    <div className="relative w-full sm:w-64 group">
+                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-stone-500 group-hover:text-stone-900 dark:group-hover:text-white transition-colors pointer-events-none" />
                         <input
                             type="text"
                             placeholder="Search by document name..."
                             value={searchQuery}
                             onChange={(e) => setSearchQuery(e.target.value)}
-                            className="w-full pl-9 pr-4 py-2 bg-white dark:bg-stone-900 border border-gray-200 dark:border-stone-800 rounded-xl text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-black/5 dark:focus:ring-white/5 focus:border-black dark:focus:border-white transition-all text-gray-900 dark:text-white placeholder-gray-400"
+                            className="w-full pl-9 pr-4 py-2 bg-white/95 dark:bg-stone-900/95 backdrop-blur-xs border border-stone-300 dark:border-stone-700 hover:border-stone-400 dark:hover:border-stone-500 rounded-xl text-xs sm:text-sm font-bold focus:outline-none focus:ring-2 focus:ring-stone-500/20 text-stone-900 dark:text-stone-100 placeholder-stone-600 dark:placeholder-stone-400 shadow-[0_2px_5px_rgba(0,0,0,0.06),0_1px_0_rgba(255,255,255,0.8)_inset] dark:shadow-[0_2px_5px_rgba(0,0,0,0.3),0_1px_0_rgba(255,255,255,0.05)_inset] focus:shadow-[0_3px_10px_rgba(0,0,0,0.1),0_1px_0_rgba(255,255,255,0.8)_inset] transition-all"
                         />
                     </div>
                 </div>
             </div>
-
-            {/* Informative Lifecycle Banners */}
-            {filter !== 'recent' && recentActivityFiles.length > 0 && !isSearching && (
-                <div className="mb-5 p-4 rounded-2xl bg-amber-50/70 dark:bg-amber-950/20 border border-amber-200/80 dark:border-amber-900/40 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs">
-                    <div className="flex items-center gap-3">
-                        <div className="p-2.5 bg-amber-100 dark:bg-amber-900/60 text-amber-800 dark:text-amber-200 rounded-xl shrink-0">
-                            <Clock size={18} />
-                        </div>
-                        <div>
-                            <p className="text-xs sm:text-sm font-bold text-amber-950 dark:text-amber-200">
-                                {recentActivityFiles.length} file{recentActivityFiles.length > 1 ? 's' : ''} currently in 30-Day Recent Activity
-                            </p>
-                            <p className="text-[11px] sm:text-xs text-amber-800/80 dark:text-amber-400 font-medium">
-                                Files stay in Recent Activity for their first 30 days, then automatically move to My Documents for 5-year cloud archival.
-                            </p>
-                        </div>
-                    </div>
-                    {onNavigateToRecent && (
-                        <button
-                            onClick={onNavigateToRecent}
-                            className="px-3.5 py-1.5 bg-amber-900 hover:bg-black text-white dark:bg-amber-300 dark:text-black dark:hover:bg-white rounded-xl text-xs font-bold transition-all shadow-xs shrink-0 cursor-pointer flex items-center gap-1.5"
-                        >
-                            <History size={13} />
-                            View Recent Activity ({recentActivityFiles.length})
-                        </button>
-                    )}
-                </div>
-            )}
-
-            {filter === 'recent' && myDocumentsFiles.length > 0 && !isSearching && (
-                <div className="mb-5 p-4 rounded-2xl bg-emerald-50/70 dark:bg-emerald-950/20 border border-emerald-200/80 dark:border-emerald-900/40 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs">
-                    <div className="flex items-center gap-3">
-                        <div className="p-2.5 bg-emerald-100 dark:bg-emerald-900/60 text-emerald-800 dark:text-emerald-200 rounded-xl shrink-0">
-                            <ShieldCheck size={18} />
-                        </div>
-                        <div>
-                            <p className="text-xs sm:text-sm font-bold text-emerald-950 dark:text-emerald-200">
-                                {myDocumentsFiles.length} file{myDocumentsFiles.length > 1 ? 's' : ''} in My Documents
-                            </p>
-                            <p className="text-[11px] sm:text-xs text-emerald-800/80 dark:text-emerald-400 font-medium">
-                                Files that completed 30 days in Recent Activity are safely stored in My Documents.
-                            </p>
-                        </div>
-                    </div>
-                    {onNavigateToDocuments && (
-                        <button
-                            onClick={onNavigateToDocuments}
-                            className="px-3.5 py-1.5 bg-emerald-900 hover:bg-black text-white dark:bg-emerald-300 dark:text-black dark:hover:bg-white rounded-xl text-xs font-bold transition-all shadow-xs shrink-0 cursor-pointer flex items-center gap-1.5"
-                        >
-                            <Folder size={13} />
-                            Open My Documents ({myDocumentsFiles.length})
-                        </button>
-                    )}
-                </div>
-            )}
             
-            <div className="bg-white/80 dark:bg-stone-900/80 backdrop-blur-xl rounded-2xl border border-gray-200/80 dark:border-stone-800 overflow-hidden shadow-[0_8px_32px_rgba(0,0,0,0.04)]">
-                <div className="grid grid-cols-12 gap-2 sm:gap-4 p-3.5 sm:p-4 border-b border-gray-200/80 dark:border-stone-800 bg-gray-50/70 dark:bg-stone-950/60 text-xs font-bold text-gray-500 uppercase tracking-widest items-center">
+            <div className="bg-white/80 dark:bg-stone-900/80 backdrop-blur-xs rounded-2xl sm:rounded-3xl border border-stone-200/80 dark:border-stone-800/80 overflow-hidden shadow-[0_8px_30px_rgba(0,0,0,0.08),0_1px_0_rgba(255,255,255,0.6)_inset] dark:shadow-[0_8px_30px_rgba(0,0,0,0.4),0_1px_0_rgba(255,255,255,0.05)_inset] transition-all duration-300">
+                <div className="grid grid-cols-12 gap-2 sm:gap-4 p-3.5 sm:p-4 border-b border-stone-200/60 dark:border-stone-800/60 bg-stone-50/50 dark:bg-stone-950/50 text-xs font-semibold text-stone-500 dark:text-stone-400 uppercase tracking-widest items-center">
                     <div className="col-span-7 sm:col-span-5 md:col-span-4">Name</div>
                     <div className="hidden sm:block sm:col-span-3 md:col-span-2">Date</div>
                     <div className="hidden md:block md:col-span-2">Size</div>
@@ -1537,23 +1325,24 @@ const DocumentsView = ({
                     <div className="col-span-5 sm:col-span-4 md:col-span-4 lg:col-span-2 text-right">Actions</div>
                 </div>
                 
-                <div className="divide-y divide-gray-100 dark:divide-stone-800">
+                <div className="divide-y divide-stone-100/60 dark:divide-stone-800/60">
                     {displayFiles.length === 0 ? (
-                        <div className="p-10 sm:p-14 text-center flex flex-col items-center justify-center gap-3">
-                            <div className="p-3.5 bg-stone-100 dark:bg-stone-800 rounded-2xl text-stone-400">
-                                <FileText size={36} className="opacity-60" />
-                            </div>
+                        <div className="p-10 sm:p-14 text-center flex flex-col items-center justify-center">
+                            <div className="w-full max-w-md p-8 bg-stone-50/50 dark:bg-stone-950/25 rounded-2xl border border-stone-200/50 dark:border-stone-800/50 shadow-xs flex flex-col items-center justify-center gap-3">
+                                <div className="p-3.5 bg-white/70 dark:bg-stone-800/60 border border-stone-200/60 dark:border-stone-700/60 rounded-2xl text-stone-400/90 dark:text-stone-400/90 shadow-xs flex items-center justify-center">
+                                    <FileText size={36} className="opacity-60 text-stone-400 dark:text-stone-500" strokeWidth={1.6} />
+                                </div>
                             
                             {filter === 'recent' ? (
-                                <div className="max-w-md space-y-2.5">
-                                    <h3 className="text-base font-bold text-gray-900 dark:text-white">
+                                <div className="max-w-md space-y-2">
+                                    <h3 className="text-base font-semibold text-stone-800/90 dark:text-stone-200/90">
                                         {isSearching ? 'No Recent Documents Match Your Filters' : 'No Activity in the Last 30 Days'}
                                     </h3>
                                     <div className="pt-2 flex flex-wrap items-center justify-center gap-2">
                                         {isSearching ? (
                                             <button
                                                 onClick={clearAllFilters}
-                                                className="px-4 py-2 bg-stone-900 hover:bg-black text-white dark:bg-stone-100 dark:hover:bg-white dark:text-black rounded-xl text-xs font-bold transition-all shadow-sm cursor-pointer"
+                                                className="px-3.5 py-2 bg-stone-800/90 hover:bg-black text-white dark:bg-stone-200/90 dark:hover:bg-white dark:text-black rounded-xl text-xs font-semibold transition-all shadow-xs cursor-pointer"
                                             >
                                                 Clear Search Filters
                                             </button>
@@ -1561,7 +1350,7 @@ const DocumentsView = ({
                                             onNavigateToDocuments && myDocumentsFiles.length > 0 && (
                                                 <button
                                                     onClick={onNavigateToDocuments}
-                                                    className="px-4 py-2 bg-stone-900 hover:bg-black text-white dark:bg-stone-100 dark:hover:bg-white dark:text-black rounded-xl text-xs font-bold transition-all shadow-sm cursor-pointer flex items-center gap-1.5"
+                                                    className="px-3.5 py-2 bg-stone-800/90 hover:bg-black text-white dark:bg-stone-200/90 dark:hover:bg-white dark:text-black rounded-xl text-xs font-semibold transition-all shadow-xs cursor-pointer flex items-center gap-1.5"
                                                 >
                                                     <Folder size={14} />
                                                     Go to My Documents ({myDocumentsFiles.length})
@@ -1571,19 +1360,19 @@ const DocumentsView = ({
                                     </div>
                                 </div>
                             ) : (
-                                <div className="max-w-md space-y-2.5">
-                                    <h3 className="text-base font-bold text-gray-900 dark:text-white">
+                                <div className="max-w-md space-y-2">
+                                    <h3 className="text-base font-semibold text-stone-800/90 dark:text-stone-200/90">
                                         {isSearching 
                                             ? `No Documents Found${searchMonth ? ` for ${MONTH_NAMES[searchMonth] || ''}` : ''}${searchYear ? ` ${searchYear}` : ''}${searchDate ? ` (Day ${searchDate})` : ''}`
                                             : recentActivityFiles.length > 0
-                                                ? 'Files Are Currently in Recent Activity'
+                                                ? 'Files are currently in Recent Activity (they automatically move to My Documents after 30 days)'
                                                 : 'No Saved Documents'}
                                     </h3>
                                     <div className="pt-2 flex flex-wrap items-center justify-center gap-2">
                                         {isSearching ? (
                                             <button
                                                 onClick={clearAllFilters}
-                                                className="px-4 py-2 bg-stone-900 hover:bg-black text-white dark:bg-stone-100 dark:hover:bg-white dark:text-black rounded-xl text-xs font-bold transition-all shadow-sm cursor-pointer"
+                                                className="px-3.5 py-2 bg-stone-800/90 hover:bg-black text-white dark:bg-stone-200/90 dark:hover:bg-white dark:text-black rounded-xl text-xs font-semibold transition-all shadow-xs cursor-pointer"
                                             >
                                                 Clear Filters & Show All
                                             </button>
@@ -1591,7 +1380,7 @@ const DocumentsView = ({
                                             recentActivityFiles.length > 0 && onNavigateToRecent && (
                                                 <button
                                                     onClick={onNavigateToRecent}
-                                                    className="px-4 py-2 bg-stone-900 hover:bg-black text-white dark:bg-stone-100 dark:hover:bg-white dark:text-black rounded-xl text-xs font-bold transition-all shadow-sm cursor-pointer flex items-center gap-1.5"
+                                                    className="px-3.5 py-2 bg-stone-800/90 hover:bg-black text-white dark:bg-stone-200/90 dark:hover:bg-white dark:text-black rounded-xl text-xs font-semibold transition-all shadow-xs cursor-pointer flex items-center gap-1.5"
                                                 >
                                                     <History size={14} />
                                                     View Recent Activity ({recentActivityFiles.length})
@@ -1601,6 +1390,7 @@ const DocumentsView = ({
                                     </div>
                                 </div>
                             )}
+                            </div>
                         </div>
                     ) : (
                         displayFiles.map(file => {
@@ -1624,21 +1414,36 @@ const DocumentsView = ({
                             const daysLeft = Math.max(1, Math.ceil(msLeft / (24 * 60 * 60 * 1000)));
                             const expireYear = new Date(file.timestamp + fiveYearsMs).getFullYear();
 
+                            const ext = (file.name || '').split('.').pop()?.toLowerCase() || (file.type || '').toLowerCase();
+                            const isPdfFile = ext === 'pdf' || file.type === 'PDF';
+                            const isImgFile = ['png', 'jpg', 'jpeg', 'webp', 'svg', 'gif', 'bmp'].includes(ext) || file.type === 'IMAGE';
+                            const isSheetFile = ['xlsx', 'xls', 'csv'].includes(ext) || file.type === 'EXCEL' || file.type === 'CSV';
+                            const isDocFile = ['docx', 'doc'].includes(ext) || file.type === 'DOCX';
+                            const isZipFile = ext === 'zip' || file.type === 'ZIP';
+
                             return (
                             <div key={file.id} className="grid grid-cols-12 gap-2 sm:gap-4 p-3 sm:p-4 items-center hover:bg-gray-50/90 dark:hover:bg-stone-800/40 transition-colors group">
                                 <div className="col-span-7 sm:col-span-5 md:col-span-4 flex items-center gap-2.5 sm:gap-3 min-w-0 cursor-pointer" onClick={() => onOpen(file)} title="Click to preview file">
-                                    <div className="p-2 sm:p-2.5 bg-gray-100 dark:bg-stone-800 rounded-xl text-gray-600 dark:text-stone-300 shrink-0 group-hover:text-black dark:group-hover:text-white transition-colors">
-                                        <FileText size={16} className="sm:w-[18px] sm:h-[18px]" />
+                                    <div className="w-10 h-10 flex items-center justify-center rounded-xl bg-stone-50 dark:bg-stone-900/60 border border-stone-200/60 dark:border-stone-800/60 shrink-0">
+                                        <AnimatedToolIcon 
+                                            toolId={getToolIdForFile(file)} 
+                                            fallbackIcon={
+                                                isPdfFile ? FileText :
+                                                isImgFile ? ImageIcon :
+                                                isSheetFile ? Table :
+                                                isDocFile ? FileText :
+                                                isZipFile ? Archive :
+                                                FileText
+                                            } 
+                                            size={28} 
+                                            className="w-7 h-7" 
+                                        />
                                     </div>
                                     <div className="min-w-0 flex-1 pr-1">
                                         <span className="font-bold text-gray-900 dark:text-white truncate text-xs sm:text-sm hover:underline block tracking-tight">{file.name}</span>
                                         <div className="flex items-center gap-1.5 text-[11px] text-stone-400 font-medium">
                                             <span title={fullDateStr}>{relativeDateStr}</span>
-                                            {filter === 'recent' ? (
-                                                <span className="text-amber-600 dark:text-amber-400 font-bold">• In My Docs in {daysLeft}d</span>
-                                            ) : (
-                                                <span className="text-emerald-600 dark:text-emerald-400 font-bold">• Saved</span>
-                                            )}
+                                            <span className="text-emerald-600 dark:text-emerald-400 font-bold">• Saved for 5 Years ({expireYear})</span>
                                         </div>
                                     </div>
                                 </div>
@@ -1649,21 +1454,21 @@ const DocumentsView = ({
                                 <div className="hidden lg:block lg:col-span-2 flex flex-col gap-1 items-start">
                                     <div className="flex items-center gap-1.5 flex-wrap">
                                         <span className="px-2 py-0.5 bg-gray-100 dark:bg-stone-800 text-gray-700 dark:text-stone-300 rounded text-[10px] font-bold uppercase">{file.type}</span>
-                                        <span className="px-2 py-0.5 bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 rounded text-[10px] font-bold flex items-center gap-1" title="Stored locally for offline preview and instant download">
-                                            <WifiOff size={10} />
-                                            Offline Ready
-                                        </span>
                                         {filter === 'recent' ? (
-                                            <span className="px-2 py-0.5 bg-amber-100/90 dark:bg-amber-950/70 text-amber-800 dark:text-amber-300 rounded text-[10px] font-bold flex items-center gap-1" title={`In Recent Activity for 30 days. Automatically moves to My Documents in ${daysLeft} day${daysLeft > 1 ? 's' : ''}`}>
+                                            <span className="px-2 py-0.5 bg-amber-100/90 dark:bg-amber-950/70 text-amber-800 dark:text-amber-300 rounded text-[10px] font-bold flex items-center gap-1" title={`${daysLeft} days remaining in 30-day Recent Activity before archiving to My Documents`}>
                                                 <Clock size={10} />
-                                                To My Docs in {daysLeft}d
+                                                {daysLeft}d in Recent
                                             </span>
                                         ) : (
-                                            <span className="px-2 py-0.5 bg-emerald-100/90 dark:bg-emerald-950/70 text-emerald-800 dark:text-emerald-300 rounded text-[10px] font-bold flex items-center gap-1" title="Saved Document in My Documents">
-                                                <ShieldCheck size={10} />
-                                                Saved
+                                            <span className="px-2 py-0.5 bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 rounded text-[10px] font-bold flex items-center gap-1" title="Stored locally & in cloud vault for offline preview and instant download">
+                                                <WifiOff size={10} />
+                                                Offline Ready
                                             </span>
                                         )}
+                                        <span className="px-2 py-0.5 bg-emerald-100/90 dark:bg-emerald-950/70 text-emerald-800 dark:text-emerald-300 rounded text-[10px] font-bold flex items-center gap-1" title={`Retained in My Documents for 5 years until ${expireYear}`}>
+                                            <ShieldCheck size={10} />
+                                            5-Yr Vault ({expireYear})
+                                        </span>
                                     </div>
                                     {file.action && <span className="text-[10px] text-stone-400 font-medium truncate">{file.action}</span>}
                                 </div>
@@ -1672,7 +1477,7 @@ const DocumentsView = ({
                                     <button 
                                         onClick={() => onOpen(file)} 
                                         title="Open file preview" 
-                                        className="p-1.5 sm:p-2 text-indigo-600 hover:text-indigo-700 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/60 dark:text-indigo-400 dark:hover:bg-indigo-900/80 rounded-xl transition-all shadow-xs active:scale-95 cursor-pointer shrink-0"
+                                        className="p-1.5 sm:p-2 text-indigo-600 dark:text-indigo-400 bg-indigo-50/90 dark:bg-indigo-950/70 border border-indigo-200/80 dark:border-indigo-800/80 hover:bg-indigo-100 dark:hover:bg-indigo-900/90 rounded-xl transition-all duration-150 shadow-[0_2px_4px_rgba(79,70,229,0.12),0_1px_0_rgba(255,255,255,0.8)_inset] dark:shadow-[0_2px_4px_rgba(0,0,0,0.4),0_1px_0_rgba(255,255,255,0.1)_inset] hover:shadow-[0_4px_8px_rgba(79,70,229,0.2)] hover:-translate-y-0.5 active:translate-y-0.5 active:shadow-inner cursor-pointer shrink-0"
                                     >
                                         <Eye size={14} className="sm:w-[15px] sm:h-[15px]" />
                                     </button>
@@ -1681,7 +1486,7 @@ const DocumentsView = ({
                                     <button 
                                         onClick={() => onDownload(file.id, file.name)} 
                                         title="Download original file" 
-                                        className="p-1.5 sm:p-2 text-stone-600 hover:text-black bg-stone-100 hover:bg-stone-200 dark:bg-stone-800 dark:text-stone-300 dark:hover:bg-stone-700 rounded-xl transition-all shadow-xs active:scale-95 cursor-pointer shrink-0"
+                                        className="p-1.5 sm:p-2 text-stone-700 dark:text-stone-300 bg-stone-100/90 dark:bg-stone-800/90 border border-stone-200 dark:border-stone-700 hover:bg-stone-200/90 dark:hover:bg-stone-700/90 hover:text-stone-900 dark:hover:text-white rounded-xl transition-all duration-150 shadow-[0_2px_4px_rgba(0,0,0,0.08),0_1px_0_rgba(255,255,255,0.9)_inset] dark:shadow-[0_2px_4px_rgba(0,0,0,0.4),0_1px_0_rgba(255,255,255,0.08)_inset] hover:shadow-[0_4px_8px_rgba(0,0,0,0.12)] hover:-translate-y-0.5 active:translate-y-0.5 active:shadow-inner cursor-pointer shrink-0"
                                     >
                                         <Download size={14} className="sm:w-[15px] sm:h-[15px]" />
                                     </button>
@@ -1690,7 +1495,7 @@ const DocumentsView = ({
                                     <button 
                                         onClick={() => onShare(file)} 
                                         title="Share file" 
-                                        className="p-1.5 sm:p-2 text-stone-600 hover:text-emerald-600 bg-stone-100 hover:bg-emerald-50 dark:bg-stone-800 dark:text-stone-300 dark:hover:bg-emerald-950/50 rounded-xl transition-all shadow-xs active:scale-95 cursor-pointer shrink-0"
+                                        className="p-1.5 sm:p-2 text-emerald-700 dark:text-emerald-400 bg-emerald-50/90 dark:bg-emerald-950/70 border border-emerald-200/80 dark:border-emerald-800/80 hover:bg-emerald-100 dark:hover:bg-emerald-900/90 rounded-xl transition-all duration-150 shadow-[0_2px_4px_rgba(16,185,129,0.12),0_1px_0_rgba(255,255,255,0.8)_inset] dark:shadow-[0_2px_4px_rgba(0,0,0,0.4),0_1px_0_rgba(255,255,255,0.1)_inset] hover:shadow-[0_4px_8px_rgba(16,185,129,0.2)] hover:-translate-y-0.5 active:translate-y-0.5 active:shadow-inner cursor-pointer shrink-0"
                                     >
                                         <Share2 size={14} className="sm:w-[15px] sm:h-[15px]" />
                                     </button>
@@ -1699,7 +1504,7 @@ const DocumentsView = ({
                                     <button 
                                         onClick={() => onDelete(file.id)} 
                                         title="Delete file" 
-                                        className="p-1.5 sm:p-2 text-stone-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/50 rounded-xl transition-all shadow-xs active:scale-95 cursor-pointer shrink-0"
+                                        className="p-1.5 sm:p-2 text-rose-600 dark:text-rose-400 bg-rose-50/80 dark:bg-rose-950/50 border border-rose-200/80 dark:border-rose-900/60 hover:bg-rose-100 dark:hover:bg-rose-900/80 rounded-xl transition-all duration-150 shadow-[0_2px_4px_rgba(225,29,72,0.1),0_1px_0_rgba(255,255,255,0.8)_inset] dark:shadow-[0_2px_4px_rgba(0,0,0,0.4),0_1px_0_rgba(255,255,255,0.08)_inset] hover:shadow-[0_4px_8px_rgba(225,29,72,0.2)] hover:-translate-y-0.5 active:translate-y-0.5 active:shadow-inner cursor-pointer shrink-0"
                                     >
                                         <Trash2 size={14} className="sm:w-[15px] sm:h-[15px]" />
                                     </button>
@@ -1723,8 +1528,8 @@ const _UnusedLegacyUpgradeView = ({
     isExpired = false,
     orders = []
 }: { 
-    onUpgrade: (plan: 'Plus Plan' | 'Max Plan', amount?: string, cycle?: 'month' | 'half-year' | 'year', resubmitId?: string, upgradeFromId?: string, oldAmount?: number) => void; 
-    onSwitchPlan?: (plan: 'Basic Plan' | 'Plus Plan' | 'Max Plan', cycle?: 'month' | 'half-year' | 'year') => void;
+    onUpgrade: (plan: 'Pro Plan' | 'Max Plan', amount?: string, cycle?: 'month' | 'half-year' | 'year', resubmitId?: string, upgradeFromId?: string, oldAmount?: number) => void; 
+    onSwitchPlan?: (plan: 'Basic Plan' | 'Pro Plan' | 'Max Plan', cycle?: 'month' | 'half-year' | 'year') => void;
     currentPlan?: string; 
     user?: User | null;
     isExpired?: boolean;
@@ -1738,7 +1543,7 @@ const _UnusedLegacyUpgradeView = ({
     const isUsingFree = isExpired || (!isUsingMax && !isUsingPlus);
 
     const ownsMax = !isExpired && purchasedTier === 'Max';
-    const ownsPlus = !isExpired && purchasedTier === 'Plus';
+    const ownsPlus = !isExpired && (purchasedTier === 'Plus' || purchasedTier === 'Pro');
 
     const [dismissRefundNotice, setDismissRefundNotice] = useState(false);
 
@@ -1770,8 +1575,8 @@ const _UnusedLegacyUpgradeView = ({
         if (purchasedTier === 'Max') {
             return getPlanCreditValue('Max Plan', userCycle);
         }
-        if (purchasedTier === 'Plus') {
-            return getPlanCreditValue('Plus Plan', userCycle);
+        if (purchasedTier === 'Plus' || purchasedTier === 'Pro') {
+            return getPlanCreditValue('Pro Plan', userCycle);
         }
         return 0;
     })();
@@ -1785,7 +1590,7 @@ const _UnusedLegacyUpgradeView = ({
             maxDuration: '/ month',
             maxRaw: '100',
             label: 'Month',
-            badge: 'Basic • Plus • Max'
+            badge: 'Basic • Pro • Max'
         },
         'half-year': {
             plusPrice: '₹250',
@@ -1927,10 +1732,10 @@ const _UnusedLegacyUpgradeView = ({
                             <div>
                                 <h4 className="text-sm font-black font-heading text-stone-900 dark:text-white flex items-center gap-2">
                                     Max Membership Active ({BILLING_CYCLE_LABELS[userCycle]})
-                                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-amber-400/20 text-amber-700 dark:text-amber-400 border border-amber-400/30">Plus Plan Free in Same Season</span>
+                                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-amber-400/20 text-amber-700 dark:text-amber-400 border border-amber-400/30">Pro Plan Free in Same Season</span>
                                 </h4>
                                 <p className="text-xs text-stone-600 dark:text-stone-300 mt-0.5">
-                                    Because you have Max Plan, the Plus Plan is 100% free to use in your {BILLING_CYCLE_LABELS[userCycle]} season!
+                                    Because you have Max Plan, the Pro Plan is 100% free to use in your {BILLING_CYCLE_LABELS[userCycle]} season!
                                 </p>
                             </div>
                         </div>
@@ -1941,7 +1746,7 @@ const _UnusedLegacyUpgradeView = ({
                     </div>
                 )}
 
-                {/* Status banner for Plus Members in covered cycle */}
+                {/* Status banner for Pro Members in covered cycle */}
                 {isCycleCovered && ownsPlus && !ownsMax && (
                     <div className="max-w-3xl mx-auto mb-6 p-4 rounded-2xl bg-indigo-50/80 dark:bg-indigo-950/40 border border-indigo-200 dark:border-indigo-800/60 text-stone-800 dark:text-stone-100 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs text-left">
                         <div className="flex items-center gap-3">
@@ -1950,7 +1755,7 @@ const _UnusedLegacyUpgradeView = ({
                             </div>
                             <div>
                                 <h4 className="text-sm font-black font-heading text-stone-900 dark:text-white flex items-center gap-2">
-                                    Plus Membership Active ({BILLING_CYCLE_LABELS[userCycle]})
+                                    Pro Membership Active ({BILLING_CYCLE_LABELS[userCycle]})
                                     <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-indigo-100 dark:bg-indigo-900/60 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800">Upgrade Discount Available</span>
                                 </h4>
                                 <p className="text-xs text-stone-600 dark:text-stone-300 mt-0.5">
@@ -2002,7 +1807,7 @@ const _UnusedLegacyUpgradeView = ({
             <div className={selectedCycle === 'month' ? "grid grid-cols-1 md:grid-cols-3 gap-6" : "grid grid-cols-1 md:grid-cols-2 max-w-4xl mx-auto gap-6"}>
                 {/* Free / Basic Plan - Included in Month season (5 days with 10 features once per user) */}
                 {selectedCycle === 'month' && (
-                <div className={`bg-white/60 dark:bg-gray-900/60 backdrop-blur-xl rounded-3xl p-6 sm:p-7 border ${isUsingFree ? 'border-stone-900 dark:border-stone-100 ring-2 ring-stone-900/10 dark:ring-stone-100/10' : 'border-gray-200 dark:border-gray-800'} shadow-sm flex flex-col justify-between relative`}>
+                <div className={`bg-white/60 dark:bg-gray-900/60  rounded-3xl p-6 sm:p-7 border ${isUsingFree ? 'border-stone-900 dark:border-stone-100 ring-2 ring-stone-900/10 dark:ring-stone-100/10' : 'border-gray-200 dark:border-gray-800'} shadow-sm flex flex-col justify-between relative`}>
                     {isUsingFree && (
                         <div className="absolute -top-3 left-6 bg-stone-900 text-stone-100 dark:bg-stone-100 dark:text-stone-900 text-[10px] font-black uppercase tracking-wider px-2.5 py-0.5 rounded-full shadow-sm flex items-center gap-1">
                             <Check size={11} strokeWidth={3} /> Currently In Use
@@ -2050,8 +1855,8 @@ const _UnusedLegacyUpgradeView = ({
                 </div>
                 )}
 
-                {/* Plus Plan */}
-                <div className={`bg-stone-900 text-stone-50 backdrop-blur-xl rounded-3xl p-6 sm:p-7 border ${isUsingPlus && isCycleCovered ? 'border-indigo-400 ring-2 ring-indigo-400/20' : 'border-stone-800'} shadow-xl flex flex-col justify-between relative group`}>
+                {/* Pro Plan */}
+                <div className={`bg-stone-900 text-stone-50  rounded-3xl p-6 sm:p-7 border ${isUsingPlus && isCycleCovered ? 'border-indigo-400 ring-2 ring-indigo-400/20' : 'border-stone-800'} shadow-xl flex flex-col justify-between relative group`}>
                     <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity">
                         <Zap size={100} className="text-white" />
                     </div>
@@ -2067,8 +1872,8 @@ const _UnusedLegacyUpgradeView = ({
                     )}
                     <div className="relative z-10">
                         <div className="flex items-center justify-between mb-2">
-                            <h3 className="text-xl font-heading font-black text-white">Plus Plan</h3>
-                            <span className="text-[10px] font-black px-2 py-0.5 rounded-md bg-stone-800 text-stone-200 border border-stone-700">PLUS</span>
+                            <h3 className="text-xl font-heading font-black text-white">Pro Plan</h3>
+                            <span className="text-[10px] font-black px-2 py-0.5 rounded-md bg-stone-800 text-stone-200 border border-stone-700">PRO PLAN</span>
                         </div>
                         {ownsMaxInCycle ? (
                             <div className="flex items-baseline gap-2 mb-5">
@@ -2098,7 +1903,7 @@ const _UnusedLegacyUpgradeView = ({
                             </div>
                         )}
                         <p className="text-xs font-bold text-stone-300 mb-4 pb-3 border-b border-stone-800">
-                            Basic + Plus features • Unlimited daily operations
+                            Basic + Pro features • Unlimited daily operations
                         </p>
                         <ul className="space-y-2.5 mb-6 text-xs text-stone-300 font-medium">
                             <li className="flex items-start gap-2"><CheckCircle2 size={15} className="text-indigo-400 shrink-0 mt-0.5" /> All Basic features included</li>
@@ -2121,18 +1926,18 @@ const _UnusedLegacyUpgradeView = ({
                     ) : ownsMaxInCycle ? (
                         <Button 
                             size="sm" 
-                            onClick={() => onSwitchPlan?.('Plus Plan', selectedCycle)} 
+                            onClick={() => onSwitchPlan?.('Pro Plan', selectedCycle)} 
                             className="w-full font-bold bg-white text-stone-900 hover:bg-stone-100 border-none shadow-md text-xs relative z-10 cursor-pointer flex items-center justify-center gap-1.5"
                         >
-                            <span>Use Plus (Free with Max)</span>
+                            <span>Use Pro Plan (Free with Max)</span>
                         </Button>
                     ) : ownsPlusInCycle ? (
                         <Button 
                             size="sm" 
-                            onClick={() => onSwitchPlan?.('Plus Plan', selectedCycle)} 
+                            onClick={() => onSwitchPlan?.('Pro Plan', selectedCycle)} 
                             className="w-full font-bold bg-white text-stone-900 hover:bg-stone-100 border-none shadow-md text-xs relative z-10 cursor-pointer flex items-center justify-center gap-1.5"
                         >
-                            <span>Use Plus Plan</span>
+                            <span>Use Pro Plan</span>
                         </Button>
                     ) : (
                         <Button 
@@ -2141,21 +1946,21 @@ const _UnusedLegacyUpgradeView = ({
                                 const plusRawVal = Number(currentPricing.plusRaw);
                                 const discountToApply = (!isCycleCovered && userActiveCredit > 0 && plusRawVal > userActiveCredit) ? userActiveCredit : 0;
                                 const finalPrice = discountToApply > 0 ? String(Math.max(1, plusRawVal - discountToApply)) : currentPricing.plusRaw;
-                                onUpgrade('Plus Plan', finalPrice, selectedCycle, undefined, undefined, discountToApply > 0 ? discountToApply : undefined);
+                                onUpgrade('Pro Plan', finalPrice, selectedCycle, undefined, undefined, discountToApply > 0 ? discountToApply : undefined);
                             }} 
                             className="w-full font-bold bg-white text-stone-900 hover:bg-stone-100 border-none shadow-md text-xs relative z-10 cursor-pointer"
                         >
                             {(!isCycleCovered && userActiveCredit > 0 && Number(currentPricing.plusRaw) > userActiveCredit) ? (() => {
                                 const plusRawVal = Number(currentPricing.plusRaw);
                                 const discounted = Math.max(1, plusRawVal - userActiveCredit);
-                                return `Upgrade to Plus (₹${discounted}) • Save ₹${userActiveCredit}`;
-                            })() : `Upgrade to Plus (${currentPricing.plusPrice})`}
+                                return `Upgrade to Pro Plan (₹${discounted}) • Save ₹${userActiveCredit}`;
+                            })() : `Upgrade to Pro Plan (${currentPricing.plusPrice})`}
                         </Button>
                     )}
                 </div>
 
                 {/* Max Plan */}
-                <div className={`bg-black text-white backdrop-blur-xl rounded-3xl p-6 sm:p-7 border ${isUsingMax && isCycleCovered ? 'border-yellow-400 ring-2 ring-yellow-400/20' : 'border-gray-800'} shadow-2xl flex flex-col justify-between relative group`}>
+                <div className={`bg-black text-white  rounded-3xl p-6 sm:p-7 border ${isUsingMax && isCycleCovered ? 'border-yellow-400 ring-2 ring-yellow-400/20' : 'border-gray-800'} shadow-2xl flex flex-col justify-between relative group`}>
                     <div className="absolute inset-0 bg-gradient-to-br from-amber-500/10 to-transparent pointer-events-none rounded-3xl"></div>
                     <div className="absolute top-0 right-0 p-4 opacity-15 group-hover:opacity-25 transition-opacity">
                         <Crown size={100} className="text-yellow-400" />
@@ -2193,10 +1998,10 @@ const _UnusedLegacyUpgradeView = ({
                             </div>
                         )}
                         <p className="text-xs font-bold text-yellow-300/90 mb-4 pb-3 border-b border-gray-800">
-                            Basic + Plus + Max AI Suite • Unlimited access
+                            Basic + Pro + Max AI Suite • Unlimited access
                         </p>
                         <ul className="space-y-2.5 mb-6 text-xs text-stone-300 font-medium">
-                            <li className="flex items-start gap-2"><CheckCircle2 size={15} className="text-yellow-400 shrink-0 mt-0.5" /> All Basic + Plus features</li>
+                            <li className="flex items-start gap-2"><CheckCircle2 size={15} className="text-yellow-400 shrink-0 mt-0.5" /> All Basic + Pro features</li>
                             <li className="flex items-start gap-2"><CheckCircle2 size={15} className="text-yellow-400 shrink-0 mt-0.5" /> Full AI Document Suite & Q&A</li>
                             <li className="flex items-start gap-2"><CheckCircle2 size={15} className="text-yellow-400 shrink-0 mt-0.5" /> Handwriting recognition & OCR</li>
                             <li className="flex items-start gap-2"><CheckCircle2 size={15} className="text-yellow-400 shrink-0 mt-0.5" /> Whiteout / Redact & Digital Signatures</li>
@@ -2278,124 +2083,185 @@ const WhatsNewView = () => {
 };
 
 const SupportView = ({ onStartChat }: { onStartChat: () => void }) => {
-    const [activeFaq, setActiveFaq] = useState<number | null>(null);
+    const [activeFaqId, setActiveFaqId] = useState<string | null>(null);
     const [selectedCategory, setSelectedCategory] = useState<string>('All');
     const [searchQuery, setSearchQuery] = useState<string>('');
 
     const faqs = [
-        // Billing & Subscriptions
+        // ==========================================
+        // 1. BILLING & PLANS
+        // ==========================================
         {
+            id: "faq-billing-upgrade",
             category: "Billing & Plans",
             q: "How do I upgrade my plan and verify payment?",
-            a: "Go to Profile > Billing & Plans, select your preferred plan (Plus or Max), make payment via UPI QR code, and enter your 12-digit bank UTR reference. Verification completes automatically in 10–20 minutes."
+            a: "1. Open Profile or the side menu and select 'Billing & Plans'.\n2. Choose your preferred plan and billing duration:\n   • Pro Plan: ₹29/month | ₹145 for 6 Months (Save ₹29) | ₹290 for 1 Year (Save ₹58) — includes 100 operations quota, 250MB per file, 3 devices.\n   • Max Plan: ₹49/month | ₹245 for 6 Months (Save ₹49) | ₹490 for 1 Year (Save ₹98) — includes 1,000 operations quota, 1GB per file, 5 devices.\n   • Active Membership Credit: Upgrading from Pro to Max automatically credits your active Pro plan value as an instant discount, so you only pay the net difference.\n3. Scan the official dynamic UPI QR code with any UPI app (Google Pay, PhonePe, Paytm, BHIM, CRED, Navi, or banking apps) or tap to pay via UPI intent on mobile.\n4. Complete the transfer and copy the 12-digit numeric UTR / Bank Reference Number from your payment receipt.\n5. Paste the 12-digit UTR into the verification box and click 'Submit Verification'.\n6. Automatic bank reconciliation activates your account within 5 to 15 minutes. You can also paste your UTR in Live Chat for immediate instant activation. All plans include a 48-hour 100% money-back guarantee."
         },
         {
+            id: "faq-billing-utr",
             category: "Billing & Plans",
             q: "What is the 12-digit UTR and where do I find it in my UPI app?",
-            a: "The UTR (Unique Transaction Reference) is a 12-digit numeric reference generated by your bank or UPI provider (Google Pay, PhonePe, Paytm, CRED). It appears in your payment receipt under 'UPI Transaction ID' or 'Bank Reference Number'."
+            a: "The UTR (Unique Transaction Reference) is the official 12-digit numeric reference generated by Indian banking servers (NPCI) for every UPI transaction.\n\nWhere to find it:\n• Google Pay: Tap the payment card > Look for 'UPI transaction ID' (12 digits, e.g., 4278XXXXXXXX).\n• PhonePe: Open History > Tap transaction > Locate 'UTR' or 'Bank Ref No'.\n• Paytm: View the payment receipt > Locate 'UPI Ref No'.\n• CRED / BHIM / Navi: Check transaction details for 'UPI Reference ID' or 'Bank Ref'.\n\nEnsure you enter only the 12 numeric digits without any spaces, letters, slashes, or bank initials."
         },
         {
+            id: "faq-billing-pending",
             category: "Billing & Plans",
             q: "Why is my payment showing pending or unverified?",
-            a: "Bank settlements and automatic matching typically take 5–20 minutes. Please ensure the 12-digit UTR was entered accurately. You can also paste your UTR in Live Support Chat for instant manual approval."
+            a: "Bank settlements and automatic matching usually complete within 5 to 15 minutes. Common reasons for delays include:\n1. Banking Network Clearing Delay: Occasional inter-bank network clearing congestion on the UPI network.\n2. UTR Typo: Double-check that all 12 digits were typed accurately without missing digits.\n3. Manual Instant Approval: If your payment is still pending after 15 minutes, open Live Support Chat and paste your UTR or upload your payment screenshot. Our on-duty team will verify and activate your membership immediately."
         },
         {
+            id: "faq-billing-invoice",
             category: "Billing & Plans",
             q: "Can I get an official invoice or GST billing receipt?",
-            a: "Yes. Email paperx.assist@gmail.com with your registered email and Order ID. Our billing desk issues official verified invoices within 24 hours."
+            a: "Yes! Every verified transaction generates an official downloadable digital receipt stored under 'Payment History' with an encrypted order hash and verification QR code.\n\nFor enterprise invoices featuring your company legal name and GSTIN, email our billing desk at paperx.assist@gmail.com with your registered email and Order ID. Formal GST-compliant tax invoices are issued within 24 hours."
         },
         {
+            id: "faq-billing-expire",
             category: "Billing & Plans",
             q: "What happens when my subscription period ends?",
-            a: "When your subscription expires, your account reverts to the Free tier. None of your stored files are deleted, but free tier limits (50MB / 100 pages per conversion) will apply."
+            a: "When your subscription period ends:\n• Your account gracefully switches to the Free (Basic) tier without abrupt lockouts or losing access.\n• None of your stored documents in Cloud Vault or conversion history are deleted.\n• Free tier limits (5 operations quota, 50MB file size cap, 1 active device, 100 pages per conversion) will apply to future conversions until you renew.\n• You can renew or upgrade your plan at any time from Billing & Plans: Pro (₹29/mo) or Max (₹49/mo) with no penalties or hidden fees."
+        },
+        {
+            id: "faq-billing-ceo",
+            category: "Billing & Plans",
+            q: "Who founded PaperX and how can I speak directly with the CEO?",
+            a: "Sayan Biswas is the Founder & Chief Executive Officer of PaperX. He architected PaperX to deliver an ultra-fast, privacy-first document intelligence platform with neural OCR and layout-preserving translations.\n\nTo connect directly with CEO Sayan Biswas, open Live Support Chat and select 'Talk with CEO'. This immediately dispatches a high-priority direct alert to his executive desk on Telegram, allowing direct communication. You can also reach him via paperx.assist@gmail.com."
         },
 
-        // File Processing & Limits
+        // ==========================================
+        // 2. FILE PROCESSING & LIMITS
+        // ==========================================
         {
+            id: "faq-files-formats",
             category: "File Processing",
             q: "What file formats does PaperX support?",
-            a: "PaperX natively supports PDF, DOC, DOCX, XLS, XLSX, PPT, PPTX, PNG, JPG, JPEG, WebP, TIFF, TXT, CSV, SVG, and EPUB files for conversions, compression, and text extraction."
+            a: "PaperX provides native, high-performance processing for all standard document types:\n• PDF Formats: Standard PDF, Searchable OCR PDF, and ISO-standardized PDF/A (1b/2b) for legal archival.\n• Microsoft Office: Word (.docx, .doc), Excel (.xlsx, .xls), and PowerPoint (.pptx, .ppt).\n• Images: JPG, JPEG, PNG, WebP, TIFF, SVG, BMP, and GIF.\n• Data & Text: TXT, CSV, HTML, and Markdown (.md).\n• Archives: Multi-file ZIP compilation and extraction."
         },
         {
+            id: "faq-files-limits",
             category: "File Processing",
-            q: "What are the file size and page limits?",
-            a: "• Free Tier: Up to 50MB per file and 100 pages per conversion.\n• Plus & Max Tiers: Up to 500MB per file with unlimited pages and high-priority processing queues."
+            q: "What are the file size and page limits for each plan?",
+            a: "• Free (Basic Plan): ₹0 | 5 operations quota | Up to 50MB per file | 1 active device | 100 pages per conversion task.\n• Pro Plan (₹29/mo | ₹145 for 6 mo | ₹290/yr): 100 operations quota | Up to 250MB per file | 3 active devices | Unlimited pages | Prioritized conversion queue.\n• Max Plan (₹49/mo | ₹245 for 6 mo | ₹490/yr): 1,000 operations quota | Up to 1GB per file | 5 active devices | Unlimited pages | VIP dedicated conversion cluster & parallel batch conversion engine."
         },
         {
+            id: "faq-files-batch",
             category: "File Processing",
             q: "How does batch file conversion work?",
-            a: "Drag and drop multiple files at once into the converter. PaperX processes files in parallel and lets you download individual files or a single consolidated ZIP archive."
+            a: "You can drag and drop multiple files at once into any conversion workspace. PaperX queues and executes tasks in parallel using distributed worker threads and client-side processing. Once processing completes, you can choose to download files individually or save a single consolidated ZIP archive containing all converted documents. Batch multi-file conversion is supported on Pro (100 ops quota) and Max (1,000 ops quota) plans."
         },
         {
+            id: "faq-files-compress",
             category: "File Processing",
             q: "How do I compress large PDF documents without losing quality?",
-            a: "Use our Compress PDF tool. Select 'Balanced Compression' for crisp text and sharp graphics or 'High Compression' for maximum size reduction."
+            a: "Open the Compress PDF tool and choose between two smart compression algorithms:\n• Balanced Compression (Recommended): Retains crisp vector outlines, sharp typography, and 150 DPI graphics. Perfect for business proposals, contracts, resumes, and high-quality printing.\n• Maximum Compression: Significantly reduces file size by up to 80-90% by downsampling images to 72 DPI and stripping redundant font subsets. Ideal for email attachments, online job portals, and strict government upload limits."
         },
         {
+            id: "faq-files-password",
             category: "File Processing",
             q: "Can PaperX process password-protected PDFs?",
-            a: "Yes. Use our Unlock PDF tool and enter your document password when prompted. Once unlocked, you can freely convert, merge, split, or edit your document."
+            a: "Yes!\n• Unlock PDF: If you know the document password, upload your encrypted document and type the password when prompted. PaperX decrypts the PDF using standard AES-256 routines and outputs an unrestricted copy.\n• Protect PDF: You can also secure sensitive documents with military-grade 256-bit AES encryption with your custom password before sharing."
         },
 
-        // OCR & Advanced Tools
+        // ==========================================
+        // 3. OCR & ADVANCED TOOLS
+        // ==========================================
         {
+            id: "faq-ocr-how",
             category: "OCR & Tools",
             q: "How does Optical Character Recognition (OCR) work?",
-            a: "Our neural OCR engine inspects pixel data inside scanned documents or photos, accurately recognizing letters and formatting to output fully searchable and editable text (TXT, DOCX, or searchable PDF)."
+            a: "PaperX uses a neural vision OCR pipeline that inspects pixel data in scanned documents, photos, and book pages. Rather than simple text scraping, our model recognizes typographic layout, columns, tables, headers, and handwriting.\n\nOutput options include:\n• Editable Word (.docx): Fully editable document retaining tables, margins, and styles.\n• Searchable PDF: Preserves original scan appearance with an invisible text layer for searching and copying.\n• Plain Text (.txt): Clean extracted raw text ready for copying or feeding into AI workflows."
         },
         {
+            id: "faq-ocr-languages",
             category: "OCR & Tools",
             q: "What languages are supported for OCR and document translation?",
-            a: "PaperX supports 40+ global languages including English, Hindi, Spanish, French, German, Japanese, Chinese, Arabic, Russian, and Portuguese with automatic script detection."
+            a: "PaperX supports over 40 global languages with automatic language and script detection:\n• Indian Languages: Hindi (हिन्दी), Bengali (বাংলা), Tamil (தமிழ்), Telugu (తెలుగు), Marathi (मराठी), Gujarati (ગુજરાતી), Kannada (ಕನ್ನಡ), Punjabi (ਪੰਜਾਬੀ), Malayalam (മലയാളം), Urdu (اردو).\n• Global Languages: English, Spanish, French, German, Italian, Portuguese, Russian, Japanese, Chinese (Simplified & Traditional), Korean, Arabic, Turkish, Dutch, Vietnamese, Thai, Indonesian, and more."
         },
         {
+            id: "faq-ocr-translation",
+            category: "OCR & Tools",
+            q: "How does document translation preserve the original layout?",
+            a: "Unlike basic text translators that break formatting, PaperX's Translate PDF tool maps every text bounding box, font size, paragraph flow, image placement, and table cell. It translates the content into your selected target language while preserving the exact layout, margins, and branding of the original document."
+        },
+        {
+            id: "faq-ocr-merge-split",
             category: "OCR & Tools",
             q: "How can I merge, split, or reorder PDF pages?",
-            a: "Use the Organize PDF / Merge tool. Drag and drop thumbnails to rearrange pages, delete unwanted pages, rotate orientations, or split documents by custom page numbers."
+            a: "• Merge PDF: Drag and drop two or more PDF files, drag to reorder their sequence, and click 'Merge PDF' to combine them into one seamless master file.\n• Split PDF: Choose to extract individual pages or specify custom page ranges (e.g., 1-4, 8, 12-15).\n• Organize PDF: Visual interactive grid allowing you to drag pages to reorder, rotate individual pages 90°/180°, or delete unwanted pages with one click."
         },
         {
+            id: "faq-ocr-signatures",
             category: "OCR & Tools",
             q: "Can I add e-signatures or custom watermarks?",
-            a: "Yes! Use the Sign & Protect tool to draw or upload your signature, or add custom text and image watermarks with controllable opacity, font style, and angle."
+            a: "Yes!\n• Sign & Protect: Draw your signature with a touch screen/mouse, type your initials, or upload a scanned signature image with transparent background. Position and resize it on any page.\n• Watermark PDF: Add custom text watermarks (e.g., 'CONFIDENTIAL', 'DRAFT') or company logos. Control opacity (10% to 100%), rotation angle (diagonal 45° or horizontal), and page ranges."
         },
         {
+            id: "faq-ocr-camera",
             category: "OCR & Tools",
             q: "How does the Camera Scanner feature work?",
-            a: "The Camera Scanner uses your device webcam or phone camera with automatic edge detection, perspective correction, contrast enhancement, and multi-page PDF generation."
+            a: "Open Camera Scanner on your mobile phone or laptop webcam:\n1. Point your camera at a physical document or book page.\n2. The engine automatically detects document corners, straightens perspective distortion, and crops backgrounds.\n3. Apply high-contrast B&W or Document Sharpening filters for crystal-clear readability.\n4. Capture multiple pages in succession and export directly into a single unified multi-page PDF."
         },
 
-        // Security & Privacy
+        // ==========================================
+        // 4. SECURITY & PRIVACY
+        // ==========================================
         {
+            id: "faq-sec-confidential",
             category: "Security & Privacy",
             q: "Is my document data secure and confidential?",
-            a: "Yes. All uploads are encrypted with TLS 1.3 in transit and AES-256 at rest. Temporary processing files are automatically purged from our conversion servers after processing."
+            a: "Yes, security and privacy are built into PaperX's core architecture:\n• In Transit: All uploads and downloads are encrypted with enterprise-grade TLS 1.3 protocols.\n• At Rest: Files are encrypted using military-grade AES-256 encryption.\n• Zero-Knowledge Processing: Temporary conversion files exist only in ephemeral server RAM and are automatically and permanently purged upon download completion.\n• ISO Compliance: Supports PDF/A ISO standard archival formats for legal and regulatory compliance."
         },
         {
+            id: "faq-sec-storage",
             category: "Security & Privacy",
-            q: "How long are uploaded files stored on servers?",
-            a: "Temporary conversion files are permanently wiped from server memory immediately after processing. Persistent files are stored only within your private account workspace."
+            q: "How long are uploaded files stored on PaperX servers?",
+            a: "• Temporary Conversion Files: Automatically wiped and shredded from memory immediately after processing or within 1 hour maximum.\n• Vault / Saved Files: Only saved if you are logged into your registered account and explicitly choose to save to your private Cloud Vault. You can permanently delete any saved document at any time from 'My Documents'."
         },
         {
+            id: "faq-sec-ai-training",
             category: "Security & Privacy",
             q: "Does PaperX train AI models on user documents?",
-            a: "No. PaperX operates on zero-retention privacy policies and never uses, sells, or trains AI models on your private documents."
+            a: "Strictly Never. PaperX enforces a strict zero-retention, zero-training data policy. Your private contracts, financial statements, medical records, and scanned IDs are never inspected by humans, never sold, and never used to train, fine-tune, or benchmark AI models."
+        },
+        {
+            id: "faq-sec-sessions",
+            category: "Security & Privacy",
+            q: "How does multi-device session security work?",
+            a: "Your account tracks active logins with device type (desktop, mobile, tablet), browser, OS, and approximate location. Maximum active devices supported per plan:\n• Free (Basic Plan): 1 active device\n• Pro Plan (₹29/mo): Up to 3 active devices simultaneously\n• Max Plan (₹49/mo): Up to 5 active devices simultaneously\nGo to Profile > Active Sessions to view all devices currently signed in to your account. You can remotely log out of any unfamiliar session with a single tap."
         },
 
-        // Troubleshooting & Support
+        // ==========================================
+        // 5. TROUBLESHOOTING & SUPPORT
+        // ==========================================
         {
+            id: "faq-trouble-failed",
             category: "Troubleshooting",
             q: "What should I do if a file conversion fails or hangs?",
-            a: "1. Verify that the PDF is not password-protected or corrupted.\n2. Confirm the file size is within your tier limits.\n3. Try uploading the file individually or clearing browser cache.\n4. Open Live Chat for immediate assistance from our engineering team."
+            a: "Follow these quick diagnostic steps:\n1. Check Password Protection: If the PDF is password-protected, use Unlock PDF first.\n2. Verify File Size & Quota: Ensure the file is within your plan limits (50MB Free, 250MB Pro, 1GB Max) and that you have remaining operations in your daily quota (5 Free, 100 Pro, 1,000 Max).\n3. Check File Integrity: Open the file on your device to ensure it is not corrupt or incomplete.\n4. Browser Cache & Extensions: Disable aggressive extensions that block WebAssembly workers, or try an incognito window.\n5. Instant Help: Open Live Support Chat to report the issue directly to our technical team for immediate resolution."
         },
         {
+            id: "faq-trouble-ocr-quality",
             category: "Troubleshooting",
             q: "Why is OCR text formatting slightly misaligned?",
-            a: "OCR accuracy depends on image clarity and scan resolution. For best results, use clean scans at 300 DPI with standard orientation and minimal shadows."
+            a: "OCR accuracy relies on source image clarity:\n• Resolution: For best results, use scans at 300 DPI. Low-resolution photos (< 150 DPI) can lead to character misreads.\n• Lighting & Glare: Ensure document pages are well-lit and flat, without harsh shadows or glossy glare.\n• Orientation: Use Rotate PDF to ensure pages are right-side-up before running OCR."
         },
         {
+            id: "faq-trouble-inactivity",
+            category: "Troubleshooting",
+            q: "How does the 10-minute inactivity chat system work?",
+            a: "To protect user privacy on shared devices and optimize support channels, ongoing support chat sessions automatically close if there is no response from the user for 10 consecutive minutes. If you return after 10 minutes of inactivity, opening the chat automatically starts a fresh new conversation for you."
+        },
+        {
+            id: "faq-trouble-abuse-rules",
+            category: "Troubleshooting",
+            q: "What is the app's policy on abusive language and hate?",
+            a: "PaperX strictly prohibits hate speech, vulgar slangs, and abusive language directed at the platform or staff. Violations trigger an automated 3-warning system with 1-hour chat suspensions. If a user exceeds 3 warnings, their email and Google account are permanently banned from PaperX, blocking all access to the app."
+        },
+        {
+            id: "faq-trouble-live-support",
             category: "Troubleshooting",
             q: "How do I connect with a live customer support specialist?",
-            a: "Click 'Open Live Chat' to chat directly with our on-duty team, or send an email to paperx.assist@gmail.com. We respond within minutes."
+            a: "Click 'Open Live Chat' on this page or tap the headset icon in the sidebar. Our PaperX AI responds instantly 24/7 with accurate step-by-step guidance. If you need human executive support or wish to discuss business partnerships, select 'Talk with CEO' in the chat, or email us at paperx.assist@gmail.com."
         }
     ];
 
@@ -2412,12 +2278,8 @@ const SupportView = ({ onStartChat }: { onStartChat: () => void }) => {
     });
 
     return (
-        <div className="max-w-4xl mx-auto py-10 px-4 sm:px-6">
-            <div className="text-center mb-12">
-                <div className="inline-flex items-center gap-1.5 px-3 py-1 bg-stone-100 dark:bg-stone-800 text-stone-700 dark:text-stone-300 text-xs font-semibold rounded-full mb-3">
-                    <Headset size={14} className="text-emerald-500" />
-                    Help & Customer Care
-                </div>
+        <div className="max-w-4xl mx-auto pt-4 sm:pt-6 pb-2 sm:pb-3 px-4 sm:px-6">
+            <div className="text-center mb-10 sm:mb-12">
                 <h2 className="text-3xl sm:text-5xl font-heading font-black tracking-tight mb-4 text-stone-900 dark:text-white">
                     How can we help you?
                 </h2>
@@ -2426,157 +2288,219 @@ const SupportView = ({ onStartChat }: { onStartChat: () => void }) => {
                 </p>
             </div>
 
-            {/* System Status Banner */}
-            <div className="mb-10 p-4 sm:p-5 bg-white dark:bg-stone-900 border border-stone-200/80 dark:border-stone-800 rounded-2xl flex items-center justify-between shadow-2xs">
-                <div className="flex items-center gap-3">
-                    <div className="relative flex h-3 w-3">
-                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                        <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span>
-                    </div>
-                    <div>
-                        <p className="font-bold text-xs sm:text-sm text-stone-900 dark:text-white">All Processing Systems Operational</p>
-                        <p className="text-[11px] text-emerald-600 dark:text-emerald-400 font-medium">Conversion engine & OCR services active</p>
-                    </div>
-                </div>
-                <span className="text-[11px] font-semibold text-stone-400 uppercase tracking-wider">
-                    99.9% Uptime
-                </span>
-            </div>
-
             {/* Support Channels Grid */}
-            <div className="grid md:grid-cols-2 gap-6 mb-16">
+            <div className="grid md:grid-cols-2 gap-6 mb-12 sm:mb-14">
                 {/* Live Chat Channel */}
                 <motion.div 
-                    whileHover={{ y: -4 }}
-                    className="p-6 sm:p-8 bg-stone-900 text-white dark:bg-stone-900 rounded-3xl shadow-xl shadow-stone-900/10 relative overflow-hidden flex flex-col justify-between border border-stone-800"
+                    whileHover={{ y: -5 }}
+                    transition={{ duration: 0.2 }}
+                    className="p-6 sm:p-8 bg-gradient-to-b from-stone-900 via-stone-900 to-stone-950 text-white rounded-[36px] relative overflow-hidden flex flex-col justify-between border-t border-t-white/20 border-x border-stone-800 border-b-2 border-b-black shadow-[0_24px_60px_-12px_rgba(0,0,0,0.55),0_10px_24px_-6px_rgba(0,0,0,0.35),inset_0_1.5px_1px_0_rgba(255,255,255,0.15)]"
                 >
                     <div>
-                        <div className="w-12 h-12 bg-emerald-500/20 text-emerald-400 rounded-2xl flex items-center justify-center mb-5 border border-emerald-500/30">
-                            <MessageSquare size={24} />
+                        <div className="w-12 h-12 rounded-2xl bg-gradient-to-b from-emerald-400 via-emerald-500 to-emerald-600 text-white flex items-center justify-center mb-5 border-t border-emerald-300/70 border-b-2 border-emerald-800/80 border-x border-emerald-400/50 shadow-[0_6px_14px_-2px_rgba(0,0,0,0.3),0_2px_4px_rgba(0,0,0,0.15),inset_0_1.5px_1px_rgba(255,255,255,0.7),inset_0_-2px_2px_rgba(6,78,59,0.5)]">
+                            <MessageSquare size={22} className="drop-shadow-[0_1px_2px_rgba(0,0,0,0.2)]" />
                         </div>
-                        <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 bg-emerald-500/20 text-emerald-300 font-bold text-[10px] uppercase tracking-widest rounded-full mb-3">
-                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" /> Instant Response
+                        <div className="inline-flex items-center gap-1.5 px-3 py-1 bg-emerald-500/15 text-emerald-300 font-bold text-[10px] uppercase tracking-widest rounded-full mb-3 border border-emerald-500/30 shadow-[inset_0_1px_1px_rgba(255,255,255,0.1)]">
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" /> Instant Response
                         </div>
-                        <h3 className="text-xl font-bold mb-2">Live Support Chat</h3>
-                        <p className="text-stone-400 text-xs sm:text-sm leading-relaxed mb-6 font-normal">
+                        <h3 className="text-xl sm:text-2xl font-heading font-black tracking-tight mb-2">Live Support Chat</h3>
+                        <p className="text-stone-300/90 text-xs sm:text-sm leading-relaxed mb-6 font-normal">
                             Chat directly with our team. Get instant automated resolution for billing queries or connect to live officers.
                         </p>
                     </div>
                     <button 
                         onClick={onStartChat}
-                        className="w-full py-3.5 bg-white text-stone-900 rounded-xl font-bold text-xs sm:text-sm hover:bg-stone-100 transition-all flex items-center justify-center gap-2 shadow-sm"
+                        className="group relative w-full py-4 px-6 bg-gradient-to-b from-white via-stone-50 to-stone-100 hover:from-white hover:to-stone-50 text-stone-950 rounded-full font-heading font-black text-xs sm:text-sm border-t-2 border-t-white border-x border-x-stone-200/90 border-b-[4.5px] border-b-stone-300 shadow-[0_14px_32px_-4px_rgba(0,0,0,0.5),0_6px_14px_rgba(0,0,0,0.3),inset_0_2px_1.5px_rgba(255,255,255,1),inset_0_-1.5px_1.5px_rgba(0,0,0,0.06)] hover:shadow-[0_18px_38px_-4px_rgba(0,0,0,0.6)] hover:-translate-y-0.5 active:translate-y-[2.5px] active:border-b-[2px] active:shadow-[0_4px_10px_rgba(0,0,0,0.3)] transition-all duration-150 flex items-center justify-center gap-2.5 cursor-pointer select-none"
                     >
                         <span>Open Live Chat</span>
-                        <ArrowRight size={16} />
+                        <ArrowRight size={16} className="group-hover:translate-x-1 transition-transform" />
                     </button>
                 </motion.div>
 
                 {/* Email Helpdesk Channel */}
                 <motion.div 
-                    whileHover={{ y: -4 }}
-                    className="p-6 sm:p-8 bg-white dark:bg-stone-900 text-stone-900 dark:text-white rounded-3xl shadow-xl shadow-stone-900/5 relative overflow-hidden flex flex-col justify-between border border-stone-200/80 dark:border-stone-800"
+                    whileHover={{ y: -5 }}
+                    transition={{ duration: 0.2 }}
+                    className="p-6 sm:p-8 bg-white dark:bg-stone-900 text-stone-900 dark:text-white rounded-[36px] relative overflow-hidden flex flex-col justify-between border-t border-t-white dark:border-t-white/15 border-x border-stone-200/90 dark:border-stone-800 border-b-2 border-b-stone-250 dark:border-b-black shadow-[0_24px_60px_-12px_rgba(0,0,0,0.08),0_10px_24px_-6px_rgba(0,0,0,0.04),inset_0_1.5px_1px_0_rgba(255,255,255,1)] dark:shadow-[0_24px_60px_-12px_rgba(0,0,0,0.7),0_10px_24px_-6px_rgba(0,0,0,0.45),inset_0_1.5px_1px_0_rgba(255,255,255,0.08)]"
                 >
                     <div>
-                        <div className="w-12 h-12 bg-orange-500/10 text-orange-500 rounded-2xl flex items-center justify-center mb-5 border border-orange-500/20">
-                            <Mail size={24} />
+                        <div className="w-12 h-12 rounded-2xl bg-gradient-to-b from-amber-400 via-orange-500 to-orange-600 text-white flex items-center justify-center mb-5 border-t border-orange-300/70 border-b-2 border-orange-800/80 border-x border-orange-400/50 shadow-[0_6px_14px_-2px_rgba(0,0,0,0.12),0_2px_4px_rgba(0,0,0,0.06),inset_0_1.5px_1px_rgba(255,255,255,0.7),inset_0_-2px_2px_rgba(154,52,18,0.5)]">
+                            <Mail size={22} className="drop-shadow-[0_1px_2px_rgba(0,0,0,0.2)]" />
                         </div>
-                        <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 bg-orange-500/10 text-orange-600 dark:text-orange-400 font-bold text-[10px] uppercase tracking-widest rounded-full mb-3">
+                        <div className="inline-flex items-center gap-1.5 px-3 py-1 bg-orange-500/10 text-orange-600 dark:text-orange-400 font-bold text-[10px] uppercase tracking-widest rounded-full mb-3 border border-orange-500/20 shadow-[inset_0_1px_1px_rgba(255,255,255,0.2)]">
                             SLA: 2–4 Hours
                         </div>
-                        <h3 className="text-xl font-bold mb-2">Official Email Helpdesk</h3>
+                        <h3 className="text-xl sm:text-2xl font-heading font-black tracking-tight mb-2">Official Email Helpdesk</h3>
                         <p className="text-stone-500 dark:text-stone-400 text-xs sm:text-sm leading-relaxed mb-6 font-normal">
                             For membership verification, official payment proofs, enterprise invoicing, or formal billing requests.
                         </p>
                     </div>
                     <a 
                         href="mailto:paperx.assist@gmail.com?subject=PaperX%20Support%20Inquiry"
-                        className="w-full py-3.5 bg-stone-900 hover:bg-stone-800 dark:bg-white dark:hover:bg-stone-100 text-white dark:text-stone-900 rounded-xl font-bold text-xs sm:text-sm transition-all flex items-center justify-center gap-2 shadow-sm"
+                        className="group relative w-full py-4 px-6 bg-gradient-to-b from-[#24252a] via-[#17181a] to-[#0d0e10] hover:from-[#2c2d33] hover:to-[#17181a] dark:from-white dark:via-stone-50 dark:to-stone-100 dark:hover:to-white text-white dark:text-stone-950 rounded-full font-heading font-black text-xs sm:text-sm border-t-2 border-t-white/35 dark:border-t-white border-x border-x-white/10 dark:border-x-stone-200 border-b-[4.5px] border-b-black dark:border-b-stone-350 shadow-[0_14px_32px_-4px_rgba(0,0,0,0.35),0_6px_14px_rgba(0,0,0,0.15),inset_0_2px_1.5px_rgba(255,255,255,0.25),inset_0_-1.5px_1.5px_rgba(0,0,0,0.4)] dark:shadow-[0_14px_32px_-4px_rgba(0,0,0,0.15),0_6px_14px_rgba(0,0,0,0.08),inset_0_2px_1.5px_rgba(255,255,255,0.95)] hover:shadow-[0_18px_38px_-4px_rgba(0,0,0,0.45)] dark:hover:shadow-[0_18px_38px_-4px_rgba(0,0,0,0.2)] hover:-translate-y-0.5 active:translate-y-[2.5px] active:border-b-[2px] active:shadow-[0_4px_10px_rgba(0,0,0,0.25)] dark:active:shadow-[0_4px_10px_rgba(0,0,0,0.1)] transition-all duration-150 flex items-center justify-center gap-2.5 cursor-pointer select-none"
                     >
                         <span>Compose Email</span>
-                        <Send size={15} />
+                        <Send size={15} className="group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-transform" />
                     </a>
                 </motion.div>
             </div>
 
             {/* FAQ Accordion Section */}
-            <div className="mb-14">
+            <div className="mb-2">
                 <div className="text-center mb-8">
-                    <h3 className="text-2xl font-bold tracking-tight mb-2 text-stone-900 dark:text-white">Frequently Asked Questions</h3>
-                    <p className="text-xs sm:text-sm text-stone-500 dark:text-stone-400">Quick answers to common questions about plans, security, OCR, and formats.</p>
+                    <h3 className="text-2xl sm:text-3xl font-heading font-black tracking-tight mb-2 text-stone-900 dark:text-white">Frequently Asked Questions</h3>
+                    <p className="text-xs sm:text-sm text-stone-500 dark:text-stone-400 font-medium">Quick answers to common questions about plans, security, OCR, and formats.</p>
                 </div>
 
-                {/* FAQ Controls: Search and Category Pills */}
-                <div className="mb-6 space-y-3">
-                    <div className="relative max-w-md mx-auto">
-                        <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-stone-400" />
+                {/* FAQ Controls: Search and Category Pills with Real 3D Depth */}
+                <div className="mb-7 space-y-4">
+                    <div className="relative max-w-md mx-auto group">
+                        <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-stone-400 group-focus-within:text-stone-900 dark:group-focus-within:text-white transition-colors pointer-events-none" />
                         <input
                             type="text"
                             value={searchQuery}
                             onChange={(e) => {
                                 setSearchQuery(e.target.value);
-                                setActiveFaq(null);
+                                setActiveFaqId(null);
                             }}
                             placeholder="Search questions & answers..."
-                            className="w-full pl-10 pr-4 py-2.5 bg-white dark:bg-stone-900 border border-stone-200/80 dark:border-stone-800 rounded-xl text-xs sm:text-sm text-stone-900 dark:text-white placeholder:text-stone-400 focus:outline-none focus:border-emerald-500 transition shadow-2xs"
+                            className="w-full pl-10 pr-10 py-3 bg-gradient-to-b from-stone-50/90 via-white to-stone-50/80 dark:from-[#1e1f23] dark:via-[#17181a] dark:to-[#131416] border border-stone-200/90 dark:border-stone-700/80 border-t-stone-300/80 dark:border-t-stone-900 border-b-[2.5px] border-b-stone-300/90 dark:border-b-stone-950 rounded-2xl text-xs sm:text-sm font-medium text-stone-900 dark:text-white placeholder:text-stone-400 focus:outline-none focus:border-stone-900 dark:focus:border-white focus:bg-white dark:focus:bg-[#1a1b1e] transition-all shadow-[inset_0_2.5px_5px_rgba(0,0,0,0.05),0_2px_4px_rgba(0,0,0,0.02),inset_0_-1px_1px_rgba(255,255,255,0.9)] dark:shadow-[inset_0_3px_6px_rgba(0,0,0,0.6),0_2px_4px_rgba(0,0,0,0.3),inset_0_-1px_1px_rgba(255,255,255,0.04)] focus:shadow-[inset_0_2px_4px_rgba(0,0,0,0.03),0_6px_20px_rgba(0,0,0,0.08)] dark:focus:shadow-[inset_0_2px_4px_rgba(0,0,0,0.3),0_6px_20px_rgba(0,0,0,0.6)]"
                         />
+                        {searchQuery && (
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setSearchQuery('');
+                                    setActiveFaqId(null);
+                                }}
+                                className="absolute right-3 top-1/2 -translate-y-1/2 p-1 rounded-full text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 hover:bg-stone-200/60 dark:hover:bg-stone-700/60 transition-colors cursor-pointer"
+                                aria-label="Clear FAQ search"
+                            >
+                                <X size={14} />
+                            </button>
+                        )}
                     </div>
 
-                    <div className="flex items-center justify-center gap-1.5 flex-wrap">
-                        {categories.map((cat) => (
-                            <button
-                                key={cat}
-                                onClick={() => {
-                                    setSelectedCategory(cat);
-                                    setActiveFaq(null);
-                                }}
-                                className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition ${
-                                    selectedCategory === cat
-                                        ? 'bg-stone-900 text-white dark:bg-white dark:text-stone-900 shadow-2xs'
-                                        : 'bg-white dark:bg-stone-900 text-stone-600 dark:text-stone-400 border border-stone-200/80 dark:border-stone-800 hover:bg-stone-100 dark:hover:bg-stone-800'
-                                }`}
-                            >
-                                {cat}
-                            </button>
-                        ))}
+                    <div className="flex items-center justify-center gap-2 flex-wrap pt-1">
+                        {categories.map((cat) => {
+                            const isCatActive = selectedCategory === cat;
+                            return (
+                                <button
+                                    key={cat}
+                                    onClick={() => {
+                                        setSelectedCategory(cat);
+                                        setActiveFaqId(null);
+                                    }}
+                                    className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all duration-150 cursor-pointer select-none ${
+                                        isCatActive
+                                            ? 'bg-gradient-to-b from-[#1e1f23] via-[#151618] to-[#0c0d0f] text-white dark:from-white dark:via-stone-50 dark:to-stone-100 dark:text-stone-950 border-t border-t-white/35 dark:border-t-white border-x border-x-white/10 dark:border-x-stone-200 border-b-[2.5px] border-b-black dark:border-b-stone-350 shadow-[0_6px_14px_-2px_rgba(0,0,0,0.4),0_2px_4px_rgba(0,0,0,0.2),inset_0_1.5px_1px_rgba(255,255,255,0.25)] dark:shadow-[0_6px_14px_-2px_rgba(0,0,0,0.15),0_2px_4px_rgba(0,0,0,0.08),inset_0_1.5px_1px_rgba(255,255,255,0.95)] active:translate-y-[1px] active:border-b-[1.5px]'
+                                            : 'bg-gradient-to-b from-white via-white to-stone-50/90 dark:from-[#212226] dark:via-[#1b1c1f] dark:to-[#151618] text-stone-600 dark:text-stone-300 border border-stone-200/90 dark:border-stone-700/80 border-t-white dark:border-t-white/15 border-b-[2.5px] border-b-stone-300/85 dark:border-b-stone-950 shadow-[0_3px_8px_rgba(0,0,0,0.04),0_1px_2px_rgba(0,0,0,0.02),inset_0_1.5px_1px_rgba(255,255,255,1)] dark:shadow-[0_4px_10px_rgba(0,0,0,0.5),inset_0_1.5px_1px_rgba(255,255,255,0.08)] hover:border-stone-300 dark:hover:border-stone-600 hover:shadow-[0_6px_14px_rgba(0,0,0,0.06)] dark:hover:shadow-[0_6px_14px_rgba(0,0,0,0.7)] hover:-translate-y-0.5 active:translate-y-[1px] active:border-b-[1.5px]'
+                                    }`}
+                                >
+                                    {cat}
+                                </button>
+                            );
+                        })}
                     </div>
                 </div>
 
                 {/* FAQ Accordion Items */}
                 <div className="space-y-3">
                     {filteredFaqs.length === 0 ? (
-                        <div className="text-center py-10 bg-white dark:bg-stone-900 rounded-2xl border border-stone-200/80 dark:border-stone-800 text-xs sm:text-sm text-stone-400">
+                        <div className="text-center py-10 bg-white dark:bg-stone-900 rounded-2xl border border-stone-200/80 dark:border-stone-800 text-xs sm:text-sm text-stone-400 shadow-sm">
                             No questions found matching your search. Click below to chat with our support team.
                         </div>
                     ) : (
-                        filteredFaqs.map((faq, i) => (
-                            <div key={i} className="border border-stone-200/80 dark:border-stone-800 rounded-2xl overflow-hidden bg-white dark:bg-stone-900 shadow-2xs">
-                                <button 
-                                    onClick={() => setActiveFaq(activeFaq === i ? null : i)}
-                                    className="w-full px-5 py-4 flex items-start justify-between gap-3 text-left hover:bg-stone-50/50 dark:hover:bg-stone-800/30 transition"
+                        filteredFaqs.map((faq) => {
+                            const isOpen = activeFaqId === faq.id;
+                            return (
+                                <div 
+                                    key={faq.id} 
+                                    className={`relative rounded-2xl overflow-hidden transition-[border-color,box-shadow] duration-300 ease-out ${
+                                        isOpen 
+                                            ? 'bg-gradient-to-b from-stone-50/80 via-white to-stone-50 dark:from-[#25262c] dark:via-[#1e1f23] dark:to-[#161719] border border-emerald-500 dark:border-emerald-500 border-t-emerald-400 dark:border-t-emerald-400 border-b-[3.5px] border-b-emerald-600 dark:border-b-emerald-800 shadow-[0_16px_36px_-6px_rgba(0,0,0,0.1),0_4px_14px_rgba(16,185,129,0.2),inset_0_1.5px_1.5px_rgba(255,255,255,1)] dark:shadow-[0_18px_40px_-6px_rgba(0,0,0,0.85),0_4px_14px_rgba(16,185,129,0.3),inset_0_1.5px_1.5px_rgba(255,255,255,0.12)]' 
+                                            : 'bg-gradient-to-b from-stone-50/90 via-white to-stone-100/80 dark:from-[#222328] dark:via-[#1c1d20] dark:to-[#151618] border border-stone-200/90 dark:border-stone-700/80 border-t-white dark:border-t-white/15 border-b-[3.5px] border-b-stone-300/90 dark:border-b-stone-950 shadow-[0_12px_28px_-6px_rgba(0,0,0,0.08),0_4px_10px_-2px_rgba(0,0,0,0.04),inset_0_1.5px_1.5px_rgba(255,255,255,1),inset_0_-1.5px_2px_rgba(0,0,0,0.03)] dark:shadow-[0_14px_32px_-6px_rgba(0,0,0,0.7),0_4px_12px_-2px_rgba(0,0,0,0.4),inset_0_1.5px_1.5px_rgba(255,255,255,0.12),inset_0_-1.5px_2px_rgba(0,0,0,0.5)] hover:border-stone-300 dark:hover:border-stone-600 hover:shadow-[0_16px_34px_-6px_rgba(0,0,0,0.11)] dark:hover:shadow-[0_18px_38px_-6px_rgba(0,0,0,0.8)]'
+                                    }`}
                                 >
-                                    <div className="flex-1">
-                                        <span className="font-semibold text-xs sm:text-sm text-stone-800 dark:text-stone-200 block">{faq.q}</span>
-                                        <span className="inline-block mt-1 px-1.5 py-0.5 rounded text-[9px] font-semibold uppercase tracking-wider bg-stone-100 dark:bg-stone-800 text-stone-500 dark:text-stone-400">
-                                            {faq.category}
-                                        </span>
-                                    </div>
-                                    <ChevronDown size={18} className={`text-stone-400 transition-transform duration-200 flex-shrink-0 mt-0.5 ${activeFaq === i ? 'rotate-180' : ''}`} />
-                                </button>
-                                <AnimatePresence>
-                                    {activeFaq === i && (
-                                        <motion.div 
-                                            initial={{ height: 0, opacity: 0 }}
-                                            animate={{ height: 'auto', opacity: 1 }}
-                                            exit={{ height: 0, opacity: 0 }}
-                                            className="px-5 pb-5 text-xs sm:text-sm text-stone-600 dark:text-stone-400 leading-relaxed border-t border-stone-100 dark:border-stone-800/60 pt-3"
-                                        >
-                                            <p className="whitespace-pre-line">{faq.a}</p>
-                                        </motion.div>
-                                    )}
-                                </AnimatePresence>
-                            </div>
-                        ))
+                                    {/* Top specular reflection arc */}
+                                    <div className="absolute inset-x-2 top-0 h-2.5 rounded-t-xl bg-gradient-to-b from-white/90 dark:from-white/10 to-transparent pointer-events-none" />
+
+                                    <button 
+                                        type="button"
+                                        onClick={() => setActiveFaqId(prev => prev === faq.id ? null : faq.id)}
+                                        className="relative z-10 w-full px-5 py-4 flex items-start justify-between gap-3 text-left hover:bg-stone-50/40 dark:hover:bg-stone-800/20 transition-colors cursor-pointer select-none"
+                                    >
+                                        <div className="flex-1 min-w-0 pr-2">
+                                            <span className="font-bold text-xs sm:text-sm text-stone-900 dark:text-white block leading-snug tracking-tight">{faq.q}</span>
+                                            <span className="inline-block mt-1.5 px-2 py-0.5 rounded-md text-[9px] font-bold uppercase tracking-wider bg-stone-100 dark:bg-stone-800/90 text-stone-600 dark:text-stone-300 border border-stone-200/80 dark:border-stone-700/80 border-t-white dark:border-t-white/10 border-b-[1.5px] border-b-stone-300/70 dark:border-b-stone-950 shadow-[0_1px_2px_rgba(0,0,0,0.03),inset_0_1px_0.5px_rgba(255,255,255,0.8)] dark:shadow-[0_1px_2px_rgba(0,0,0,0.3),inset_0_1px_0.5px_rgba(255,255,255,0.06)]">
+                                                {faq.category}
+                                            </span>
+                                        </div>
+                                        <div className={`w-7 h-7 rounded-xl flex items-center justify-center shrink-0 mt-0.5 border transition-all duration-300 ${
+                                            isOpen 
+                                                ? 'bg-emerald-500/15 border-emerald-500/30 text-emerald-600 dark:text-emerald-400 shadow-[inset_0_1px_1px_rgba(255,255,255,0.4)]' 
+                                                : 'bg-stone-100 dark:bg-stone-800/80 border-stone-200/80 dark:border-stone-700/80 border-b-[1.5px] border-b-stone-300/80 dark:border-b-stone-900 text-stone-500 dark:text-stone-400 shadow-[0_1px_2px_rgba(0,0,0,0.04),inset_0_1px_0.5px_rgba(255,255,255,0.8)] dark:shadow-[0_1px_2px_rgba(0,0,0,0.3),inset_0_1px_0.5px_rgba(255,255,255,0.06)]'
+                                        }`}>
+                                            <motion.div
+                                                animate={{ rotate: isOpen ? 180 : 0 }}
+                                                transition={{ duration: 0.32, ease: [0.16, 1, 0.3, 1] }}
+                                            >
+                                                <ChevronDown size={15} />
+                                            </motion.div>
+                                        </div>
+                                    </button>
+                                    <AnimatePresence initial={false}>
+                                        {isOpen && (
+                                            <motion.div 
+                                                key={`faq-content-${faq.id}`}
+                                                initial={{ height: 0, opacity: 0 }}
+                                                animate={{ 
+                                                    height: 'auto', 
+                                                    opacity: 1,
+                                                    transition: {
+                                                        height: { duration: 0.32, ease: [0.16, 1, 0.3, 1] },
+                                                        opacity: { duration: 0.22, delay: 0.05, ease: 'easeOut' }
+                                                    }
+                                                }}
+                                                exit={{ 
+                                                    height: 0, 
+                                                    opacity: 0,
+                                                    transition: {
+                                                        height: { duration: 0.28, ease: [0.16, 1, 0.3, 1] },
+                                                        opacity: { duration: 0.15, ease: 'easeIn' }
+                                                    }
+                                                }}
+                                                style={{ overflow: 'hidden' }}
+                                                className="overflow-hidden relative z-10"
+                                            >
+                                                <div className="px-5 pb-5 text-xs sm:text-sm text-stone-600 dark:text-stone-300 leading-relaxed border-t border-stone-200/70 dark:border-stone-800/80 pt-3.5 bg-gradient-to-b from-stone-50/90 to-stone-100/50 dark:from-[#17181b] dark:to-[#121315] shadow-[inset_0_3px_6px_rgba(0,0,0,0.03)] dark:shadow-[inset_0_3px_8px_rgba(0,0,0,0.5)]">
+                                                    <p className="whitespace-pre-line leading-relaxed">{faq.a}</p>
+                                                </div>
+                                            </motion.div>
+                                        )}
+                                    </AnimatePresence>
+                                </div>
+                            );
+                        })
                     )}
+                </div>
+
+                {/* Still Have Questions CTA with Real Layered 3D Depth */}
+                <div className="relative mt-8 p-6 sm:p-7 rounded-3xl bg-gradient-to-b from-stone-50 via-white to-stone-100/90 dark:from-[#222327] dark:via-[#1a1b1e] dark:to-[#131416] border border-stone-200/90 dark:border-stone-700/80 border-t-white dark:border-t-white/15 border-b-[3.5px] border-b-stone-300/90 dark:border-b-stone-950 shadow-[0_16px_36px_-6px_rgba(0,0,0,0.08),0_4px_12px_-2px_rgba(0,0,0,0.04),inset_0_1.5px_1.5px_rgba(255,255,255,1),inset_0_-1.5px_2px_rgba(0,0,0,0.03)] dark:shadow-[0_20px_45px_-8px_rgba(0,0,0,0.7),0_6px_16px_-3px_rgba(0,0,0,0.4),inset_0_1.5px_1.5px_rgba(255,255,255,0.12),inset_0_-1.5px_2px_rgba(0,0,0,0.5)] flex flex-col sm:flex-row items-center justify-between gap-5 text-center sm:text-left overflow-hidden">
+                    {/* Top specular reflection arc */}
+                    <div className="absolute inset-x-3 top-0.5 h-3 rounded-t-2xl bg-gradient-to-b from-white/90 dark:from-white/10 to-transparent pointer-events-none" />
+
+                    <div className="relative z-10">
+                        <h4 className="font-heading font-black text-base sm:text-lg text-stone-900 dark:text-white tracking-tight">Still have questions?</h4>
+                        <p className="text-xs sm:text-sm text-stone-500 dark:text-stone-400 mt-1 font-medium leading-relaxed">Can't find what you're looking for? Chat with our team anytime.</p>
+                    </div>
+                    <button
+                        onClick={onStartChat}
+                        className="relative z-10 w-full sm:w-auto px-6 py-3.5 rounded-full bg-gradient-to-b from-[#1e1f23] via-[#151618] to-[#0c0d0f] hover:from-[#26282d] hover:to-[#151618] dark:from-white dark:via-stone-50 dark:to-stone-100 dark:hover:to-white text-white dark:text-stone-950 font-heading font-black text-xs sm:text-sm transition-all duration-150 cursor-pointer flex items-center justify-center gap-2.5 whitespace-nowrap border-t border-t-white/35 dark:border-t-white border-x border-x-white/10 dark:border-x-stone-200 border-b-[3.5px] border-b-black dark:border-b-stone-350 shadow-[0_10px_25px_-4px_rgba(0,0,0,0.45),0_4px_10px_-2px_rgba(0,0,0,0.25),inset_0_1.5px_1px_rgba(255,255,255,0.25),inset_0_-1px_1px_rgba(0,0,0,0.4)] dark:shadow-[0_10px_25px_-4px_rgba(0,0,0,0.15),0_4px_10px_-2px_rgba(0,0,0,0.08),inset_0_1.5px_1px_rgba(255,255,255,0.95)] hover:shadow-[0_14px_30px_-4px_rgba(0,0,0,0.55)] dark:hover:shadow-[0_14px_30px_-4px_rgba(0,0,0,0.2)] active:translate-y-[2px] active:border-b-[1.5px] active:shadow-[0_2px_6px_rgba(0,0,0,0.3)] dark:active:shadow-[0_2px_6px_rgba(0,0,0,0.1)] shrink-0 select-none group"
+                    >
+                        <MessageSquare size={15} className="shrink-0 drop-shadow-[0_1px_1px_rgba(0,0,0,0.4)] dark:drop-shadow-none group-hover:scale-105 transition-transform" />
+                        <span className="whitespace-nowrap">Chat With Us</span>
+                    </button>
                 </div>
             </div>
         </div>
@@ -2590,6 +2514,7 @@ const LandingView = ({
   onOpenDownload?: () => void; 
   appSettings: any 
 }) => {
+  const { t } = useAppTranslation();
   return (
     <div className="min-h-screen bg-stone-50 dark:bg-gray-950 text-gray-900 dark:text-gray-100 font-sans selection:bg-stone-300 selection:text-stone-900 relative overflow-hidden">
 
@@ -2602,11 +2527,11 @@ const LandingView = ({
       )}
 
       {/* Header */}
-      <header className="fixed top-0 left-0 right-0 z-50 bg-transparent backdrop-blur-md border-b border-stone-200 dark:border-stone-800 transition-all duration-500">
+      <header className="fixed top-0 left-0 right-0 z-50 bg-transparent border-b border-stone-200 dark:border-stone-800 transition-all duration-500">
         <div className="max-w-7xl mx-auto px-6 h-14 flex items-center justify-between">
           <div className="flex items-center gap-3 cursor-pointer group text-gray-900 dark:text-white" onClick={() => navigate('/')}>
              <div className="relative inline-block">
-                <BrandLogo className="text-2xl tracking-tighter" />
+                <BrandLogo size="lg" className="h-6 sm:h-6.5" />
              </div>
           </div>
 
@@ -2745,7 +2670,7 @@ const LandingView = ({
                             </div>
                             <span className="font-bold text-gray-900 dark:text-white text-sm">4.9/5</span>
                         </div>
-                        <p className="text-xs text-gray-500 dark:text-gray-400">Loved by 10k+ users every week</p>
+                        <p className="text-xs text-gray-500 dark:text-gray-400">{t('landing.userTrust', 'Loved by 10k+ users every week')}</p>
                     </div>
                  </motion.div>
 
@@ -2757,7 +2682,7 @@ const LandingView = ({
                      className="pt-8 border-t border-stone-200/60 dark:border-stone-800/60"
                  >
                     <p className="text-[11px] font-black uppercase tracking-[0.2em] text-stone-400 dark:text-stone-500 mb-5 flex items-center gap-3">
-                        Popular Automated Tools
+                        {t('landing.popularAutomated', 'Popular Automated Tools')}
                         <span className="h-px bg-stone-200 dark:bg-stone-800 flex-1" />
                     </p>
                     
@@ -2765,32 +2690,32 @@ const LandingView = ({
                         <div onClick={() => navigate('/merge-pdf')} className="flex items-center gap-3 p-3 bg-white/60 dark:bg-stone-900/60 hover:bg-white dark:hover:bg-stone-800 border border-stone-200/60 dark:border-stone-700/60 rounded-2xl shadow-sm hover:shadow-md hover:border-indigo-200 dark:hover:border-indigo-500/50 transition-all cursor-pointer group">
                            <div className="w-10 h-10 rounded-xl bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 flex items-center justify-center group-hover:scale-110 transition-transform"><Combine size={18} /></div>
                            <div className="flex flex-col">
-                               <span className="text-sm font-bold text-stone-800 dark:text-stone-200">Merge PDF</span>
-                               <span className="text-[10px] font-semibold text-stone-500">Combine files</span>
+                               <span className="text-sm font-bold text-stone-800 dark:text-stone-200">{t('tools.merge', 'Merge PDF')}</span>
+                               <span className="text-[10px] font-semibold text-stone-500">{t('actions.merge', 'Combine files')}</span>
                            </div>
                         </div>
                         
                         <div onClick={() => navigate('/compress-pdf')} className="flex items-center gap-3 p-3 bg-white/60 dark:bg-stone-900/60 hover:bg-white dark:hover:bg-stone-800 border border-stone-200/60 dark:border-stone-700/60 rounded-2xl shadow-sm hover:shadow-md hover:border-emerald-200 dark:hover:border-emerald-500/50 transition-all cursor-pointer group">
                            <div className="w-10 h-10 rounded-xl bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400 flex items-center justify-center group-hover:scale-110 transition-transform"><Archive size={18} /></div>
                            <div className="flex flex-col">
-                               <span className="text-sm font-bold text-stone-800 dark:text-stone-200">Compress</span>
-                               <span className="text-[10px] font-semibold text-stone-500">Reduce size</span>
+                               <span className="text-sm font-bold text-stone-800 dark:text-stone-200">{t('tools.compress', 'Compress')}</span>
+                               <span className="text-[10px] font-semibold text-stone-500">{t('actions.compress', 'Reduce size')}</span>
                            </div>
                         </div>
                         
                         <div onClick={() => navigate('/split-pdf')} className="flex items-center gap-3 p-3 bg-white/60 dark:bg-stone-900/60 hover:bg-white dark:hover:bg-stone-800 border border-stone-200/60 dark:border-stone-700/60 rounded-2xl shadow-sm hover:shadow-md hover:border-amber-200 dark:hover:border-amber-500/50 transition-all cursor-pointer group">
                            <div className="w-10 h-10 rounded-xl bg-amber-50 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400 flex items-center justify-center group-hover:scale-110 transition-transform"><Scissors size={18} /></div>
                            <div className="flex flex-col">
-                               <span className="text-sm font-bold text-stone-800 dark:text-stone-200">Split PDF</span>
-                               <span className="text-[10px] font-semibold text-stone-500">Extract pages</span>
+                               <span className="text-sm font-bold text-stone-800 dark:text-stone-200">{t('tools.split', 'Split PDF')}</span>
+                               <span className="text-[10px] font-semibold text-stone-500">{t('actions.split', 'Extract pages')}</span>
                            </div>
                         </div>
                         
                         <div onClick={() => navigate('/pdf-to-text')} className="flex items-center gap-3 p-3 bg-white/60 dark:bg-stone-900/60 hover:bg-white dark:hover:bg-stone-800 border border-stone-200/60 dark:border-stone-700/60 rounded-2xl shadow-sm hover:shadow-md hover:border-rose-200 dark:hover:border-rose-500/50 transition-all cursor-pointer group">
                            <div className="w-10 h-10 rounded-xl bg-rose-50 dark:bg-rose-900/30 text-rose-600 dark:text-rose-400 flex items-center justify-center group-hover:scale-110 transition-transform"><ScanLine size={18} /></div>
                            <div className="flex flex-col">
-                               <span className="text-sm font-bold text-stone-800 dark:text-stone-200">PDF to Text</span>
-                               <span className="text-[10px] font-semibold text-stone-500">Extract text</span>
+                               <span className="text-sm font-bold text-stone-800 dark:text-stone-200">{t('tools.ocr', 'PDF to Text')}</span>
+                               <span className="text-[10px] font-semibold text-stone-500">{t('actions.extract', 'Extract text')}</span>
                            </div>
                         </div>
                     </div>
@@ -2817,17 +2742,17 @@ const LandingView = ({
              
              <div className="flex gap-3 whitespace-nowrap animate-marquee-slow w-max mb-3">
                  {[...AZ_FEATURES.flatMap(g => g.features), ...AZ_FEATURES.flatMap(g => g.features)].map((feature, i) => (
-                     <div key={`top-${i}`} className="flex items-center gap-2 px-4 py-2 bg-white/80 dark:bg-stone-800/80 backdrop-blur-md rounded-full border border-stone-200/80 dark:border-stone-700/80 shadow-[0_2px_10px_rgba(0,0,0,0.03)] text-[11px] sm:text-xs font-bold text-stone-700 dark:text-stone-200 tracking-tight hover:border-stone-400 hover:shadow-md transition-all cursor-default">
+                     <div key={`top-${i}`} className="flex items-center gap-2 px-4 py-2 bg-white/80 dark:bg-stone-800/80 rounded-full border border-stone-200/80 dark:border-stone-700/80 shadow-[0_2px_10px_rgba(0,0,0,0.03)] text-[11px] sm:text-xs font-bold text-stone-700 dark:text-stone-200 tracking-tight hover:border-stone-400 hover:shadow-md transition-all cursor-default">
                          <feature.icon size={14} className="text-stone-900 dark:text-white" />
-                         {feature.name}
+                         {t(`features.${feature.id}.name`, feature.name)}
                      </div>
                  ))}
              </div>
              <div className="flex gap-3 whitespace-nowrap animate-marquee-reverse w-max">
                  {[...AZ_FEATURES.flatMap(g => g.features).reverse(), ...AZ_FEATURES.flatMap(g => g.features).reverse()].map((feature, i) => (
-                     <div key={`bottom-${i}`} className="flex items-center gap-2 px-4 py-2 bg-white/80 dark:bg-stone-800/80 backdrop-blur-md rounded-full border border-stone-200/80 dark:border-stone-700/80 shadow-[0_2px_10px_rgba(0,0,0,0.03)] text-[11px] sm:text-xs font-bold text-stone-700 dark:text-stone-200 tracking-tight hover:border-stone-400 hover:shadow-md transition-all cursor-default">
+                     <div key={`bottom-${i}`} className="flex items-center gap-2 px-4 py-2 bg-white/80 dark:bg-stone-800/80 rounded-full border border-stone-200/80 dark:border-stone-700/80 shadow-[0_2px_10px_rgba(0,0,0,0.03)] text-[11px] sm:text-xs font-bold text-stone-700 dark:text-stone-200 tracking-tight hover:border-stone-400 hover:shadow-md transition-all cursor-default">
                          <feature.icon size={14} className="text-stone-900 dark:text-white" />
-                         {feature.name}
+                         {t(`features.${feature.id}.name`, feature.name)}
                      </div>
                  ))}
              </div>
@@ -2851,7 +2776,7 @@ const LandingView = ({
                        <motion.div 
                             key={i} 
                             whileHover={{ y: -10 }}
-                            className="bg-white/40 backdrop-blur-2xl p-8 sm:p-12 rounded-[2rem] sm:rounded-[3rem] border border-white/60 shadow-[0_8px_32px_rgba(0,0,0,0.04)] hover:border-white/80 hover:shadow-2xl transition-all duration-500 group relative overflow-hidden"
+                            className="bg-white/40 p-8 sm:p-12 rounded-[2rem] sm:rounded-[3rem] border border-white/60 shadow-[0_8px_32px_rgba(0,0,0,0.04)] hover:border-white/80 hover:shadow-2xl transition-all duration-500 group relative overflow-hidden"
                        >
                            <div className={`w-16 h-16 sm:w-20 sm:h-20 ${f.color} rounded-2xl sm:rounded-3xl flex items-center justify-center mb-8 sm:mb-10 group-hover:scale-110 group-hover:rotate-3 transition-all duration-500 shadow-sm`}>
                                <f.icon size={30} sm:size={36} />
@@ -2860,7 +2785,7 @@ const LandingView = ({
                            <p className="text-base sm:text-lg text-gray-500 leading-relaxed font-medium">{f.desc}</p>
                            
                            {/* Subtle Liquid Shine */}
-                           <div className="absolute -bottom-10 -right-10 w-40 h-40 bg-gradient-to-br from-white/0 to-white/30 rounded-full blur-3xl group-hover:scale-150 transition-transform duration-700" />
+                           <div className="absolute -bottom-10 -right-10 w-40 h-40 bg-gradient-to-br from-white/0 to-white/30 rounded-full  group-hover:scale-150 transition-transform duration-700" />
                        </motion.div>
                    ))}
                </div>
@@ -2868,12 +2793,12 @@ const LandingView = ({
       </section>
 
       {/* Footer */}
-      <footer className="bg-white/10 backdrop-blur-2xl border-t border-white/20 py-6 relative z-10">
+      <footer className="bg-white/10 border-t border-white/20 py-6 relative z-10">
           <div className="max-w-7xl mx-auto px-6">
               <div className="flex flex-col md:flex-row justify-between items-center gap-4">
                   <div className="flex items-center gap-3 text-gray-900 dark:text-white">
                       <div className="flex items-center gap-2">
-                         <BrandLogo className="text-2xl tracking-tighter" />
+                         <BrandLogo size="sm" className="h-5 sm:h-5.5 opacity-90" />
                       </div>
                   </div>
                   <div className="flex items-center gap-6 text-sm text-gray-500 font-medium">
@@ -2934,20 +2859,20 @@ const SplashScreen = ({ onComplete }: { onComplete: () => void }) => {
         style={{
           background: "radial-gradient(circle, rgba(255,255,255,0.16) 0%, rgba(255,103,31,0.08) 35%, rgba(4,106,56,0.08) 65%, rgba(0,0,0,0) 80%)",
         }}
-        className="absolute w-[360px] h-[360px] sm:w-[520px] sm:h-[520px] pointer-events-none rounded-full blur-3xl" 
+        className="absolute w-[360px] h-[360px] sm:w-[520px] sm:h-[520px] pointer-events-none rounded-full " 
       />
 
       {/* Centered Brand Typography - Exact 1:1 Video Blur-in, Hold with Inside Tricolor Flow, and Blur/Zoom-out */}
       <motion.h1
         initial={{ 
           opacity: 0, 
-          filter: "blur(24px)", 
+          filter: "none", 
           scale: 1.06,
           backgroundPosition: "0% 50%"
         }}
         animate={{
           opacity: [0, 1, 1, 0],
-          filter: ["blur(24px)", "blur(0px)", "blur(0px)", "blur(24px)"],
+          filter: "none",
           scale: [1.06, 1.0, 0.99, 0.94],
           backgroundPosition: ["0% 50%", "100% 50%", "0% 50%"],
         }}
@@ -2980,30 +2905,188 @@ const SplashScreen = ({ onComplete }: { onComplete: () => void }) => {
 
 const DownloadAppView = ({ navigate }: { navigate: (path: string) => void }) => {
   return (
-    <div className="flex flex-col items-center justify-center h-full p-6 text-center animate-in fade-in zoom-in duration-300">
-      <div className="w-24 h-24 bg-gradient-to-br from-green-400 to-green-600 text-white rounded-3xl flex items-center justify-center mb-6 shadow-xl shadow-green-500/30">
-        <Download size={48} />
+    <div className="flex items-center justify-center w-full p-4 sm:p-6">
+      <div className="relative w-full max-w-lg mx-auto">
+        {/* 3D Glass Layered Card */}
+        <div 
+          className="relative z-10 bg-white/98 dark:bg-stone-900/98 border border-stone-200 dark:border-stone-800 rounded-[32px] sm:rounded-[40px] p-7 sm:p-10 text-center shadow-2xl space-y-6 sm:space-y-7 transform-gpu"
+        >
+          {/* 3D Round Square Box without Glow */}
+          <div className="relative flex items-center justify-center mx-auto">
+            <div className="relative w-20 h-20 sm:w-24 sm:h-24 rounded-[24px] sm:rounded-[28px] bg-gradient-to-b from-emerald-400 via-emerald-500 to-emerald-700 dark:from-emerald-400 dark:via-emerald-500 dark:to-emerald-800 text-white flex items-center justify-center border-t border-emerald-200/90 border-b-2 border-emerald-900/80 border-x border-emerald-400/60 shadow-[0_12px_24px_-6px_rgba(0,0,0,0.25),0_4px_8px_-2px_rgba(0,0,0,0.1),inset_0_2px_1.5px_rgba(255,255,255,0.8),inset_0_-2px_3px_rgba(6,78,59,0.6)] dark:shadow-[0_12px_28px_-6px_rgba(0,0,0,0.6),0_4px_8px_-2px_rgba(0,0,0,0.3),inset_0_2px_1.5px_rgba(255,255,255,0.5),inset_0_-3px_3px_rgba(4,47,35,0.8)]">
+              <Download size={42} strokeWidth={2.4} className="drop-shadow-[0_2px_4px_rgba(0,0,0,0.25)]" />
+            </div>
+          </div>
+
+          {/* Typography */}
+          <div className="space-y-3">
+            <h1 className="text-2xl sm:text-3xl font-heading font-extrabold text-stone-900 dark:text-white tracking-tight leading-tight">
+              Download App
+            </h1>
+            <p className="text-stone-500 dark:text-stone-400 text-sm sm:text-[15px] font-normal leading-relaxed max-w-md mx-auto text-balance">
+              Get the official PaperX app. Fast, secure, and private.
+            </p>
+          </div>
+
+          {/* Feature Highlight Boxes with Layered 3D Bubble Depth - Perfectly Aligned */}
+          <div className="grid grid-cols-3 gap-2 sm:gap-3 py-2 sm:py-2.5 items-stretch">
+            {/* Box 1: 0% Risk */}
+            <motion.div 
+              whileHover={{ scale: 1.02 }}
+              whileTap={{ scale: 0.98 }}
+              transition={{ duration: 0.15, ease: "easeOut" }}
+              className="relative p-2 sm:p-3 pt-3 sm:pt-3.5 rounded-2xl bg-gradient-to-b from-stone-50/90 via-white to-stone-100/80 dark:from-[#25262a] dark:via-[#1e1f23] dark:to-[#161719] border border-stone-200/90 dark:border-stone-700/90 border-b-[3.5px] border-b-stone-300 dark:border-b-stone-950 shadow-[0_8px_20px_-4px_rgba(0,0,0,0.08),0_2px_6px_rgba(0,0,0,0.04),inset_0_1.5px_1.5px_rgba(255,255,255,1),inset_0_-1.5px_2px_rgba(0,0,0,0.03)] dark:shadow-[0_10px_24px_-4px_rgba(0,0,0,0.6),0_3px_8px_rgba(0,0,0,0.4),inset_0_1.5px_1.5px_rgba(255,255,255,0.15),inset_0_-1.5px_2px_rgba(0,0,0,0.5)] flex flex-col items-center justify-center text-center select-none overflow-hidden h-[130px] sm:h-[136px]"
+            >
+              {/* Glossy top bubble highlight arc */}
+              <div className="absolute inset-x-2 top-0.5 h-2.5 rounded-t-xl bg-gradient-to-b from-white/90 dark:from-white/10 to-transparent pointer-events-none" />
+
+              <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-gradient-to-b from-emerald-100/90 via-emerald-50 to-emerald-100/60 dark:from-emerald-900/60 dark:via-emerald-950/80 dark:to-emerald-950 border border-emerald-200/90 dark:border-emerald-700/60 border-b-2 border-b-emerald-300/80 dark:border-b-emerald-950 shadow-[0_3px_8px_rgba(16,185,129,0.22),inset_0_1.5px_1px_rgba(255,255,255,0.95),inset_0_-1px_1px_rgba(5,150,105,0.2)] dark:shadow-[0_4px_10px_rgba(0,0,0,0.4),inset_0_1.5px_1px_rgba(255,255,255,0.15)] flex items-center justify-center mb-2 shrink-0 relative z-10">
+                <ShieldCheck size={18} className="text-emerald-600 dark:text-emerald-400 drop-shadow-[0_1px_1px_rgba(16,185,129,0.25)]" />
+              </div>
+              <div className="h-[22px] sm:h-[24px] flex items-center justify-center w-full relative z-10">
+                <span className="text-[11px] sm:text-[11.5px] font-black text-stone-900 dark:text-stone-100 tracking-tight leading-tight">0% Risk</span>
+              </div>
+              <div className="h-[36px] flex items-center justify-center w-full relative z-10 px-0.5">
+                <span className="text-[9px] sm:text-[9.5px] font-medium text-stone-500 dark:text-stone-400 tracking-normal leading-tight text-center">Your files stay yours</span>
+              </div>
+            </motion.div>
+
+            {/* Box 2: Instant Speed */}
+            <motion.div 
+              whileHover={{ scale: 1.02 }}
+              whileTap={{ scale: 0.98 }}
+              transition={{ duration: 0.15, ease: "easeOut" }}
+              className="relative p-2 sm:p-3 pt-3 sm:pt-3.5 rounded-2xl bg-gradient-to-b from-stone-50/90 via-white to-stone-100/80 dark:from-[#25262a] dark:via-[#1e1f23] dark:to-[#161719] border border-stone-200/90 dark:border-stone-700/90 border-b-[3.5px] border-b-stone-300 dark:border-b-stone-950 shadow-[0_8px_20px_-4px_rgba(0,0,0,0.08),0_2px_6px_rgba(0,0,0,0.04),inset_0_1.5px_1.5px_rgba(255,255,255,1),inset_0_-1.5px_2px_rgba(0,0,0,0.03)] dark:shadow-[0_10px_24px_-4px_rgba(0,0,0,0.6),0_3px_8px_rgba(0,0,0,0.4),inset_0_1.5px_1.5px_rgba(255,255,255,0.15),inset_0_-1.5px_2px_rgba(0,0,0,0.5)] flex flex-col items-center justify-center text-center select-none overflow-hidden h-[130px] sm:h-[136px]"
+            >
+              {/* Glossy top bubble highlight arc */}
+              <div className="absolute inset-x-2 top-0.5 h-2.5 rounded-t-xl bg-gradient-to-b from-white/90 dark:from-white/10 to-transparent pointer-events-none" />
+
+              <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-gradient-to-b from-amber-100/90 via-amber-50 to-amber-100/60 dark:from-amber-900/60 dark:via-amber-950/80 dark:to-amber-950 border border-amber-200/90 dark:border-amber-700/60 border-b-2 border-b-amber-300/80 dark:border-b-amber-950 shadow-[0_3px_8px_rgba(245,158,11,0.22),inset_0_1.5px_1px_rgba(255,255,255,0.95),inset_0_-1px_1px_rgba(217,119,6,0.2)] dark:shadow-[0_4px_10px_rgba(0,0,0,0.4),inset_0_1.5px_1px_rgba(255,255,255,0.15)] flex items-center justify-center mb-2 shrink-0 relative z-10">
+                <Zap size={18} className="text-amber-500 dark:text-amber-400 drop-shadow-[0_1px_1px_rgba(245,158,11,0.25)]" />
+              </div>
+              <div className="h-[22px] sm:h-[24px] flex items-center justify-center w-full relative z-10">
+                <span className="text-[11px] sm:text-[11.5px] font-black text-stone-900 dark:text-stone-100 tracking-tight leading-tight">Instant Speed</span>
+              </div>
+              <div className="h-[36px] flex items-center justify-center w-full relative z-10 px-0.5">
+                <span className="text-[9px] sm:text-[9.5px] font-medium text-stone-500 dark:text-stone-400 tracking-normal leading-tight text-center">Millisecond file dispatch</span>
+              </div>
+            </motion.div>
+
+            {/* Box 3: Risk Free */}
+            <motion.div 
+              whileHover={{ scale: 1.02 }}
+              whileTap={{ scale: 0.98 }}
+              transition={{ duration: 0.15, ease: "easeOut" }}
+              className="relative p-2 sm:p-3 pt-3 sm:pt-3.5 rounded-2xl bg-gradient-to-b from-stone-50/90 via-white to-stone-100/80 dark:from-[#25262a] dark:via-[#1e1f23] dark:to-[#161719] border border-stone-200/90 dark:border-stone-700/90 border-b-[3.5px] border-b-stone-300 dark:border-b-stone-950 shadow-[0_8px_20px_-4px_rgba(0,0,0,0.08),0_2px_6px_rgba(0,0,0,0.04),inset_0_1.5px_1.5px_rgba(255,255,255,1),inset_0_-1.5px_2px_rgba(0,0,0,0.03)] dark:shadow-[0_10px_24px_-4px_rgba(0,0,0,0.6),0_3px_8px_rgba(0,0,0,0.4),inset_0_1.5px_1.5px_rgba(255,255,255,0.15),inset_0_-1.5px_2px_rgba(0,0,0,0.5)] flex flex-col items-center justify-center text-center select-none overflow-hidden h-[130px] sm:h-[136px]"
+            >
+              {/* Glossy top bubble highlight arc */}
+              <div className="absolute inset-x-2 top-0.5 h-2.5 rounded-t-xl bg-gradient-to-b from-white/90 dark:from-white/10 to-transparent pointer-events-none" />
+
+              <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-gradient-to-b from-blue-100/90 via-blue-50 to-blue-100/60 dark:from-blue-900/60 dark:via-blue-950/80 dark:to-blue-950 border border-blue-200/90 dark:border-blue-700/60 border-b-2 border-b-blue-300/80 dark:border-b-blue-950 shadow-[0_3px_8px_rgba(59,130,246,0.22),inset_0_1.5px_1px_rgba(255,255,255,0.95),inset_0_-1px_1px_rgba(37,99,235,0.2)] dark:shadow-[0_4px_10px_rgba(0,0,0,0.4),inset_0_1.5px_1px_rgba(255,255,255,0.15)] flex items-center justify-center mb-2 shrink-0 relative z-10">
+                <Lock size={18} className="text-blue-600 dark:text-blue-400 drop-shadow-[0_1px_1px_rgba(59,130,246,0.25)]" />
+              </div>
+              <div className="h-[22px] sm:h-[24px] flex items-center justify-center w-full relative z-10">
+                <span className="text-[11px] sm:text-[11.5px] font-black text-stone-900 dark:text-stone-100 tracking-tight leading-tight">Risk Free</span>
+              </div>
+              <div className="h-[36px] flex items-center justify-center w-full relative z-10 px-0.5">
+                <span className="text-[9px] sm:text-[9.5px] font-medium text-stone-500 dark:text-stone-400 tracking-normal leading-tight text-center">100% Secure</span>
+              </div>
+            </motion.div>
+          </div>
+
+          {/* Primary Action Button with Layered Depth */}
+          <div className="space-y-3 pt-1">
+            <motion.button 
+              whileHover={{ scale: 1.01 }}
+              whileTap={{ scale: 0.98 }}
+              onClick={(e) => { e.preventDefault(); executeDirectAppDownload('Android'); }}
+              className="relative w-full py-4 px-8 rounded-3xl bg-gradient-to-b from-[#1c1d20] via-[#141517] to-[#0d0e10] hover:from-[#222428] hover:to-[#141517] dark:from-white dark:via-white dark:to-stone-100 dark:hover:to-stone-50 text-white dark:text-stone-950 font-heading font-black text-sm sm:text-base border-t border-t-white/30 dark:border-t-white border-x border-x-white/10 dark:border-x-stone-200 border-b-[4px] border-b-black dark:border-b-stone-350 shadow-[0_14px_35px_-6px_rgba(0,0,0,0.45),0_6px_14px_-3px_rgba(0,0,0,0.25),inset_0_1.5px_1px_rgba(255,255,255,0.25),inset_0_-1px_1px_rgba(0,0,0,0.4)] dark:shadow-[0_14px_35px_-6px_rgba(0,0,0,0.15),0_6px_14px_-3px_rgba(0,0,0,0.08),inset_0_1.5px_1px_rgba(255,255,255,0.95)] hover:shadow-[0_18px_40px_-6px_rgba(0,0,0,0.55)] dark:hover:shadow-[0_18px_40px_-6px_rgba(0,0,0,0.2)] active:translate-y-[2px] active:border-b-[2px] active:shadow-[0_4px_12px_rgba(0,0,0,0.3)] dark:active:shadow-[0_4px_12px_rgba(0,0,0,0.1)] transition-all flex items-center justify-center gap-3 cursor-pointer group select-none overflow-hidden"
+            >
+              {/* Top edge specular reflection line */}
+              <div className="absolute inset-x-0 top-0 h-[1px] bg-gradient-to-r from-transparent via-white/40 dark:via-white/80 to-transparent pointer-events-none" />
+              <Download size={20} strokeWidth={2.4} className="shrink-0 drop-shadow-[0_1px_2px_rgba(0,0,0,0.3)] dark:drop-shadow-none" />
+              <span>Download APK Now</span>
+            </motion.button>
+
+            <button 
+              onClick={() => navigate('/dashboard')}
+              className="w-full py-3 px-6 rounded-2xl bg-transparent hover:bg-stone-100/80 dark:hover:bg-stone-850 text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200 text-xs font-bold transition-all cursor-pointer"
+            >
+              Return to Web Workspace
+            </button>
+          </div>
+
+          {/* Coming Soon Notice with official store logos */}
+          <div className="pt-3.5 border-t border-stone-200/70 dark:border-stone-800/70 flex flex-wrap items-center justify-center gap-x-2 gap-y-1.5 text-center">
+            <span className="text-xs sm:text-[13px] font-medium text-stone-500 dark:text-stone-400">
+              We will be coming soon on
+            </span>
+            <div className="inline-flex items-center gap-1.5 sm:gap-2">
+              {/* Google Play Logo */}
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-stone-100/90 dark:bg-stone-800/90 border border-stone-200/80 dark:border-stone-700/80 shadow-[0_1px_2px_rgba(0,0,0,0.04)] select-none">
+                <svg className="w-4 h-4 shrink-0" viewBox="0 0 32 32" fill="none">
+                  <path d="M15.5 15.28 2.08 29.34a3.64 3.64 0 0 0 5.33 2.16l15.1-8.6z" fill="#EA4335"/>
+                  <path d="m29.07 12.89-6.53-3.74-7.35 6.45 7.38 7.28 6.48-3.7a3.55 3.55 0 0 0 0-6.29z" fill="#FBBC04"/>
+                  <path d="M2.08 2.66a3.46 3.46 0 0 0-.12.92v24.84a3.66 3.66 0 0 0 .12.92L15.96 15.64Z" fill="#4285F4"/>
+                  <path d="m15.6 16 6.94-6.85L7.46.51A3.72 3.72 0 0 0 5.59 0 3.64 3.64 0 0 0 2.08 2.65Z" fill="#34A853"/>
+                </svg>
+                <span className="text-xs font-bold text-stone-900 dark:text-stone-100 tracking-tight leading-none">Google Play</span>
+              </span>
+              <span className="text-xs font-semibold text-stone-400 dark:text-stone-500">and</span>
+              {/* Apple App Store Logo */}
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-stone-100/90 dark:bg-stone-800/90 border border-stone-200/80 dark:border-stone-700/80 shadow-[0_1px_2px_rgba(0,0,0,0.04)] select-none">
+                <svg className="w-4 h-4 rounded-[3.5px] shrink-0 shadow-xs" viewBox="0 0 800 800">
+                  <defs>
+                    <linearGradient id="ios_app_store_badge_grad" x1="0%" y1="0%" x2="0%" y2="100%">
+                      <stop offset="0%" stopColor="#18BFFB"/>
+                      <stop offset="100%" stopColor="#2072F3"/>
+                    </linearGradient>
+                  </defs>
+                  <path fill="url(#ios_app_store_badge_grad)" d="M638.4,0H161.6C72.3,0,0,72.3,0,161.6v476.9C0,727.7,72.3,800,161.6,800h476.9c89.2,0,161.6-72.3,161.6-161.6V161.6C800,72.3,727.7,0,638.4,0z"/>
+                  <path fill="#FFFFFF" d="M396.6,183.8l16.2-28c10-17.5,32.3-23.4,49.8-13.4s23.4,32.3,13.4,49.8L319.9,462.4h112.9c36.6,0,57.1,43,41.2,72.8H143c-20.2,0-36.4-16.2-36.4-36.4c0-20.2,16.2-36.4,36.4-36.4h92.8l118.8-205.9l-37.1-64.4c-10-17.5-4.1-39.6,13.4-49.8c17.5-10,39.6-4.1,49.8,13.4L396.6,183.8L396.6,183.8z M256.2,572.7l-35,60.7c-10,17.5-32.3,23.4-49.8,13.4S148,614.5,158,597l26-45C213.4,542.9,237.3,549.9,256.2,572.7L256.2,572.7z M557.6,462.6h94.7c20.2,0,36.4,16.2,36.4,36.4c0,20.2-16.2,36.4-36.4,36.4h-52.6l35.5,61.6c10,17.5,4.1,39.6-13.4,49.8c-17.5,10-39.6,4.1-49.8-13.4c-59.8-103.7-104.7-181.3-134.5-233c-30.5-52.6-8.7-105.4,12.8-123.3C474.2,318.1,509.9,380,557.6,462.6L557.6,462.6z"/>
+                </svg>
+                <span className="text-xs font-bold text-stone-900 dark:text-stone-100 tracking-tight leading-none">App Store</span>
+              </span>
+            </div>
+          </div>
+        </div>
       </div>
-      <h1 className="text-3xl font-black text-gray-900 dark:text-white tracking-tight mb-3">Download Full App</h1>
-      <p className="text-gray-500 dark:text-gray-400 max-w-md mb-8 text-lg">
-        Get the complete, bug-free APK with zero errors. Install the native PaperX experience directly on your device.
-      </p>
-      
-      <a 
-        href="#"
-        onClick={(e) => { e.preventDefault(); alert('Downloading PaperX.apk...\n(100% bugs-free and zero errors)'); }}
-        className="flex items-center gap-3 bg-black dark:bg-white text-white dark:text-black px-8 py-4 rounded-2xl font-bold hover:scale-105 transition-transform shadow-2xl shadow-black/20 cursor-pointer"
-      >
-        <Download size={24} />
-        Download APK Now
-      </a>
-      
-      <p className="text-xs text-gray-400 dark:text-gray-500 mt-6">
-        Version 2.0.4 • Android 8.0+ • 100% Free
-      </p>
     </div>
   );
 };
+
+const QuickActionsComponent = ({
+  t,
+  handleToolClick
+}: {
+  t: (key: string, fallback?: string) => string;
+  handleToolClick: (toolId: string) => void;
+  handleFilesSelected?: (files: File[]) => void;
+}) => (
+  <div className="grid grid-cols-3 gap-3 sm:gap-4 mb-6 sm:mb-8">
+       {/* Quick Actions */}
+       {[
+           { id: 'compress-pdf', label: t('tools.compress', 'Compress') },
+           { id: 'merge-pdf', label: t('tools.merge', 'Merge') },
+           { id: 'pdf-to-word', label: t('tools.convert', 'Convert') },
+       ].map((action, i) => (
+           <motion.button
+               key={action.id}
+               initial={{ opacity: 0, y: 15 }}
+               animate={{ opacity: 1, y: 0 }}
+               transition={{ delay: i * 0.08 }}
+               whileTap={{ scale: 0.98 }}
+               onClick={() => handleToolClick(action.id)}
+               className="flex flex-col items-center justify-center p-5 sm:p-6 md:p-7 rounded-3xl bg-white/70 dark:bg-gray-900/70 border border-white/80 dark:border-white/10 hover:border-black/20 dark:hover:border-white/30 shadow-[0_8px_30px_rgb(0,0,0,0.04)] dark:shadow-[0_8px_30px_rgb(0,0,0,0.3)] hover:shadow-xl transition-all duration-300 group relative overflow-hidden min-w-0 cursor-pointer"
+           >
+               <div className="w-12 h-12 sm:w-14 sm:h-14 flex items-center justify-center mb-3 shrink-0">
+                   <AnimatedToolIcon toolId={action.id} size={42} className="w-10 h-10 sm:w-12 sm:h-12" />
+               </div>
+               <span className="font-heading font-black text-xs sm:text-sm text-gray-900 dark:text-white tracking-tight z-10 whitespace-nowrap group-hover:text-black dark:group-hover:text-white transition-colors">{action.label}</span>
+           </motion.button>
+       ))}
+  </div>
+);
 
 const DashboardView = ({
   searchQuery,
@@ -3014,112 +3097,285 @@ const DashboardView = ({
   setProfileInitialTab,
   setIsProfileOpen,
   handleToolClick,
+  handleFilesSelected,
   isToolLocked,
   navigate,
   storedFiles,
   handleDownloadStoredFile,
   handleShareStoredFile,
+  onOpen,
   t,
   getGreeting,
-  QuickActions
+  guestTrialsUsed = 0,
 }: any) => {
-    const [isHeaderHidden, setIsHeaderHidden] = useState(false);
-    const lastScrollY = useRef(0);
-
-    useEffect(() => {
-      const scrollContainer = document.getElementById('main-scroll-container');
-      if (!scrollContainer) return;
-
-      const handleScroll = () => {
-        const currentScrollY = scrollContainer.scrollTop;
-        // Hide when scrolling down, show when scrolling up.
-        // Add a small threshold (e.g., 50px) before hiding to avoid jitter at the top.
-        if (currentScrollY > lastScrollY.current && currentScrollY > 50) {
-          setIsHeaderHidden(true);
-        } else if (currentScrollY < lastScrollY.current) {
-          setIsHeaderHidden(false);
-        }
-        lastScrollY.current = currentScrollY;
-      };
-
-      scrollContainer.addEventListener('scroll', handleScroll, { passive: true });
-      return () => scrollContainer.removeEventListener('scroll', handleScroll);
-    }, []);
-
     const { t: hookT, currentLanguage } = useAppTranslation(user?.language);
     const activeT = (key: string, fallback?: string) => hookT(key, fallback) || (t ? t(key, fallback) : fallback || key);
     const currentLang = currentLanguage;
 
     const categoryLabels: Record<string, string> = {
-      [ToolCategory.CREATE]: activeT('categories.create', 'Create & Design'),
-      [ToolCategory.CONVERT]: activeT('categories.convert', 'Convert & Transform'),
-      [ToolCategory.EDIT]: activeT('categories.edit', 'Edit & Markup'),
-      [ToolCategory.ORGANIZE]: activeT('categories.organize', 'Organize & Pages'),
+      [ToolCategory.CONVERT_TO]: activeT('categories.convertTo', 'Convert to PDF'),
+      [ToolCategory.CONVERT_FROM]: activeT('categories.convertFrom', 'Convert from PDF'),
       [ToolCategory.OPTIMIZE]: activeT('categories.optimize', 'Optimize & OCR'),
-      [ToolCategory.SECURITY]: activeT('categories.security', 'Security & Sign')
+      [ToolCategory.ORGANIZE]: activeT('categories.organize', 'Organize & Pages'),
+      [ToolCategory.SECURITY]: activeT('categories.security', 'Security & Sign'),
+      [ToolCategory.INTELLIGENCE]: activeT('categories.intelligence', 'PDF Intelligence'),
+      [ToolCategory.EDIT]: activeT('categories.edit', 'Edit & Markup')
     };
 
     const translatedTools = TOOLS.map(tool => translateTool(tool, currentLang));
 
-    const filteredTools = translatedTools.filter(toolItem => 
-      (toolItem.name || '').toLowerCase().includes((searchQuery || '').toLowerCase()) || 
-      (toolItem.description || '').toLowerCase().includes((searchQuery || '').toLowerCase())
-    );
+    const q = (searchQuery || '').toLowerCase().trim();
+    const filteredTools = translatedTools.filter(toolItem => {
+      if (!q) return true;
+      const nameMatch = (toolItem.name || '').toLowerCase().includes(q);
+      const descMatch = (toolItem.description || '').toLowerCase().includes(q);
+      const tagMatch = (toolItem.tags || []).some((t: string) => t.toLowerCase().includes(q));
+      const inputMatch = (toolItem.inputFormats || []).some((fmt: string) => fmt.toLowerCase().includes(q));
+      const outputMatch = (toolItem.outputFormat || '').toLowerCase().includes(q);
+      return nameMatch || descMatch || tagMatch || inputMatch || outputMatch;
+    });
 
-    const categories = Object.values(ToolCategory).filter(c => c !== ToolCategory.EDIT);
+    const categories = Object.values(ToolCategory);
 
-    const displayUserName = user?.name ? user.name.split(' ')[0] : (user?.email ? user.email.split('@')[0] : 'User');
+    const matchedFiles = searchQuery && Array.isArray(storedFiles)
+      ? storedFiles.filter((f: any) => (f.name || f.filename || '').toLowerCase().includes(q))
+      : [];
+
+    const [isScrolled, setIsScrolled] = useState(false);
+    const [isBarVisible, setIsBarVisible] = useState(true);
+    const [isSearchFocused, setIsSearchFocused] = useState(false);
+    const searchInputRef = useRef<HTMLInputElement>(null);
+    const lastScrollTopRef = useRef(0);
+
+    // Smart scroll listener on main-scroll-container and window
+    useEffect(() => {
+      const container = document.getElementById('main-scroll-container');
+      let ticking = false;
+
+      const onScroll = () => {
+        const currentScrollTop = container 
+          ? container.scrollTop 
+          : (window.pageYOffset || document.documentElement.scrollTop || 0);
+
+        if (!ticking) {
+          window.requestAnimationFrame(() => {
+            const delta = currentScrollTop - lastScrollTopRef.current;
+            
+            // At the top of the feed (within 24px), show in resting state
+            if (currentScrollTop <= 24) {
+              setIsScrolled(false);
+              setIsBarVisible(true);
+            } else {
+              setIsScrolled(true);
+
+              // If search is focused or user has typed a query, keep visible so interaction is never blocked
+              if (isSearchFocused || (searchQuery && searchQuery.trim().length > 0)) {
+                setIsBarVisible(true);
+              } else {
+                // Scrolling down (page content moving up): automatically goes upside (hides)
+                if (delta > 6) {
+                  setIsBarVisible(false);
+                } 
+                // Scrolling up (page content moving down): smoothly automatically comes down (reveals)
+                else if (delta < -6) {
+                  setIsBarVisible(true);
+                }
+              }
+            }
+
+            lastScrollTopRef.current = Math.max(0, currentScrollTop);
+            ticking = false;
+          });
+          ticking = true;
+        }
+      };
+
+      if (container) {
+        container.addEventListener('scroll', onScroll, { passive: true });
+      }
+      window.addEventListener('scroll', onScroll, { passive: true });
+
+      return () => {
+        if (container) container.removeEventListener('scroll', onScroll);
+        window.removeEventListener('scroll', onScroll);
+      };
+    }, [isSearchFocused, searchQuery]);
+
+    // Keyboard shortcut ⌘K or Ctrl+K to reveal bar and focus search
+    useEffect(() => {
+      const handleKeyDown = (e: KeyboardEvent) => {
+        if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+          e.preventDefault();
+          setIsBarVisible(true);
+          searchInputRef.current?.focus();
+        }
+      };
+      window.addEventListener('keydown', handleKeyDown);
+      return () => window.removeEventListener('keydown', handleKeyDown);
+    }, []);
+
+    const hour = new Date().getHours();
+    const GreetingIcon = hour < 12 ? Sun : hour < 18 ? Sparkles : Moon;
+    const greetingBadgeColor = hour < 12 
+      ? 'text-amber-500 bg-amber-50 dark:bg-amber-950/40 border border-amber-200/50 dark:border-amber-900/40' 
+      : hour < 18 
+      ? 'text-orange-500 bg-orange-50 dark:bg-orange-950/40 border border-orange-200/50 dark:border-orange-900/40' 
+      : 'text-indigo-400 bg-indigo-50 dark:bg-indigo-950/40 border border-indigo-200/50 dark:border-indigo-900/40';
+
+    const userFirstName = (() => {
+      const raw = (user?.name || user?.email || '').trim();
+      if (!raw) return 'Paper';
+      const namePart = raw.includes('@') ? raw.split('@')[0] : raw;
+      const firstName = namePart.split(/[\s._-]+/)[0] || 'Paper';
+      return firstName.charAt(0).toUpperCase() + firstName.slice(1);
+    })();
+
+    const greetingPrefix = getGreeting ? getGreeting() : 'Good day';
 
     return (
         <motion.div 
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
-            className="pb-6 w-full flex flex-col relative min-h-full"
+            className="pb-6 pt-2 sm:pt-3 w-full flex flex-col relative min-h-full"
         >
-            {/* COMPACT HEADER - RESPONSIVE STICKY OFFSET */}
-            <div className={`sticky top-0 flex flex-col md:flex-row md:items-center justify-between border-b border-black/[0.06] dark:border-white/[0.08] pb-3 mb-5 ios-glass-drawer z-30 pt-3.5 px-4 sm:px-6 gap-3 transition-all duration-300 ${isHeaderHidden ? '-translate-y-[120%] opacity-0 pointer-events-none' : 'translate-y-0 opacity-100'}`}>
-                 <div className="flex items-center gap-3.5">
-                     <h1 className="text-xl sm:text-2xl font-heading font-black text-gray-900 dark:text-white tracking-tight">{getGreeting()}, {displayUserName}</h1>
-                    <div className="hidden sm:block h-4 w-px bg-gray-200 dark:bg-gray-800"></div>
-                    <p className="hidden sm:block text-[11px] text-gray-400 font-bold uppercase tracking-widest">{activeT('workspace', 'Workspace')}</p>
-                 </div>
-                 <div className="flex items-center gap-3">
-                    <div className="relative group w-full md:w-80 flex-shrink-0">
-                       <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400 group-focus-within:text-gray-900 dark:group-focus-within:text-white transition-colors" />
-                       <input
-                           type="text"
-                           className="block w-full pl-10 pr-4 h-10 sm:h-11 bg-gray-50/80 dark:bg-gray-800/60 backdrop-blur-md border border-gray-200/80 dark:border-gray-700/60 rounded-2xl text-xs sm:text-sm text-gray-900 dark:text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-black/10 dark:focus:ring-white/10 focus:border-black/40 dark:focus:border-white/40 transition-all font-medium shadow-xs"
-                           placeholder={activeT('search', 'Search tools...')}
-                           value={searchQuery}
-                           onChange={(e) => setSearchQuery(e.target.value)}
-                       />
-                    </div>
-
-                    <div className="hidden md:flex items-center gap-2">
-                       <button 
-                           onClick={(e) => {
-                               e.stopPropagation();
-                               setProfileInitialTab('menu');
-                               setIsProfileOpen(true);
-                           }}
-                           className="flex items-center gap-2 p-1 pr-3 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-full transition-all group/profile cursor-pointer"
-                       >
-                           <img src={user?.avatarUrl || ''} alt={displayUserName} className="w-7 h-7 rounded-full border border-gray-200 dark:border-gray-700 shadow-xs object-cover" />
-                           <span className="text-xs font-bold text-gray-700 dark:text-gray-300 group-hover/profile:text-gray-900 dark:group-hover/profile:text-white transition-colors hidden lg:block">{displayUserName}</span>
-                       </button>
-                    </div>
-                 </div>
-            </div>
-
             <div className="flex-1 flex flex-col lg:flex-row gap-4 px-3 sm:px-4">
                 
                 {/* LEFT MAIN AREA */}
                 <div className="flex-1 flex flex-col gap-2 pb-4 min-w-0">
-                    {/* NEW QUICK ACTIONS - Moved to top as primary hero */}
-                    {!searchQuery && <QuickActions />}
 
-                    {/* DENSE TOOLS GRID - Grouped */}
+                    {/* UNIFIED GREETING & SEARCH CARD (Stable layout, zero scroll jumping) */}
+                    <div className="mb-4 sm:mb-5">
+                      <div className="w-full p-4 sm:p-5 bg-gradient-to-b from-white/95 to-white/85 dark:from-stone-900/95 dark:to-stone-900/85 backdrop-blur-xl border border-stone-200/80 dark:border-stone-800/80 rounded-3xl shadow-sm">
+                        <div className="flex flex-col gap-3.5">
+                          {/* Top Header Row: Greeting & Badges */}
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="flex items-center gap-3">
+                              <div className={`w-10 h-10 sm:w-11 sm:h-11 rounded-2xl ${greetingBadgeColor} flex items-center justify-center shrink-0 shadow-xs`}>
+                                <GreetingIcon size={20} />
+                              </div>
+                              <div>
+                                <h1 className="text-xl sm:text-2xl font-black text-stone-900 dark:text-white tracking-tight leading-tight">
+                                  {greetingPrefix}, {userFirstName}!
+                                </h1>
+                                <p className="text-xs sm:text-sm text-stone-500 dark:text-stone-400 font-medium leading-normal mt-0.5">
+                                  {activeT('dashboard.searchSubtitle', 'Search all tools and documents to convert, organize, and edit')}
+                                </p>
+                              </div>
+                            </div>
+                            <div className="hidden md:flex items-center gap-2 px-3 py-1.5 bg-stone-100/90 dark:bg-stone-800/70 border border-stone-200/60 dark:border-stone-700/60 rounded-xl text-xs font-bold text-stone-600 dark:text-stone-300 select-none">
+                              <span className="w-2 h-2 rounded-full bg-emerald-500" />
+                              <span>30+ PDF Tools Ready</span>
+                            </div>
+                          </div>
+
+                          {/* Search Input seamlessly inside same unified card */}
+                          <div className="relative w-full group">
+                            <Search className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4 text-stone-400 group-focus-within:text-stone-900 dark:group-focus-within:text-white transition-colors pointer-events-none" />
+                            <input
+                              ref={searchInputRef}
+                              type="text"
+                              placeholder={activeT('dashboard.searchPlaceholderFull', 'Search all tools and documents (e.g. merge, word, excel, pdf)...')}
+                              value={searchQuery}
+                              onFocus={() => setIsSearchFocused(true)}
+                              onBlur={() => setIsSearchFocused(false)}
+                              onChange={(e) => setSearchQuery(e.target.value)}
+                              className="w-full pl-11 pr-20 py-3 sm:py-3.5 bg-stone-100/80 dark:bg-stone-800/70 focus:bg-white dark:focus:bg-stone-900 border border-transparent focus:border-stone-400 dark:focus:border-stone-600 rounded-2xl text-xs sm:text-sm font-medium focus:outline-none shadow-xs hover:border-stone-300 dark:hover:border-stone-700 transition-all text-stone-900 dark:text-stone-100 placeholder-stone-400"
+                            />
+                            <div className="absolute right-3.5 top-1/2 -translate-y-1/2 flex items-center gap-1.5">
+                              {searchQuery ? (
+                                <button 
+                                  onClick={() => {
+                                    setSearchQuery('');
+                                    searchInputRef.current?.focus();
+                                  }}
+                                  className="p-1 rounded-full text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 hover:bg-stone-200/60 dark:hover:bg-stone-700/60 transition-colors cursor-pointer"
+                                  aria-label="Clear search"
+                                >
+                                  <X size={14} />
+                                </button>
+                              ) : (
+                                <kbd className="hidden sm:inline-flex items-center gap-0.5 px-2 py-0.5 text-[10px] font-bold text-stone-400 dark:text-stone-500 bg-stone-200/60 dark:bg-stone-800 rounded-md border border-stone-300/40 dark:border-stone-700/50 select-none">
+                                  ⌘K
+                                </kbd>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Quick Filter Suggestion Chips */}
+                          <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pt-0.5 pb-0.5">
+                            <span className="text-[10px] sm:text-[11px] font-bold text-stone-400 dark:text-stone-500 uppercase tracking-wider mr-1 shrink-0 select-none">
+                              Quick:
+                            </span>
+                            {[
+                              { label: 'All', query: '' },
+                              { label: 'PDF to Word', query: 'Word' },
+                              { label: 'Merge', query: 'Merge' },
+                              { label: 'Compress', query: 'Compress' },
+                              { label: 'Sign & Lock', query: 'Security' },
+                              { label: 'OCR & AI', query: 'OCR' },
+                            ].map(chip => (
+                              <button
+                                key={chip.label}
+                                onClick={() => {
+                                  setSearchQuery(chip.query);
+                                  searchInputRef.current?.focus();
+                                }}
+                                className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-all shrink-0 cursor-pointer ${
+                                  searchQuery === chip.query
+                                    ? 'bg-stone-900 text-white dark:bg-white dark:text-stone-900 shadow-xs'
+                                    : 'bg-stone-100/90 dark:bg-stone-800/80 hover:bg-stone-200/80 dark:hover:bg-stone-700/80 text-stone-600 dark:text-stone-300'
+                                }`}
+                              >
+                                {chip.label}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* MATCHED FILES SEARCH RESULTS */}
+                    {searchQuery && matchedFiles.length > 0 && (
+                        <div className="mb-8 px-1">
+                            <div className="flex items-center gap-4 mb-4">
+                                <h2 className="text-sm font-black text-gray-900 dark:text-white uppercase tracking-[0.2em] font-heading flex items-center gap-1.5">
+                                    <Folder size={14} className="text-stone-500" />
+                                    <span>Matching Documents ({matchedFiles.length})</span>
+                                </h2>
+                                <div className="h-px flex-1 bg-gradient-to-r from-gray-100 dark:from-gray-800 to-transparent" />
+                            </div>
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                {matchedFiles.map((file: any) => (
+                                    <div 
+                                        key={file.id}
+                                        className="flex items-center justify-between p-3 bg-white/70 dark:bg-gray-900/70 border border-stone-200/60 dark:border-white/10 rounded-2xl hover:border-stone-400 dark:hover:border-white/30 shadow-xs transition-all"
+                                    >
+                                        <div className="flex items-center gap-2.5 min-w-0">
+                                            <div className="w-8 h-8 rounded-xl bg-stone-100 dark:bg-stone-800 flex items-center justify-center text-stone-600 dark:text-stone-300 shrink-0">
+                                                <FileText size={16} />
+                                            </div>
+                                            <div className="min-w-0">
+                                                <h4 className="text-xs font-bold text-stone-800 dark:text-stone-100 truncate">{file.filename}</h4>
+                                                <p className="text-[10px] text-stone-500 dark:text-stone-400 font-medium">
+                                                    {file.toolUsed || 'Imported'} • {new Date(file.createdAt).toLocaleDateString()}
+                                                </p>
+                                            </div>
+                                        </div>
+                                        <div className="flex items-center gap-1">
+                                            <button 
+                                                onClick={() => handleDownloadStoredFile(file.id)}
+                                                className="px-2.5 py-1 text-[11px] font-bold bg-stone-100 dark:bg-stone-800 hover:bg-stone-200 dark:hover:bg-stone-700 text-stone-700 dark:text-stone-300 rounded-lg transition-colors cursor-pointer"
+                                            >
+                                                Download
+                                            </button>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
                     <div className="space-y-10">
                         {categories.map(category => {
                             const categoryTools = filteredTools.filter(t => t.category === category);
@@ -3136,38 +3392,17 @@ const DashboardView = ({
                                                 key={tool.id} 
                                                 initial={{ opacity: 0, scale: 0.9 }}
                                                 animate={{ opacity: 1, scale: 1 }}
-                                                transition={{ delay: idx * 0.05 }}
-                                                whileHover={{ y: -5, scale: 1.02 }}
+                                                transition={{ delay: idx * 0.03 }}
                                                 whileTap={{ scale: 0.98 }}
                                                 onClick={() => handleToolClick(tool.id)}
-                                                className="group relative flex flex-col p-4 sm:p-5 bg-white/40 dark:bg-gray-900/40 backdrop-blur-2xl border border-white/60 dark:border-gray-800/60 rounded-3xl hover:border-white/80 dark:hover:border-gray-700 hover:shadow-2xl hover:shadow-black/5 cursor-pointer transition-all duration-300 items-start gap-3 sm:gap-4 min-w-0"
+                                                className="group relative flex flex-col p-4 sm:p-5 bg-white/80 dark:bg-gray-900/80 border border-white/90 dark:border-white/10 rounded-2xl sm:rounded-3xl hover:border-black/20 dark:hover:border-white/30 shadow-[0_8px_30px_rgb(0,0,0,0.04)] dark:shadow-[0_8px_30px_rgb(0,0,0,0.3)] hover:shadow-xl cursor-pointer transition-all duration-300 items-start gap-3 min-w-0"
                                             >
-                                                {/* Plan Badges & Lock Status */}
-                                                {tool.requiredPlan === 'Plus' && (
-                                                    <div className="absolute top-3.5 right-3.5 flex items-center gap-1 z-10">
-                                                        <span className="px-2 py-0.5 rounded-full bg-black text-white dark:bg-white dark:text-black text-[9px] font-black tracking-wider uppercase shadow-xs">
-                                                            PLUS
-                                                        </span>
-                                                    </div>
-                                                )}
-                                                {tool.requiredPlan === 'Max' && (
-                                                    <div className="absolute top-3.5 right-3.5 flex items-center gap-1 z-10">
-                                                        <span className="px-2 py-0.5 rounded-full bg-gradient-to-r from-purple-600 to-indigo-600 text-white text-[9px] font-black tracking-wider uppercase shadow-xs">
-                                                            MAX
-                                                        </span>
-                                                    </div>
-                                                )}
-                                                <div className="w-10 h-10 sm:w-12 sm:h-12 flex items-center justify-center bg-white dark:bg-gray-800 rounded-2xl text-gray-900 dark:text-white group-hover:bg-black dark:group-hover:bg-white group-hover:text-white dark:group-hover:text-black shadow-sm group-hover:shadow-lg group-hover:shadow-black/20 transition-all duration-300 shrink-0">
-                                                    <motion.div
-                                                        whileHover={{ scale: 1.15, rotate: [0, -10, 10, -5, 5, 0] }}
-                                                        transition={{ type: "spring", stiffness: 300, damping: 10 }}
-                                                    >
-                                                        <tool.icon size={22} className="sm:w-6 sm:h-6" strokeWidth={1.5} />
-                                                    </motion.div>
+                                                <div className="w-11 h-11 flex items-center justify-center shrink-0">
+                                                    <AnimatedToolIcon toolId={tool.id} fallbackIcon={tool.icon} size={42} className="w-10 h-10" />
                                                 </div>
-                                                <div className="min-w-0 w-full">
-                                                    <h3 className="text-sm sm:text-base font-heading font-black text-gray-900 dark:text-white truncate group-hover:text-black dark:group-hover:text-white transition-colors tracking-tight">{tool.name}</h3>
-                                                    <p className="text-[11px] sm:text-xs text-gray-500 dark:text-gray-400 truncate group-hover:text-gray-700 dark:group-hover:text-gray-300 font-medium mt-0.5 sm:mt-1">{tool.description}</p>
+                                                <div className="min-w-0 w-full flex-1 flex flex-col justify-between">
+                                                    <h3 className="text-sm sm:text-base font-heading font-black text-gray-900 dark:text-white truncate group-hover:text-black dark:group-hover:text-white transition-colors tracking-tight mb-1">{tool.name}</h3>
+                                                    <p className="text-[11px] sm:text-xs text-gray-500 dark:text-gray-400 line-clamp-2 group-hover:text-gray-700 dark:group-hover:text-gray-300 font-medium leading-tight">{tool.description}</p>
                                                 </div>
                                             </motion.div>
                                         ))}
@@ -3181,6 +3416,69 @@ const DashboardView = ({
         </motion.div>
     );
   };
+const syncProfileToLocalStorage = (profile: any) => {
+  if (!profile || typeof window === 'undefined') return;
+  if (profile.autoRestoreSession !== undefined) {
+    const isAutoRestore = Boolean(profile.autoRestoreSession);
+    localStorage.setItem('pref_autoRestoreSession', String(isAutoRestore));
+    try {
+      setPersistence(auth, isAutoRestore ? browserLocalPersistence : browserSessionPersistence).catch(() => {});
+    } catch (_) {}
+  }
+  if (profile.twoFactorEnabled !== undefined) {
+    localStorage.setItem('pref_twoStep', String(profile.twoFactorEnabled));
+  }
+  if (profile.twoFactorSecret) {
+    localStorage.setItem('paperx_2fa_secret', profile.twoFactorSecret);
+  }
+  if (profile.twoFactorBackupCodes) {
+    localStorage.setItem('paperx_2fa_backup_codes', JSON.stringify(profile.twoFactorBackupCodes));
+  }
+  if (profile.darkMode !== undefined || profile.theme) {
+    const isDark = profile.darkMode !== undefined ? Boolean(profile.darkMode) : profile.theme === 'dark';
+    safeStorage.setItem('pref_darkMode', String(isDark));
+    if (isDark) {
+      document.documentElement.classList.add('dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+    }
+  }
+  if (profile.fontSize) {
+    safeStorage.setItem('pref_fontSize', profile.fontSize);
+    document.documentElement.setAttribute('data-font-size', profile.fontSize);
+  }
+  if (profile.largerTextEnabled !== undefined) {
+    safeStorage.setItem('pref_largerText', String(profile.largerTextEnabled));
+    document.documentElement.setAttribute('data-larger-text', String(profile.largerTextEnabled));
+  }
+  if (profile.pdfQuality) {
+    safeStorage.setItem('pref_pdfQuality', profile.pdfQuality);
+  }
+  if (profile.namingPattern) {
+    safeStorage.setItem('pref_namingPattern', profile.namingPattern);
+  }
+  if (profile.autoSaveScan !== undefined) {
+    safeStorage.setItem('pref_autoSaveScan', String(profile.autoSaveScan));
+  }
+  if (profile.ocrLanguage) {
+    safeStorage.setItem('pref_ocrLanguage', profile.ocrLanguage);
+  }
+  if (profile.autoCopyText !== undefined) {
+    safeStorage.setItem('pref_autoCopyText', String(profile.autoCopyText));
+  }
+  if (profile.pdfAutoCompress !== undefined) {
+    safeStorage.setItem('pref_pdfAutoCompress', String(profile.pdfAutoCompress));
+  }
+  if (profile.notificationSoundEnabled !== undefined) {
+    safeStorage.setItem('pref_sound', String(profile.notificationSoundEnabled));
+  }
+  if (profile.loginAlertsEnabled !== undefined) {
+    safeStorage.setItem('pref_loginAlerts', String(profile.loginAlertsEnabled));
+  }
+  if (profile.language) {
+    safeStorage.setItem('pref_language', profile.language);
+  }
+};
 const App: React.FC = () => {
   const [showSplash, setShowSplash] = useState(true);
   const [socket, setSocket] = useState<Socket | null>(null);
@@ -3244,6 +3542,14 @@ const App: React.FC = () => {
       window.dispatchEvent(new CustomEvent("refresh_payments", { detail: data }));
     });
 
+    newSocket.on("admin-chat-message", (data) => {
+      window.dispatchEvent(new CustomEvent("paperx-admin-chat-message", { detail: data }));
+    });
+
+    newSocket.on("support-chat-message", (data) => {
+      window.dispatchEvent(new CustomEvent("paperx-admin-chat-message", { detail: data }));
+    });
+
     return () => {
       newSocket.close();
     };
@@ -3255,30 +3561,73 @@ const App: React.FC = () => {
   // Robust normalized path for routing and redirect checks (strips query parameters and trailing slashes)
   const cleanPathForRouting = '/' + currentPath.split('?')[0].replace(/^\/+|\/+$/g, '');
 
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUser] = useState<User | null>(() => getLocalSession());
   const [appOrders, setAppOrders] = useState<any[]>([]);
-  const [isAuthLoading, setIsAuthLoading] = useState(true);
+  const [isAuthLoading, setIsAuthLoading] = useState<boolean>(() => !getLocalSession());
 
-  // Real-time listener for user's payment orders to keep UpgradeView & Billing in sync
+  // Real-time listener for user's payment orders to keep UpgradeView, Billing & App Drawer in sync
   useEffect(() => {
     if (!user || (!user.uid && !user.email)) {
       setAppOrders([]);
       return;
     }
-    const q = query(
-      collection(db, 'orders'),
-      where('userId', '==', user.uid || user.email)
-    );
-    const unsub = onSnapshot(q, (snapshot) => {
+    const userIdentifier = user.uid || user.email;
+    const unsubUid = onSnapshot(query(collection(db, 'orders'), where('uid', '==', userIdentifier)), (snapshot) => {
       const fetched: any[] = [];
       snapshot.forEach(docSnap => {
-        fetched.push({ id: docSnap.id, ...docSnap.data() });
+        fetched.push({ id: docSnap.id, orderId: docSnap.id, ...docSnap.data() });
       });
-      setAppOrders(fetched);
+      setAppOrders(prev => {
+        const map = new Map();
+        prev.forEach(item => map.set(item.id || item.orderId, item));
+        fetched.forEach(item => map.set(item.id || item.orderId, item));
+        const merged = Array.from(map.values());
+        if (prev.length === merged.length) {
+          let same = true;
+          for (let i = 0; i < prev.length; i++) {
+            if (prev[i].id !== merged[i].id || prev[i].status !== merged[i].status) {
+              same = false;
+              break;
+            }
+          }
+          if (same) return prev;
+        }
+        return merged;
+      });
     }, (err) => {
-      console.warn('App orders snapshot error:', err);
+      console.warn('App orders uid snapshot note:', err);
     });
-    return () => unsub();
+
+    const unsubUserId = onSnapshot(query(collection(db, 'orders'), where('userId', '==', userIdentifier)), (snapshot) => {
+      const fetched: any[] = [];
+      snapshot.forEach(docSnap => {
+        fetched.push({ id: docSnap.id, orderId: docSnap.id, ...docSnap.data() });
+      });
+      setAppOrders(prev => {
+        const map = new Map();
+        prev.forEach(item => map.set(item.id || item.orderId, item));
+        fetched.forEach(item => map.set(item.id || item.orderId, item));
+        const merged = Array.from(map.values());
+        if (prev.length === merged.length) {
+          let same = true;
+          for (let i = 0; i < prev.length; i++) {
+            if (prev[i].id !== merged[i].id || prev[i].status !== merged[i].status) {
+              same = false;
+              break;
+            }
+          }
+          if (same) return prev;
+        }
+        return merged;
+      });
+    }, (err) => {
+      console.warn('App orders userId snapshot note:', err);
+    });
+
+    return () => {
+      unsubUid();
+      unsubUserId();
+    };
   }, [user?.uid, user?.email]);
   const [deviceLimitModalOpen, setDeviceLimitModalOpen] = useState(false);
   const [guestTrialsUsed, setGuestTrialsUsed] = useState<number>(() => {
@@ -3288,6 +3637,8 @@ const App: React.FC = () => {
       return 0;
     }
   });
+
+
 
   // Dynamic Page Title & Meta Tags based on URL route (matches tools like iLovePDF / Smallpdf)
   useEffect(() => {
@@ -3309,21 +3660,34 @@ const App: React.FC = () => {
     }
   }, [cleanPathForRouting]);
 
-  // Auto-redirect authenticated users away from auth pages
+  // Auto-redirect authenticated users away from auth pages to dashboard
   useEffect(() => {
     if (user && (cleanPathForRouting === '/login' || cleanPathForRouting === '/signup' || cleanPathForRouting === '/forgot-password' || cleanPathForRouting === '/reset-password')) {
+      setActiveView('dashboard');
       navigate('/dashboard');
+    }
+  }, [user, cleanPathForRouting]);
+
+  // Ensure that whenever a suspended/blocked user re-logs in, the background shows the dashboard
+  useEffect(() => {
+    if (user && (user.isPermanentSuspended || checkPermanentSuspendedStatus(user.email || user.uid) || user.status === 'DISABLED' || (user as any).isBlocked)) {
+      setActiveView('dashboard');
+      if (cleanPathForRouting === '/login' || cleanPathForRouting === '/signup' || cleanPathForRouting === '/forgot-password' || cleanPathForRouting === '/reset-password') {
+        navigate('/dashboard');
+      }
     }
   }, [user, cleanPathForRouting]);
 
   // Global Preference Sync Effect (Theme, Font Size & Accessibility)
   useEffect(() => {
-    const applyPreferences = () => {
+    const applyPreferences = (detail?: any) => {
       // 1. Dark Mode Theme Sync
-      const savedDark = localStorage.getItem('pref_darkMode');
-      const isDark = savedDark !== null 
-        ? savedDark === 'true'
-        : (user?.theme ? user.theme === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches);
+      const savedDark = safeStorage.getItem('pref_darkMode');
+      const isDark = detail?.darkMode !== undefined
+        ? Boolean(detail.darkMode)
+        : (savedDark !== null 
+            ? savedDark === 'true'
+            : (user?.theme ? user.theme === 'dark' : (user?.darkMode !== undefined ? user.darkMode : window.matchMedia('(prefers-color-scheme: dark)').matches)));
 
       if (isDark) {
         document.documentElement.classList.add('dark');
@@ -3332,54 +3696,114 @@ const App: React.FC = () => {
       }
 
       // 2. Font Size & Legibility
-      const fontSize = localStorage.getItem('pref_fontSize') || user?.fontSize || 'system';
-      const largerText = localStorage.getItem('pref_largerText') !== null
-        ? localStorage.getItem('pref_largerText') === 'true'
-        : (user?.largerTextEnabled !== undefined ? user.largerTextEnabled : false);
+      const savedFontSize = safeStorage.getItem('pref_fontSize');
+      const fontSize = detail?.fontSize || savedFontSize || user?.fontSize || 'system';
+      const savedLarger = safeStorage.getItem('pref_largerText');
+      const largerText = detail?.largerText !== undefined
+        ? Boolean(detail.largerText)
+        : (savedLarger !== null
+            ? savedLarger === 'true'
+            : (user?.largerTextEnabled !== undefined ? user.largerTextEnabled : false));
 
       document.documentElement.setAttribute('data-font-size', fontSize);
       document.documentElement.setAttribute('data-larger-text', String(largerText));
 
       // 3. Scan & OCR Preferences Sync
       if (user) {
-        if (user.autoSaveScan !== undefined && localStorage.getItem('pref_autoSaveScan') === null) {
-          localStorage.setItem('pref_autoSaveScan', String(user.autoSaveScan));
+        if (user.autoSaveScan !== undefined && safeStorage.getItem('pref_autoSaveScan') === null) {
+          safeStorage.setItem('pref_autoSaveScan', String(user.autoSaveScan));
         }
-        if (user.autoCopyText !== undefined && localStorage.getItem('pref_autoCopyText') === null) {
-          localStorage.setItem('pref_autoCopyText', String(user.autoCopyText));
+        if (user.autoCopyText !== undefined && safeStorage.getItem('pref_autoCopyText') === null) {
+          safeStorage.setItem('pref_autoCopyText', String(user.autoCopyText));
         }
-        if (user.ocrLanguage && localStorage.getItem('pref_ocrLanguage') === null) {
-          localStorage.setItem('pref_ocrLanguage', user.ocrLanguage);
+        if (user.ocrLanguage && safeStorage.getItem('pref_ocrLanguage') === null) {
+          safeStorage.setItem('pref_ocrLanguage', user.ocrLanguage);
         }
-        if (user.pdfQuality && localStorage.getItem('pref_pdfQuality') === null) {
-          localStorage.setItem('pref_pdfQuality', user.pdfQuality);
+        if (user.pdfQuality && safeStorage.getItem('pref_pdfQuality') === null) {
+          safeStorage.setItem('pref_pdfQuality', user.pdfQuality);
         }
-        if (user.namingPattern && localStorage.getItem('pref_namingPattern') === null) {
-          localStorage.setItem('pref_namingPattern', user.namingPattern);
+        if (user.namingPattern && safeStorage.getItem('pref_namingPattern') === null) {
+          safeStorage.setItem('pref_namingPattern', user.namingPattern);
         }
-        if (user.pdfAutoCompress !== undefined && localStorage.getItem('pref_pdfAutoCompress') === null) {
-          localStorage.setItem('pref_pdfAutoCompress', String(user.pdfAutoCompress));
+        if (user.pdfAutoCompress !== undefined && safeStorage.getItem('pref_pdfAutoCompress') === null) {
+          safeStorage.setItem('pref_pdfAutoCompress', String(user.pdfAutoCompress));
         }
-        if (user.notificationSoundEnabled !== undefined && localStorage.getItem('pref_sound') === null) {
-          localStorage.setItem('pref_sound', String(user.notificationSoundEnabled));
+        if (user.notificationSoundEnabled !== undefined && safeStorage.getItem('pref_sound') === null) {
+          safeStorage.setItem('pref_sound', String(user.notificationSoundEnabled));
         }
       }
     };
 
     applyPreferences();
-    window.addEventListener('paperx_preferences_changed', applyPreferences);
-    window.addEventListener('storage', applyPreferences);
-    return () => {
-      window.removeEventListener('paperx_preferences_changed', applyPreferences);
-      window.removeEventListener('storage', applyPreferences);
+    const handlePreferencesChanged = (e: Event) => {
+      applyPreferences((e as CustomEvent)?.detail);
     };
-  }, [user?.theme, user?.fontSize, user?.largerTextEnabled, user?.autoSaveScan, user?.autoCopyText, user?.ocrLanguage, user?.pdfQuality, user?.namingPattern, user?.pdfAutoCompress, user?.notificationSoundEnabled]);
+    window.addEventListener('paperx_preferences_changed', handlePreferencesChanged);
+    window.addEventListener('storage', () => applyPreferences());
+    return () => {
+      window.removeEventListener('paperx_preferences_changed', handlePreferencesChanged);
+      window.removeEventListener('storage', () => applyPreferences());
+    };
+  }, [user?.theme, user?.darkMode, user?.fontSize, user?.largerTextEnabled, user?.autoSaveScan, user?.autoCopyText, user?.ocrLanguage, user?.pdfQuality, user?.namingPattern, user?.pdfAutoCompress, user?.notificationSoundEnabled]);
 
   // Global Firebase Auth Listener with safety timeout
   useEffect(() => {
     let unsubscribeProfile: (() => void) | null = null;
     let unsubscribeSession: (() => void) | null = null;
+    let currentProfileUid: string | null = null;
+
+    const ensureProfileSubscribed = (uid: string) => {
+      if (!uid || currentProfileUid === uid) return;
+      if (unsubscribeProfile) {
+        unsubscribeProfile();
+        unsubscribeProfile = null;
+      }
+      currentProfileUid = uid;
+      unsubscribeProfile = subscribeToUserProfile(uid, (updatedProfile) => {
+        if (updatedProfile) {
+          if (updatedProfile.forceLogout || (updatedProfile as any).forceReLogin) {
+            logoutUser();
+            return;
+          }
+          if (updatedProfile.banUntil && typeof updatedProfile.banUntil === 'number') {
+            if (updatedProfile.banUntil > Date.now()) {
+              applyUserBanFor1Hour(updatedProfile.banReason || 'Use of prohibited language in chat support.', updatedProfile.uid || uid, updatedProfile.banUntil);
+            } else {
+              localStorage.removeItem('paperx_user_ban_until');
+              localStorage.removeItem('paperx_user_ban_reason');
+              window.dispatchEvent(new Event('paperx_ban_updated'));
+            }
+          }
+          syncProfileToLocalStorage(updatedProfile);
+          setUser(prev => {
+            if (!prev) return updatedProfile;
+            let changed = false;
+            for (const k in updatedProfile) {
+              if ((prev as any)[k] !== (updatedProfile as any)[k]) {
+                changed = true;
+                break;
+              }
+            }
+            if (!changed) return prev;
+            return { ...prev, ...updatedProfile };
+          });
+        }
+      });
+    };
+
+    const cleanupProfileSubscription = () => {
+      if (unsubscribeProfile) {
+        unsubscribeProfile();
+        unsubscribeProfile = null;
+      }
+      currentProfileUid = null;
+    };
+
     const safetyTimer = setTimeout(() => {
+      const local = getLocalSession();
+      if (local) {
+        setUser(prev => prev || local);
+      }
       setIsAuthLoading(false);
     }, 600);
 
@@ -3400,6 +3824,8 @@ const App: React.FC = () => {
               } else {
                 setUser(prev => ({ ...(prev || p), ...sProfile }));
               }
+            } else {
+              setUser(prev => ({ ...(prev || p), ...sProfile }));
             }
           }
         }
@@ -3413,10 +3839,10 @@ const App: React.FC = () => {
       if (firebaseUser) {
         try {
           // Fetch or sync user profile from Firestore
+          await recordUserSession(firebaseUser.uid);
           const profile = await syncUserProfile(firebaseUser);
           setUser(profile);
           syncWithServer(profile);
-          recordUserSession(firebaseUser.uid);
 
           if (unsubscribeSession) unsubscribeSession();
           unsubscribeSession = monitorCurrentSession(firebaseUser.uid, () => {
@@ -3424,19 +3850,7 @@ const App: React.FC = () => {
           });
 
           // Subscribe to real-time updates for profile/plan changes
-          if (unsubscribeProfile) unsubscribeProfile();
-          unsubscribeProfile = subscribeToUserProfile(firebaseUser.uid, (updatedProfile) => {
-            if (updatedProfile) {
-              if (updatedProfile.forceLogout || (updatedProfile as any).forceReLogin) {
-                logoutUser();
-                return;
-              }
-              setUser(prev => {
-                const nextProfile = { ...(prev || updatedProfile), ...updatedProfile };
-                return nextProfile;
-              });
-            }
-          });
+          ensureProfileSubscribed(firebaseUser.uid);
 
           // Check if there was a pending download action queued before authentication
           const pending = sessionStorage.getItem('pending_download_action');
@@ -3466,20 +3880,14 @@ const App: React.FC = () => {
         if (local) {
           setUser(local);
           syncWithServer(local);
-          if (unsubscribeProfile) unsubscribeProfile();
-          unsubscribeProfile = subscribeToUserProfile(local.uid || local.id, (updatedProfile) => {
-            if (updatedProfile) {
-              if (updatedProfile.forceLogout || (updatedProfile as any).forceReLogin) {
-                logoutUser();
-                return;
-              }
-              setUser(prev => ({ ...(prev || updatedProfile), ...updatedProfile }));
-            }
-          });
+          ensureProfileSubscribed(local.uid || local.id);
         } else {
-          if (unsubscribeProfile) {
-            unsubscribeProfile();
-            unsubscribeProfile = null;
+          cleanupProfileSubscription();
+          try {
+            const saved = localStorage.getItem('paperx_local_stored_files');
+            setStoredFiles(saved ? JSON.parse(saved) : []);
+          } catch {
+            setStoredFiles([]);
           }
           setUser(null);
         }
@@ -3490,22 +3898,12 @@ const App: React.FC = () => {
     const unsubscribePaperX = onPaperXAuthStateChanged((customUser) => {
       if (customUser) {
         setUser(customUser);
+        const uid = customUser.uid || customUser.id;
+        recordUserSession(uid).catch(() => {});
         syncWithServer(customUser);
-        if (unsubscribeProfile) unsubscribeProfile();
-        unsubscribeProfile = subscribeToUserProfile(customUser.uid || customUser.id, (updatedProfile) => {
-          if (updatedProfile) {
-            if (updatedProfile.forceLogout || (updatedProfile as any).forceReLogin) {
-              logoutUser();
-              return;
-            }
-            setUser(prev => ({ ...(prev || updatedProfile), ...updatedProfile }));
-          }
-        });
+        ensureProfileSubscribed(uid);
       } else if (!auth.currentUser) {
-        if (unsubscribeProfile) {
-          unsubscribeProfile();
-          unsubscribeProfile = null;
-        }
+        cleanupProfileSubscription();
         try {
           const saved = localStorage.getItem('paperx_local_stored_files');
           setStoredFiles(saved ? JSON.parse(saved) : []);
@@ -3515,6 +3913,29 @@ const App: React.FC = () => {
         setUser(null);
       }
     });
+
+    // Geolocation timezone matching primarily for India (IST)
+    if (typeof navigator !== 'undefined' && navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          const { latitude, longitude } = position.coords;
+          // Bounding box check for India
+          const inIndia = latitude >= 8.0 && latitude <= 38.0 && longitude >= 68.0 && longitude <= 98.0;
+          if (inIndia) {
+            console.log('[PaperX Geo] User is in India. Setting timezone to Asia/Kolkata (IST)');
+            localStorage.setItem('paperx_override_timezone', 'Asia/Kolkata');
+          } else {
+            console.log('[PaperX Geo] User is outside India. Using default browser device timezone.');
+            localStorage.removeItem('paperx_override_timezone');
+          }
+          window.dispatchEvent(new Event('paperx_timezone_updated'));
+        },
+        (error) => {
+          console.warn('[PaperX Geo] Geolocation request dismissed/denied:', error);
+        },
+        { enableHighAccuracy: false, timeout: 10000, maximumAge: 86400000 }
+      );
+    }
 
     return () => {
       clearTimeout(safetyTimer);
@@ -3534,7 +3955,18 @@ const App: React.FC = () => {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isCameraScannerOpen, setIsCameraScannerOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [activeView, setActiveView] = useState('dashboard');
+  const [activeView, setActiveView] = useState<string>(() => {
+    if (typeof window === 'undefined') return 'dashboard';
+    const norm = getNormalizedPath().replace(/^\/+/, '');
+    if (!norm || norm === 'dashboard') return 'dashboard';
+    if (norm.startsWith('tool/')) return 'tool';
+    if (TOOLS.some(t => t.id.toLowerCase() === norm.toLowerCase())) return 'tool';
+    if (['settings', 'preferences', 'billing', 'personal'].includes(norm)) return norm;
+    if (['documents', 'recent', 'support', 'download', 'payment-history', 'payments', 'upgrade', 'whats-new'].includes(norm)) {
+      return norm === 'payments' ? 'payment-history' : norm;
+    }
+    return 'dashboard';
+  });
   const [previewFile, setPreviewFile] = useState<StoredDocument | null>(null);
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
 
@@ -3564,14 +3996,93 @@ const App: React.FC = () => {
           }
       });
   };
-  const [activeToolId, setActiveToolId] = useState<string | null>(null);
+  const [activeToolId, setActiveToolId] = useState<string | null>(() => {
+    if (typeof window === 'undefined') return null;
+    const norm = getNormalizedPath().replace(/^\/+/, '');
+    if (norm.startsWith('tool/')) return norm.split('tool/')[1];
+    const matched = TOOLS.find(t => t.id.toLowerCase() === norm.toLowerCase());
+    return matched ? matched.id : null;
+  });
+  const [expandedShortcutCategory, setExpandedShortcutCategory] = useState<string | null>('CONVERT_TO');
+  const [shortcutModalCategory, setShortcutModalCategory] = useState<string | null>(null);
+
+  const openToolShortcut = (toolId: string, e?: React.MouseEvent) => {
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    setIsMobileMenuOpen(false);
+    setShortcutModalCategory(null);
+    setActiveToolId(toolId);
+    setActiveView('tool');
+    setIsProfileOpen(false);
+    navigate(`/tool/${toolId}`);
+  };
   const [files, setFiles] = useState<FileData[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [processingStatus, setProcessingStatus] = useState('');
   const [processingProgress, setProcessingProgress] = useState(0);
   const [rawFiles, setRawFiles] = useState<File[]>([]);
+
+  useEffect(() => {
+    setFiles([]);
+    setRawFiles([]);
+  }, [activeToolId]);
+  const [docxMergeOptions, setDocxMergeOptions] = useState<DocxMergeOptions>({
+    pageBreakBetween: true,
+    outputFormat: 'docx',
+    addSectionTitles: false,
+    generateToc: false,
+    continuousPageNumbers: true,
+    normalizeTypography: false
+  });
+
+  const handleReorderFiles = (fromIndex: number, toIndex: number) => {
+    setFiles(prev => {
+      const next = [...prev];
+      const [moved] = next.splice(fromIndex, 1);
+      next.splice(toIndex, 0, moved);
+      return next;
+    });
+    setRawFiles(prev => {
+      const next = [...prev];
+      const [moved] = next.splice(fromIndex, 1);
+      next.splice(toIndex, 0, moved);
+      return next;
+    });
+  };
   const [isBannerVisible, setIsBannerVisible] = useState(false);
   const [deferredInstallPrompt, setDeferredInstallPrompt] = useState<any>(null);
+
+  useEffect(() => {
+    if (!isMobileMenuOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setIsMobileMenuOpen(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isMobileMenuOpen]);
+
+  // Ensure opening the app defaults to Home / Dashboard on initial app launch unless explicit tool query param is present
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const isFreshAppLaunch = !sessionStorage.getItem('paperx_session_started');
+      const hasDirectToolQuery = window.location.search.includes('tool=') || window.location.search.includes('redirect=');
+      if (isFreshAppLaunch && !hasDirectToolQuery) {
+        sessionStorage.setItem('paperx_session_started', 'true');
+        if (window.location.hash && window.location.hash !== '#' && window.location.hash !== '#/') {
+          window.location.hash = '';
+          if (window.history && window.history.pushState) {
+            try {
+              window.history.pushState(null, '', window.location.pathname.includes('/index.html') ? '/index.html' : '/');
+            } catch (_) {}
+          }
+        }
+      }
+    }
+  }, []);
 
   useEffect(() => {
     LocalFileStore.requestPersistence();
@@ -3593,14 +4104,70 @@ const App: React.FC = () => {
       });
     };
 
+    const handleManualRestoreDetected = () => {
+      setActiveToolId(null);
+      setActiveView('dashboard');
+      setSearchQuery('');
+      setFiles([]);
+      setRawFiles([]);
+      setIsProcessing(false);
+      setIsMobileMenuOpen(false);
+      setIsCameraScannerOpen(false);
+      setIsProfileOpen(false);
+      setIsAdminOpen(false);
+
+      addToast({
+        type: 'success',
+        title: 'Manual Restore Detected',
+        message: 'Your old full app UI and layout have been detected and restored successfully!',
+        duration: 6000
+      });
+
+      safeStorage.removeItem('paperx_manual_restore_detected');
+    };
+
     window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
     window.addEventListener('paperx:cache-cleared', handleCacheCleared);
+    window.addEventListener('paperx_manual_restore_detected', handleManualRestoreDetected);
+
+    if (safeStorage.getItem('paperx_manual_restore_detected') === 'true') {
+      setTimeout(handleManualRestoreDetected, 300);
+    }
 
     return () => {
       window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
       window.removeEventListener('paperx:cache-cleared', handleCacheCleared);
+      window.removeEventListener('paperx_manual_restore_detected', handleManualRestoreDetected);
     };
   }, []);
+
+  // Ensure suspended or admin-blocked users have Support page open in the background
+  useEffect(() => {
+    const checkAndSetSupportView = () => {
+      const isChatSuspended = Boolean(
+        user?.isPermanentSuspended || 
+        checkPermanentSuspendedStatus(user?.email || user?.uid)
+      );
+      const isAdminBlocked = Boolean(
+        user && (user.status === 'DISABLED' || (user as any).isBlocked)
+      );
+      if ((isChatSuspended || isAdminBlocked) && !isAdminOpen) {
+        setActiveView('support');
+        setIsSupportChatOpen(false);
+        setIsProfileOpen(false);
+        setIsMobileMenuOpen(false);
+      }
+    };
+
+    checkAndSetSupportView();
+    window.addEventListener('paperx_permanent_ban_updated', checkAndSetSupportView);
+    window.addEventListener('paperx_ban_updated', checkAndSetSupportView);
+
+    return () => {
+      window.removeEventListener('paperx_permanent_ban_updated', checkAndSetSupportView);
+      window.removeEventListener('paperx_ban_updated', checkAndSetSupportView);
+    };
+  }, [user?.isPermanentSuspended, (user as any)?.isBlocked, user?.status, user?.email, user?.uid, isAdminOpen]);
 
   // Auto-detect OS and start instant app installation with authentication check
   const handleDirectAppDownload = async (platformOverride?: unknown) => {
@@ -3616,11 +4183,11 @@ const App: React.FC = () => {
       return;
     }
 
-    const navUserAgent = (typeof window !== 'undefined' && window.navigator && window.navigator.userAgent) ? window.navigator.userAgent : '';
-    const userAgent = typeof navUserAgent === 'string' ? navUserAgent : '';
+    const navUserAgent = (typeof window !== 'undefined' && window.navigator && typeof window.navigator.userAgent === 'string') ? window.navigator.userAgent : '';
+    const userAgent = navUserAgent;
     let targetPlatform = validPlatform || 'Android';
 
-    if (!validPlatform && userAgent && typeof userAgent.indexOf === 'function') {
+    if (!validPlatform && userAgent) {
       if (userAgent.indexOf("Mac") !== -1) {
         targetPlatform = 'macOS';
       } else if (userAgent.indexOf("Win") !== -1) {
@@ -3684,6 +4251,16 @@ const App: React.FC = () => {
           logoutUser();
           return;
         }
+        if (updatedProfile.banUntil && typeof updatedProfile.banUntil === 'number') {
+          if (updatedProfile.banUntil > Date.now()) {
+            applyUserBanFor1Hour(updatedProfile.banReason || 'Use of prohibited language in chat support.', updatedProfile.uid || user.uid, updatedProfile.banUntil);
+          } else {
+            localStorage.removeItem('paperx_user_ban_until');
+            localStorage.removeItem('paperx_user_ban_reason');
+            window.dispatchEvent(new Event('paperx_ban_updated'));
+          }
+        }
+        syncProfileToLocalStorage(updatedProfile);
         setUser(prev => ({ ...(prev || updatedProfile), ...updatedProfile }));
       }
     });
@@ -3694,6 +4271,8 @@ const App: React.FC = () => {
 
   // Support Chat State
   const [isSupportChatOpen, setIsSupportChatOpen] = useState(false);
+  const isSupportChatOpenRef = useRef(isSupportChatOpen);
+  isSupportChatOpenRef.current = isSupportChatOpen;
   const [hasUnreadSupport, setHasUnreadSupport] = useState(false);
   const [hasOngoingSupportChat, setHasOngoingSupportChat] = useState(false);
 
@@ -3704,22 +4283,23 @@ const App: React.FC = () => {
         const key = user?.uid ? `paperx_support_session_user_${user.uid}` : `paperx_support_session_guest`;
         const raw = localStorage.getItem(key);
         if (!raw) {
-          setHasOngoingSupportChat(false);
+          setHasOngoingSupportChat(prev => prev ? false : prev);
           return;
         }
         const session = JSON.parse(raw);
         if (!session || session.status !== 'active') {
-          setHasOngoingSupportChat(false);
+          setHasOngoingSupportChat(prev => prev ? false : prev);
           return;
         }
         const elapsed = Date.now() - (session.lastUserActivity || session.createdAt || 0);
         if (elapsed >= 20 * 60 * 1000) {
-          setHasOngoingSupportChat(false);
+          setHasOngoingSupportChat(prev => prev ? false : prev);
           return;
         }
-        setHasOngoingSupportChat(Boolean(session.hasOngoingMessages || session.hasUserStartedChat));
+        const nextVal = Boolean(session.hasOngoingMessages || session.hasUserStartedChat);
+        setHasOngoingSupportChat(prev => prev === nextVal ? prev : nextVal);
       } catch (e) {
-        setHasOngoingSupportChat(false);
+        setHasOngoingSupportChat(prev => prev ? false : prev);
       }
     };
 
@@ -3727,7 +4307,7 @@ const App: React.FC = () => {
     const handleUpdate = () => checkOngoing();
     window.addEventListener('paperx-support-session-update', handleUpdate);
     window.addEventListener('storage', handleUpdate);
-    const interval = setInterval(checkOngoing, 5000);
+    const interval = setInterval(checkOngoing, 10000);
 
     return () => {
       window.removeEventListener('paperx-support-session-update', handleUpdate);
@@ -3753,7 +4333,7 @@ const App: React.FC = () => {
           const count = data.messages.length;
           if (prevLength !== -1 && count > prevLength) {
             const lastMsg = data.messages[count - 1];
-            if (lastMsg.sender !== 'user' && !isSupportChatOpen) {
+            if (lastMsg.sender !== 'user' && !isSupportChatOpenRef.current) {
               addToast({
                 type: 'info',
                 title: 'Message from Admin',
@@ -3769,12 +4349,12 @@ const App: React.FC = () => {
     });
 
     return () => unsubscribe();
-  }, [user?.uid, isSupportChatOpen]);
+  }, [user?.uid]);
   
   // Payment State
   const [isPaymentOpen, setIsPaymentOpen] = useState(false);
-  const [paymentPlan, setPaymentPlan] = useState<'Plus Plan' | 'Max Plan'>('Plus Plan');
-  const [paymentAmount, setPaymentAmount] = useState('50');
+  const [paymentPlan, setPaymentPlan] = useState<'Pro Plan' | 'Pro Plan' | 'Max Plan'>('Pro Plan');
+  const [paymentAmount, setPaymentAmount] = useState('29');
   const [paymentCycle, setPaymentCycle] = useState<'month' | 'half-year' | 'year'>('month');
   const [paymentResubmitId, setPaymentResubmitId] = useState<string | undefined>(undefined);
   const [upgradeFromOrderId, setUpgradeFromOrderId] = useState<string | undefined>(undefined);
@@ -3805,12 +4385,13 @@ const App: React.FC = () => {
     if (!socket) return;
     
     const handleAdminNotification = (notification: any) => {
+      const currentUser = userRef.current;
       // Check recipient match
       const isTargeted = 
         notification.recipient === 'ALL' ||
-        (notification.recipient === 'CUSTOM' && user && notification.recipientEmail === user.email) ||
-        (notification.recipient === 'PRO_USERS' && user?.isPro) ||
-        (notification.recipient === 'FREE_USERS' && user && !user.isPro);
+        (notification.recipient === 'CUSTOM' && currentUser && notification.recipientEmail === currentUser.email) ||
+        (notification.recipient === 'PRO_USERS' && currentUser?.isPro) ||
+        (notification.recipient === 'FREE_USERS' && currentUser && !currentUser.isPro);
         
       if (!isTargeted) return;
 
@@ -3830,29 +4411,58 @@ const App: React.FC = () => {
     return () => {
       socket.off('admin-notification', handleAdminNotification);
     };
-  }, [socket, user]);
+  }, [socket]);
+
+  // Automatic Data Erasure Cancellation & Account Restoration Notification
+  useEffect(() => {
+    if (user && sessionStorage.getItem('paperx_erasure_restored_notice') === 'true') {
+      sessionStorage.removeItem('paperx_erasure_restored_notice');
+      addToast({
+        type: 'success',
+        title: 'Data Erasure Cancelled — Account Restored',
+        message: 'Welcome back! Because you logged in within the 10-day grace period, your data erasure request was automatically cancelled. Your account, documents, and settings are fully safe and intact.',
+        duration: 9000
+      });
+    }
+  }, [user?.uid]);
 
   // Real-time Payment & Ticket Updates from Socket.IO (Admin Actions)
   useEffect(() => {
-    if (!socket || !user) return;
+    if (!socket || !user?.uid) return;
+    const activeUid = user.uid;
 
     const handleOrderUpdate = (data: any) => {
       if (data.status === 'VERIFIED') {
         playPaymentApprovedAudio();
-        triggerPaymentApprovedConfetti();
         addToast({
-          title: 'Membership Activated! 🎉',
+          title: 'Membership Activated',
           message: `Your ${data.plan} is now active. Enjoy premium perks!`,
           type: 'success'
         });
-        if (user?.uid) syncUserProfile(user.uid, setUser);
+        syncUserProfile(activeUid, setUser);
       } else if (data.status === 'REJECTED') {
         playPaymentRejectedAudio();
         addToast({
-          title: 'Payment Rejected ⚠️',
+          title: 'Payment Rejected',
           message: `Verification failed. Please check payment history for details.`,
           type: 'error'
         });
+      } else if (data.status === 'REFUNDED' || data.isRefunded) {
+        addToast({
+          title: 'Return Confirmed',
+          message: 'Your return has been confirmed and your account is now back to Basic Plan.',
+          type: 'info'
+        });
+        syncUserProfile(activeUid, setUser);
+        updateUserInFirestore(activeUid, {
+          plan: 'Basic Plan',
+          purchasedPlan: 'Basic Plan',
+          activePlanMode: 'Basic Plan',
+          isPro: false,
+          isRefunded: true,
+          membershipTier: 'free',
+          updatedAt: new Date().toISOString()
+        }).catch(console.warn);
       }
     };
 
@@ -3862,81 +4472,111 @@ const App: React.FC = () => {
         message: `Your ticket status changed to ${data.status.replace('_', ' ')}.`,
         type: 'info'
       });
+      if (['COMPLETED', 'RESOLVED', 'REFUNDED'].includes(data.status)) {
+        syncUserProfile(activeUid, setUser);
+        updateUserInFirestore(activeUid, {
+          plan: 'Basic Plan',
+          purchasedPlan: 'Basic Plan',
+          activePlanMode: 'Basic Plan',
+          isPro: false,
+          isRefunded: true,
+          membershipTier: 'free',
+          updatedAt: new Date().toISOString()
+        }).catch(console.warn);
+      }
     };
 
     const handleDowngrade = (data: any) => {
-      if (user?.uid === data.uid) {
+      if (activeUid === data.uid) {
         addToast({
-          title: 'Membership Refunded 💳',
-          message: 'Your refund has been approved and your account is now back to Basic Plan.',
+          title: 'Membership Returned 💳',
+          message: 'Your return has been approved and your account is now back to Basic Plan.',
           type: 'info'
         });
-        syncUserProfile(user.uid, setUser);
+        syncUserProfile(activeUid, setUser);
       }
+    };
+
+    const handleGlobalSync = () => {
+      syncUserProfile(activeUid, setUser);
     };
 
     socket.on('order-updated', handleOrderUpdate);
     socket.on('ticket-updated', handleTicketUpdate);
     socket.on('user-downgraded', handleDowngrade);
+    window.addEventListener('order-updated', handleGlobalSync);
+    window.addEventListener('ticket-updated', handleGlobalSync);
+    window.addEventListener('admin_action', handleGlobalSync);
 
     return () => {
       socket.off('order-updated', handleOrderUpdate);
       socket.off('ticket-updated', handleTicketUpdate);
       socket.off('user-downgraded', handleDowngrade);
+      window.removeEventListener('order-updated', handleGlobalSync);
+      window.removeEventListener('ticket-updated', handleGlobalSync);
+      window.removeEventListener('admin_action', handleGlobalSync);
     };
-  }, [socket, user]);
+  }, [socket, user?.uid]);
 
   const removeToast = (id: string) => {
     setToasts(prev => prev.filter(t => t.id !== id));
   };
 
   // Real-time Active Membership Expiry Surveillance
+  const userRef = useRef(user);
   useEffect(() => {
-    if (!user) return;
+    userRef.current = user;
+  }, [user]);
+
+  useEffect(() => {
+    if (!user?.uid) return;
 
     const performExpiryCheck = () => {
-      if (isPlanExpired(user)) {
-        if (user.plan !== 'Basic Plan') {
+      const currentUser = userRef.current;
+      if (!currentUser) return;
+      if (isPlanExpired(currentUser)) {
+        if (currentUser.plan && currentUser.plan !== 'Basic Plan') {
           // Auto-select Basic Plan smoothly when paid plan expires
-          // If basicPlanExpiresAt exists, keep it; if user hasn't used basic features yet, timer remains unstarted until first usage
-          setUser(prev => prev ? ({
-            ...prev,
-            previousPlan: (prev.plan as any) || 'Plus Plan',
-            plan: 'Basic Plan',
-            purchasedPlan: 'Basic Plan',
-            activePlanMode: 'Basic Plan',
-            billingCycle: 'month',
-            membershipTier: 'free',
-            subscriptionStatus: 'free',
-            isPro: false,
-            planExpiresAt: prev.basicPlanExpiresAt || undefined,
-            maxProjects: 5
-          }) : null);
-          
-          // Persist downgrade to Firestore ledger
-          if (user.uid) {
-            updateUserInFirestore(user.uid, {
+          setUser(prev => {
+            if (!prev || prev.plan === 'Basic Plan') return prev;
+            return {
+              ...prev,
+              previousPlan: (prev.plan as any) || 'Pro Plan',
               plan: 'Basic Plan',
               purchasedPlan: 'Basic Plan',
               activePlanMode: 'Basic Plan',
               billingCycle: 'month',
               membershipTier: 'free',
               subscriptionStatus: 'free',
-              previousPlan: user.plan,
               isPro: false,
-              planExpiresAt: (user.basicPlanExpiresAt || null) as any,
+              planExpiresAt: prev.basicPlanExpiresAt || undefined,
+              maxProjects: 5
+            };
+          });
+          
+          // Persist downgrade to Firestore ledger
+          if (currentUser.uid) {
+            updateUserInFirestore(currentUser.uid, {
+              plan: 'Basic Plan',
+              purchasedPlan: 'Basic Plan',
+              activePlanMode: 'Basic Plan',
+              billingCycle: 'month',
+              membershipTier: 'free',
+              subscriptionStatus: 'free',
+              previousPlan: currentUser.plan,
+              isPro: false,
+              planExpiresAt: (currentUser.basicPlanExpiresAt || null) as any,
               maxProjects: 5,
               updatedAt: new Date().toISOString()
-            });
+            }).catch(console.warn);
           }
         }
       }
     };
 
-    performExpiryCheck();
-    const interval = setInterval(performExpiryCheck, 1000); // 1s live pulse for real-time testing
+    const interval = setInterval(performExpiryCheck, 10000);
     return () => clearInterval(interval);
-  }, [user]);
+  }, [user?.uid, user?.plan, user?.planExpiresAt]);
 
   const handleToastDownload = (item: ToastNotificationItem) => {
     if (item.downloadBlob && item.downloadFileName) {
@@ -3969,6 +4609,14 @@ const App: React.FC = () => {
   const recentlyDeletedIds = useRef<Set<string>>(new Set());
   const [storedFiles, setStoredFiles] = useState<StoredDocument[]>(() => {
     try {
+      const activeUid = auth.currentUser?.uid;
+      if (activeUid) {
+        const savedUser = localStorage.getItem(`paperx_user_stored_files_${activeUid}`);
+        if (savedUser) {
+          const parsed = JSON.parse(savedUser);
+          if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        }
+      }
       const saved = localStorage.getItem('paperx_local_stored_files');
       return saved ? JSON.parse(saved) : [];
     } catch {
@@ -3979,7 +4627,7 @@ const App: React.FC = () => {
   // Cross-tab real-time sync for local files
   useEffect(() => {
     const handleStorage = (e: StorageEvent) => {
-      if (e.key === 'paperx_local_stored_files' && e.newValue) {
+      if ((e.key === 'paperx_local_stored_files' || (e.key && e.key.startsWith('paperx_user_stored_files_'))) && e.newValue) {
         try {
           const files = JSON.parse(e.newValue);
           if (Array.isArray(files)) {
@@ -3989,8 +4637,30 @@ const App: React.FC = () => {
       }
     };
     const handleCustomUpdate = (e: any) => {
-      if (e.detail && Array.isArray(e.detail)) {
-        setStoredFiles(e.detail);
+      if (e.detail) {
+        const newItems = Array.isArray(e.detail) ? e.detail : [e.detail];
+        if (newItems.length === 0) return;
+        setStoredFiles(prev => {
+          const map = new Map<string, StoredDocument>();
+          newItems.forEach((item: any) => {
+            if (item && item.id) map.set(item.id, item);
+          });
+          prev.forEach((item: any) => {
+            if (item && item.id) {
+              if (!map.has(item.id)) {
+                map.set(item.id, item);
+              } else {
+                const updated = map.get(item.id)!;
+                if (!updated.dataUrl && item.dataUrl) {
+                  map.set(item.id, { ...updated, dataUrl: item.dataUrl });
+                }
+              }
+            }
+          });
+          const merged = Array.from(map.values());
+          merged.sort((a, b) => getStoredDocTimestamp(b) - getStoredDocTimestamp(a));
+          return merged;
+        });
       }
     };
     window.addEventListener('storage', handleStorage);
@@ -4001,15 +4671,24 @@ const App: React.FC = () => {
     };
   }, []);
 
-  // Save guest/local stored files to localStorage when updated
+  // Instant local cache sync for logged-in and guest users (sub-millisecond opening)
   useEffect(() => {
     const activeUid = user?.uid || (user as any)?.id || auth.currentUser?.uid;
-    if (!activeUid) {
-      try {
+    try {
+      if (!activeUid) {
         localStorage.setItem('paperx_local_stored_files', JSON.stringify(storedFiles));
-      } catch (e) {
-        console.warn('Failed to save local files:', e);
+      } else if (storedFiles.length > 0) {
+        const lightweightDocs = storedFiles.map(f => {
+          if (f.dataUrl && f.dataUrl.length > 300000) {
+            const { dataUrl, ...rest } = f;
+            return rest;
+          }
+          return f;
+        });
+        localStorage.setItem(`paperx_user_stored_files_${activeUid}`, JSON.stringify(lightweightDocs));
       }
+    } catch (e) {
+      console.warn('Failed to cache stored files locally:', e);
     }
   }, [storedFiles, user?.uid, (user as any)?.id, auth.currentUser?.uid]);
 
@@ -4017,15 +4696,29 @@ const App: React.FC = () => {
   useEffect(() => {
     const activeUid = user?.uid || (user as any)?.id || auth.currentUser?.uid;
     if (activeUid) {
+      // Load instant local user cache immediately on user change
+      try {
+        const cachedUserDocs = localStorage.getItem(`paperx_user_stored_files_${activeUid}`);
+        if (cachedUserDocs) {
+          const parsed = JSON.parse(cachedUserDocs);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            setStoredFiles(prev => prev.length === 0 ? parsed : prev);
+          }
+        }
+      } catch (_) {}
+
       const guestFilesString = localStorage.getItem('paperx_local_stored_files');
       if (guestFilesString) {
         try {
           const guestFiles = JSON.parse(guestFilesString) as StoredDocument[];
           if (guestFiles && guestFiles.length > 0) {
-            guestFiles.forEach(file => {
-              addDocumentToFirestore(activeUid, file).catch(console.error);
-            });
-            localStorage.removeItem('paperx_local_stored_files');
+            Promise.all(guestFiles.map(file => addDocumentToFirestore(activeUid, file)))
+              .then(() => {
+                localStorage.removeItem('paperx_local_stored_files');
+              })
+              .catch(err => {
+                console.warn('Guest migration partial notice:', err);
+              });
           }
         } catch (e) {
           console.warn('Failed to migrate guest files:', e);
@@ -4047,16 +4740,26 @@ const App: React.FC = () => {
             return doc;
           });
 
-          // Keep pending local files that have not yet arrived in Firestore snapshot (never drop them!)
+          // Keep pending local files that have not yet arrived in Firestore snapshot
           const pendingRecent = prev.filter(p => !syncedIds.has(p.id) && !recentlyDeletedIds.current.has(p.id));
-          if (pendingRecent.length > 0) {
-            pendingRecent.forEach(p => {
-              addDocumentToFirestore(activeUid, p).catch(console.error);
-            });
-          }
-
           const merged = [...pendingRecent, ...syncedDocs];
           merged.sort((a, b) => getStoredDocTimestamp(b) - getStoredDocTimestamp(a));
+
+          if (prev.length === merged.length) {
+            let same = true;
+            for (let i = 0; i < prev.length; i++) {
+              if (
+                prev[i].id !== merged[i].id ||
+                prev[i].updatedAt !== merged[i].updatedAt ||
+                Boolean(prev[i].dataUrl) !== Boolean(merged[i].dataUrl)
+              ) {
+                same = false;
+                break;
+              }
+            }
+            if (same) return prev;
+          }
+
           return merged as StoredDocument[];
         });
       });
@@ -4218,25 +4921,42 @@ const App: React.FC = () => {
               LocalFileStore.save(newFileId, dataUrlStr);
           }
 
+          const detectedDocType = (() => {
+              const ext = filename.split('.').pop()?.toLowerCase() || '';
+              if (['jpg', 'jpeg', 'png', 'webp', 'svg', 'gif', 'bmp'].includes(ext)) return 'IMAGE';
+              if (['xlsx', 'xls'].includes(ext)) return 'EXCEL';
+              if (['docx', 'doc'].includes(ext)) return 'DOCX';
+              if (['pptx', 'ppt'].includes(ext)) return 'PPTX';
+              if (['csv', 'tsv'].includes(ext)) return 'CSV';
+              if (['md', 'markdown'].includes(ext)) return 'MARKDOWN';
+              if (['html', 'htm'].includes(ext)) return 'HTML';
+              if (['zip'].includes(ext)) return 'ZIP';
+              if (['txt', 'text', 'json', 'xml'].includes(ext)) return 'TEXT';
+              return 'PDF';
+          })();
+
           const newFile: StoredDocument = {
               id: newFileId,
               name: filename,
               date: new Date().toLocaleDateString(),
               timestamp: Date.now(),
               size: formattedSize,
-              type: 'PDF',
+              type: detectedDocType,
               action: actionName,
               dataUrl: dataUrlStr || undefined,
-              tags: [actionName, 'PDF']
+              tags: [actionName, detectedDocType]
           };
 
           // Update state immediately so Recent Activity shows it instantaneously (0ms)
-          setStoredFiles(prev => [newFile, ...prev]);
+          setStoredFiles(prev => [newFile, ...prev.filter(p => p.id !== newFile.id)]);
+          if (dataUrlStr) {
+            saveLocalFileBinary(newFileId, dataUrlStr).catch(() => {});
+          }
 
           // Dispatch event for instant cross-tab / window sync
           try {
               window.dispatchEvent(new CustomEvent('paperx-stored-files-updated', { 
-                  detail: [newFile, ...storedFiles] 
+                  detail: newFile 
               }));
           } catch (_) {}
 
@@ -4253,10 +4973,22 @@ const App: React.FC = () => {
               } catch (_) {}
           }
 
+          // Automatic direct file download to user device
+          try {
+              const objUrl = URL.createObjectURL(blob);
+              const link = document.createElement('a');
+              link.href = objUrl;
+              link.download = filename;
+              document.body.appendChild(link);
+              link.click();
+              document.body.removeChild(link);
+              setTimeout(() => URL.revokeObjectURL(objUrl), 10000);
+          } catch (_) {}
+
           addToast({
             type: 'success',
-            title: 'Document Saved in Recent Activity',
-            message: `"${filename}" was created and saved to your Recent Activity.`,
+            title: `${actionName} Complete`,
+            message: `"${filename}" converted and downloaded. Saved to your documents.`,
             toolName: actionName,
             fileName: filename,
             fileSize: formattedSize,
@@ -4284,78 +5016,113 @@ const App: React.FC = () => {
           const objectUrl = URL.createObjectURL(blob);
           const a = document.createElement('a');
           a.href = objectUrl;
-          a.download = name.toLowerCase().endsWith('.pdf') || name.toLowerCase().endsWith('.zip') ? name : `${name}.pdf`;
+
+          let downloadName = name || 'document';
+          const extMatch = downloadName.match(/\.([a-zA-Z0-9]+)$/);
+          if (!extMatch && stored?.type) {
+              const typeExt = stored.type.toLowerCase();
+              if (['pdf', 'docx', 'xlsx', 'png', 'jpg', 'csv', 'txt', 'svg', 'zip', 'html', 'md'].includes(typeExt)) {
+                  downloadName = `${downloadName}.${typeExt}`;
+              } else {
+                  downloadName = `${downloadName}.pdf`;
+              }
+          }
+
+          a.download = downloadName;
           document.body.appendChild(a);
           a.click();
           document.body.removeChild(a);
           setTimeout(() => URL.revokeObjectURL(objectUrl), 10000);
           addToast({
               type: 'success',
-              title: 'Download Started',
-              message: `"${name}" opened and downloaded in full PDF format.`,
+              title: 'Download Complete',
+              message: `"${downloadName}" downloaded successfully.`,
               duration: 3000
           });
       } catch (err) {
           console.error('Error downloading stored file:', err);
+          addToast({
+              type: 'error',
+              title: 'Download Failed',
+              message: 'Could not prepare file download. Please try again.',
+              duration: 3000
+          });
       }
   };
 
   // Improved Navigation Logic supporting direct tool routes
   useEffect(() => {
-    const path = getNormalizedPath();
+    const rawP = getNormalizedPath();
+    const path = typeof rawP === 'string' ? rawP : String(rawP || '/');
     const cleanPath = path.startsWith('/') ? path : `/${path}`;
     const matchedTool = findToolFromPath(cleanPath);
 
     if (matchedTool) {
-        setActiveToolId(matchedTool.id);
-        setActiveView('tool');
-        setFiles([]); 
-        setRawFiles([]);
-        setIsProfileOpen(false);
+        setActiveToolId(prev => prev === matchedTool.id ? prev : matchedTool.id);
+        setActiveView(prev => prev === 'tool' ? prev : 'tool');
+        setIsProfileOpen(prev => prev ? false : prev);
     } else if (cleanPath.startsWith('/tool/')) {
         const toolId = cleanPath.split('/tool/')[1];
         if (TOOLS.some(t => t.id === toolId)) {
-            setActiveToolId(toolId);
-            setActiveView('tool');
-            setFiles([]); 
-            setRawFiles([]);
-            setIsProfileOpen(false);
+            setActiveToolId(prev => prev === toolId ? prev : toolId);
+            setActiveView(prev => prev === 'tool' ? prev : 'tool');
+            setIsProfileOpen(prev => prev ? false : prev);
         } else {
-            navigate(user ? '/dashboard' : '/');
+            setActiveToolId(prev => prev === null ? prev : null);
+            setActiveView(prev => prev === 'dashboard' ? prev : 'dashboard');
+            setIsProfileOpen(prev => prev ? false : prev);
         }
     } else if (cleanPath === '/dashboard' || cleanPath === '/') {
-        setActiveToolId(null);
-        setActiveView('dashboard');
-        setIsProfileOpen(false);
+        setActiveToolId(prev => prev === null ? prev : null);
+        setActiveView(prev => prev === 'dashboard' ? prev : 'dashboard');
+        setIsProfileOpen(prev => prev ? false : prev);
     } else {
         const viewName = cleanPath.substring(1);
         
         // Handle Profile Routes
         if (viewName === 'settings' || viewName === 'preferences') {
+             setActiveView(prev => prev === 'settings' ? prev : 'settings');
              setProfileInitialTab('preferences');
-             setIsProfileOpen(true);
+             setIsProfileOpen(prev => prev ? false : prev);
         } else if (viewName === 'personal') {
+             setActiveView(prev => prev === 'personal' ? prev : 'personal');
              setProfileInitialTab('personal');
-             setIsProfileOpen(true);
+             setIsProfileOpen(prev => prev ? false : prev);
         } else if (viewName === 'billing') {
+             setActiveView(prev => prev === 'billing' ? prev : 'billing');
              setProfileInitialTab('billing');
-             setIsProfileOpen(true);
+             setIsProfileOpen(prev => prev ? false : prev);
         } else if (['documents', 'recent', 'support', 'download', 'payment-history', 'payments'].includes(viewName)) {
-             setActiveView(viewName === 'payments' ? 'payment-history' : viewName);
-             setIsProfileOpen(false);
+             const targetView = viewName === 'payments' ? 'payment-history' : viewName;
+             setActiveView(prev => prev === targetView ? prev : targetView);
+             setIsProfileOpen(prev => prev ? false : prev);
         } else if (viewName === 'upgrade') {
-             setActiveView('upgrade');
-             setIsProfileOpen(false);
+             setActiveView(prev => prev === 'upgrade' ? prev : 'upgrade');
+             setIsProfileOpen(prev => prev ? false : prev);
         } else if (viewName === 'whats-new') {
-             setActiveView('whats-new');
-             setIsProfileOpen(false);
+             setActiveView(prev => prev === 'whats-new' ? prev : 'whats-new');
+             setIsProfileOpen(prev => prev ? false : prev);
         }
     }
   }, [hash]);
 
-  const handleAuthSuccess = () => {
+  // Reset scroll position to top on every page view or tool change
+  useEffect(() => {
+    const container = document.getElementById('main-scroll-container');
+    if (container) {
+      container.scrollTop = 0;
+    }
+    window.scrollTo(0, 0);
+  }, [activeView, activeToolId]);
+
+  const handleAuthSuccess = (authenticatedUser?: User) => {
+    if (authenticatedUser) {
+      setUser(authenticatedUser);
+    }
     setIsBannerVisible(true);
-    // Let useEffect handle navigation so we don't flash the landing view
+    setActiveView('dashboard');
+    // Immediately navigate away from auth pages to dashboard
+    navigate('/dashboard');
     // Check if there was a pending download action
     const pending = sessionStorage.getItem('pending_download_action');
     if (pending) {
@@ -4373,7 +5140,19 @@ const App: React.FC = () => {
     }
   };
 
-  const handleLogout = async () => {
+  const handleLogout = async (destination?: string) => {
+    // 1. Immediately reset state so UI switches instantly and smoothly without lag
+    setUser(null);
+    setIsProfileOpen(false);
+    clearLocalSession();
+    dispatchPaperXAuthChange(null);
+    
+    if (destination) {
+      navigate(destination);
+    } else {
+      navigate('/');
+    }
+
     try {
       await logoutUser();
     } catch (err) {
@@ -4385,9 +5164,6 @@ const App: React.FC = () => {
     } catch {
       setStoredFiles([]);
     }
-    setUser(null);
-    setIsProfileOpen(false);
-    navigate('/');
   };
 
   const handleNavigation = (view: string, e?: React.MouseEvent) => {
@@ -4397,26 +5173,34 @@ const App: React.FC = () => {
       }
       setIsMobileMenuOpen(false);
       
-      if (view === 'settings') {
+      if (view === 'settings' || view === 'preferences') {
+          setActiveView('settings');
           setProfileInitialTab('preferences');
-          setIsProfileOpen(true);
+          setIsProfileOpen(false);
+          navigate('/settings');
           return;
       }
-      
-      if (view === 'preferences') {
-          setProfileInitialTab('preferences');
-          setIsProfileOpen(true);
+
+      if (view === 'personal' || view === 'profile') {
+          setActiveView('personal');
+          setProfileInitialTab('personal');
+          setIsProfileOpen(false);
+          navigate('/personal');
           return;
       }
       
       if (view === 'support') {
-          setIsSupportChatOpen(true);
+          setActiveView('support');
+          setIsProfileOpen(false);
+          navigate('/support');
           return;
       }
       
       if (view === 'billing') {
+          setActiveView('billing');
           setProfileInitialTab('billing');
-          setIsProfileOpen(true);
+          setIsProfileOpen(false);
+          navigate('/billing');
           return;
       }
 
@@ -4427,8 +5211,24 @@ const App: React.FC = () => {
           return;
       }
 
-      if (view === 'dashboard') navigate('/dashboard');
-      else navigate(`/${view}`);
+      if (view === 'download') {
+          setActiveView('download');
+          setIsProfileOpen(false);
+          navigate('/download');
+          return;
+      }
+
+      if (view === 'dashboard') {
+          setActiveView('dashboard');
+          setActiveToolId(null);
+          setIsProfileOpen(false);
+          navigate('/dashboard');
+          return;
+      }
+
+      setActiveView(view);
+      setIsProfileOpen(false);
+      navigate(`/${view}`);
   };
 
   const isPlanExpired = (targetUser?: User | null): boolean => {
@@ -4459,43 +5259,242 @@ const App: React.FC = () => {
     return false;
   };
 
-  const recordFeatureUsage = (currentUser: User) => {
-    const isBasic = !currentUser.plan || currentUser.plan === 'Basic Plan' || currentUser.activePlanMode === 'Basic Plan';
-    const hasNotStarted = !currentUser.basicPlanStartedAt;
-    
-    const now = new Date();
-    const fiveDaysMs = 5 * 24 * 60 * 60 * 1000;
-    const startedAt = now.toISOString();
-    const expiresAt = new Date(now.getTime() + fiveDaysMs).toISOString();
-    
-    const newUsage = Math.min((currentUser.projectsUsed || 0) + 1, currentUser.maxProjects || 5);
-    
-    const updatePayload: Partial<User> = {
-      projectsUsed: newUsage,
-      featureUsageCount: (currentUser.featureUsageCount || 0) + 1,
-      updatedAt: now.toISOString()
-    };
+  const recordFeatureUsage = async (currentUser: User, toolId: string = 'document-processing', operationId?: string) => {
+    const opId = operationId || `op_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+    try {
+      const res = await UsageService.recordOperationSuccess(toolId, opId, 1, currentUser);
+      const isBasic = !currentUser.plan || currentUser.plan === 'Basic Plan' || currentUser.activePlanMode === 'Basic Plan';
+      const hasNotStarted = !currentUser.basicPlanStartedAt;
+      
+      const now = new Date();
+      const fiveDaysMs = 5 * 24 * 60 * 60 * 1000;
+      const startedAt = now.toISOString();
+      const expiresAt = new Date(now.getTime() + fiveDaysMs).toISOString();
+      
+      const updatePayload: Partial<User> = {
+        projectsUsed: res.operationsUsed,
+        featureUsageCount: (currentUser.featureUsageCount || 0) + 1,
+        maxProjects: isBasic ? 5 : (currentUser.plan?.toLowerCase().includes('max') ? 1000 : 100),
+        updatedAt: now.toISOString()
+      };
 
-    if (isBasic && hasNotStarted) {
-      updatePayload.basicPlanStartedAt = startedAt;
-      updatePayload.basicPlanExpiresAt = expiresAt;
-      updatePayload.planExpiresAt = expiresAt;
-    }
+      if (isBasic && hasNotStarted) {
+        updatePayload.basicPlanStartedAt = startedAt;
+        updatePayload.basicPlanExpiresAt = expiresAt;
+        updatePayload.planExpiresAt = expiresAt;
+      }
 
-    const nextUser: User = {
-      ...currentUser,
-      ...updatePayload
-    };
-    
-    setUser(nextUser);
-    if (currentUser.uid) {
-      updateUserInFirestore(currentUser.uid, updatePayload).catch(err => console.warn('Usage sync notice:', err));
+      setUser(prev => prev ? ({ ...prev, ...updatePayload }) : null);
+      if (currentUser.uid) {
+        updateUserInFirestore(currentUser.uid, updatePayload).catch(err => console.warn('Usage sync notice:', err));
+      }
+    } catch (e) {
+      console.warn('recordFeatureUsage error:', e);
     }
   };
 
-  const getPlanTier = (plan?: string, targetUser?: User | null): 'Free' | 'Plus' | 'Max' => {
+  // Real-time detection: if user requested a refund/return and it is confirmed or settled, or if account is refunded
+  const isReturnConfirmed = Boolean(
+    user?.isRefunded || 
+    user?.subscriptionStatus === 'refunded' ||
+    user?.refundStatus === 'COMPLETED' ||
+    (() => {
+      if (!Array.isArray(appOrders) || appOrders.length === 0) return false;
+      const parseOrderTimestamp = (val: any): number => {
+        if (!val) return 0;
+        if (typeof val === 'number') return val;
+        const parsed = new Date(val).getTime();
+        return isNaN(parsed) ? (Number(val) || 0) : parsed;
+      };
+
+      const refundedOrders = appOrders.filter(o => 
+        (Boolean(o.isRefunded) || o.status === 'REFUNDED' || (o.ticketStatus === 'COMPLETED' && Boolean(o.ticketReason && (String(o.ticketReason).toLowerCase().includes('refund') || String(o.ticketReason).toLowerCase().includes('payout') || String(o.ticketReason).toLowerCase().includes('return'))))) &&
+        !String(o.refundReason || '').toLowerCase().includes('upgrade') &&
+        !String(o.id || '').toLowerCase().includes('upgrade-from')
+      );
+      if (refundedOrders.length === 0) return false;
+
+      const latestRefundTime = Math.max(...refundedOrders.map(r => Math.max(parseOrderTimestamp(r.refundedAt), parseOrderTimestamp(r.createdAt), parseOrderTimestamp(r.updatedAt))));
+      const verifiedOrders = appOrders.filter(o => o.status === 'VERIFIED' && !o.isRefunded && o.status !== 'REFUNDED');
+      if (verifiedOrders.length === 0) return true;
+
+      const latestVerifiedTime = Math.max(...verifiedOrders.map(v => Math.max(parseOrderTimestamp(v.verifiedAt), parseOrderTimestamp(v.createdAt))));
+      return latestRefundTime > latestVerifiedTime;
+    })()
+  );
+
+  const renderToolWorkspaceContent = () => {
+    if (activeToolId === 'word-to-pdf') {
+      return <WordToPdfWorkspace onComplete={handleProcessedFile} isProcessing={isProcessing} />;
+    }
+    if (activeToolId === 'jpg-to-pdf') {
+      return <JpgToPdfWorkspace onComplete={handleProcessedFile} isProcessing={isProcessing} />;
+    }
+    if (['html-to-pdf', 'webToPdf', 'web-to-pdf'].includes(activeToolId || '')) {
+      return <HtmlToPdfWorkspace onComplete={handleProcessedFile} isProcessing={isProcessing} />;
+    }
+    if (activeToolId === 'txt-to-pdf') {
+      return <TxtToPdfWorkspace onComplete={handleProcessedFile} isProcessing={isProcessing} />;
+    }
+    if (['markdown-to-pdf', 'md-to-pdf'].includes(activeToolId || '')) {
+      return <MarkdownToPdfWorkspace onComplete={handleProcessedFile} isProcessing={isProcessing} />;
+    }
+    if (activeToolId === 'excel-to-pdf') {
+      return <ExcelToPdfWorkspace onComplete={handleProcessedFile} isProcessing={isProcessing} />;
+    }
+    if (activeToolId === 'csv-to-pdf') {
+      return <CsvToPdfWorkspace onComplete={handleProcessedFile} isProcessing={isProcessing} />;
+    }
+    if (activeToolId === 'powerpoint-to-pdf') {
+      return <PowerPointToPdfWorkspace onComplete={handleProcessedFile} isProcessing={isProcessing} />;
+    }
+    if (['summarize-pdf', 'translate-pdf', 'pdf-to-markdown'].includes(activeToolId || '')) {
+      return <TextWorkspace toolId={activeToolId!} socket={socket} docId="demo-doc" onComplete={handleProcessedFile} />;
+    }
+
+    return (
+      <div className="max-w-4xl mx-auto space-y-8">
+        {activeToolId === 'scan-pdf' && (
+          <div className="bg-gradient-to-r from-amber-500/10 via-yellow-500/10 to-orange-500/10 border border-yellow-500/20 rounded-3xl p-6 flex flex-col sm:flex-row items-center justify-between gap-4">
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 rounded-2xl bg-yellow-500/20 text-yellow-600 dark:text-yellow-400 flex items-center justify-center shrink-0">
+                <ScanLine size={24} />
+              </div>
+              <div>
+                <h3 className="font-bold text-base text-gray-900 dark:text-white">Live Scanner & Camera Capture</h3>
+                <p className="text-xs text-gray-500 dark:text-gray-400">Scan documents directly using your camera or upload photo captures.</p>
+              </div>
+            </div>
+            <Button 
+              onClick={() => setIsCameraScannerOpen(true)}
+              className="bg-yellow-400 hover:bg-yellow-300 text-black font-black text-xs px-5 py-3 rounded-2xl shadow-lg shrink-0"
+            >
+              <ScanLine size={16} className="mr-2" /> Open Scanner
+            </Button>
+          </div>
+        )}
+        {activeToolId === 'merge-docx' && (
+          <DocxMergeOptionsPanel
+            options={docxMergeOptions}
+            onOptionsChange={setDocxMergeOptions}
+            files={files}
+            onReorderFiles={handleReorderFiles}
+            onRemoveFile={handleRemoveFile}
+          />
+        )}
+        <FileUpload 
+          files={files}
+          onFilesSelected={handleFilesSelected}
+          onRemoveFile={handleRemoveFile}
+          onCancelFile={handleCancelFile}
+          onCancelBatch={handleCancelBatch}
+          toolId={activeToolId}
+        />
+        
+        {files.length > 0 && (
+          <div className="flex justify-end pt-4">
+            <Button 
+              size="sm" 
+              onClick={handleGenericFileProcess}
+              isLoading={isProcessing}
+              disabled={files.some(f => f.status === 'uploading' || f.status === 'cancelled')}
+              className="shadow-xl shadow-black/10 font-semibold"
+            >
+              {isProcessing ? processingStatus : (['powerpoint-to-pdf', 'excel-to-pdf', 'csv-to-pdf', 'txt-to-pdf', 'markdown-to-pdf'].includes(activeToolId || '') || activeToolId?.endsWith('-to-pdf') ? `Convert to PDF` : (activeToolId === 'merge-docx' ? (docxMergeOptions.outputFormat === 'pdf' ? `Merge & Convert to PDF` : `Merge ${files.filter(f => f.status !== 'cancelled').length} Documents`) : `Process ${files.filter(f => f.status !== 'cancelled').length} Files`))} <ArrowRight size={18} className="ml-3" />
+            </Button>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const activeUserPlan = useMemo(() => {
+    if (isReturnConfirmed || isPlanExpired(user)) {
+      return 'Basic Plan';
+    }
+
+    // 1. If user has activePlanMode set explicitly (e.g. toggled between Max and Plus in switcher)
+    const activeMode = user?.activePlanMode ? String(user.activePlanMode).toLowerCase() : '';
+    if (activeMode) {
+      if (activeMode.includes('max')) return 'Max Plan';
+      if (activeMode.includes('plus') || activeMode.includes('pro')) return 'Pro Plan';
+      if (activeMode.includes('basic') || activeMode.includes('free')) return 'Basic Plan';
+    }
+    if (Array.isArray(appOrders) && appOrders.length > 0) {
+      const parseOrderTimestamp = (val: any): number => {
+        if (!val) return 0;
+        if (typeof val === 'number') return val;
+        const parsed = new Date(val).getTime();
+        return isNaN(parsed) ? (Number(val) || 0) : parsed;
+      };
+      const verifiedOrders = appOrders.filter(o => 
+        o.status === 'VERIFIED' && 
+        !o.isRefunded && 
+        o.status !== 'REFUNDED'
+      );
+      if (verifiedOrders.length > 0) {
+        const sorted = [...verifiedOrders].sort((a, b) => parseOrderTimestamp(b.createdAt) - parseOrderTimestamp(a.createdAt));
+        const latestVerified = sorted[0];
+        const planStr = String(latestVerified?.plan || '').toLowerCase();
+        if (planStr.includes('max')) return 'Max Plan';
+        if (planStr.includes('plus') || planStr.includes('pro')) return 'Pro Plan';
+      }
+    }
+
+    // 3. Check user plan or purchasedPlan or membershipTier
+    const userPlanRaw = String(user?.plan || user?.purchasedPlan || (user as any)?.membershipTier || '').toLowerCase();
+    if (userPlanRaw.includes('max')) return 'Max Plan';
+    if (userPlanRaw.includes('plus') || userPlanRaw.includes('pro')) return 'Pro Plan';
+
+    // 4. Fallback to getUserPurchasedTier helper
+    const tier = getUserPurchasedTier(user);
+    if (tier === 'Max') return 'Max Plan';
+    if (tier === 'Pro') return 'Pro Plan';
+
+    if (user?.isPro) return 'Pro Plan';
+
+    return 'Basic Plan';
+  }, [user, appOrders, isReturnConfirmed]);
+
+  // Immediate Plan Synchronization when Return/Refund is confirmed
+  useEffect(() => {
+    if (isReturnConfirmed && user && (user.plan !== 'Basic Plan' || !user.isRefunded)) {
+      setUser(prev => {
+        if (!prev || (prev.plan === 'Basic Plan' && prev.isRefunded)) return prev;
+        return {
+          ...prev,
+          plan: 'Basic Plan',
+          purchasedPlan: 'Basic Plan',
+          activePlanMode: 'Basic Plan',
+          isPro: false,
+          isRefunded: true,
+          membershipTier: 'free',
+          billingCycle: 'month',
+          planExpiresAt: prev.basicPlanExpiresAt || undefined,
+          maxProjects: 5
+        };
+      });
+
+      if (user.uid && (user.plan !== 'Basic Plan' || !user.isRefunded)) {
+        updateUserInFirestore(user.uid, {
+          plan: 'Basic Plan',
+          purchasedPlan: 'Basic Plan',
+          activePlanMode: 'Basic Plan',
+          isPro: false,
+          isRefunded: true,
+          membershipTier: 'free',
+          billingCycle: 'month',
+          planExpiresAt: (user.basicPlanExpiresAt || null) as any,
+          maxProjects: 5,
+          updatedAt: new Date().toISOString()
+        }).catch(console.warn);
+      }
+    }
+  }, [isReturnConfirmed, user?.uid, user?.plan, user?.isRefunded]);
+
+  const getPlanTier = (plan?: string, targetUser?: User | null): 'Free' | 'Pro' | 'Max' => {
     const currentUser = targetUser !== undefined ? targetUser : user;
-    if (isPlanExpired(currentUser)) {
+    if (isReturnConfirmed || isPlanExpired(currentUser)) {
       return 'Free';
     }
     // Prioritize activePlanMode if user has selected a mode, or the explicit plan param
@@ -4505,24 +5504,12 @@ const App: React.FC = () => {
 
     const p = effectivePlan.toLowerCase();
     if (p.includes('max')) return 'Max';
-    if (p.includes('plus') || p.includes('pro')) return 'Plus';
+    if (p.includes('plus') || p.includes('pro')) return 'Pro';
     return 'Free';
   };
 
-  const isToolLocked = (tool: Tool) => {
-    const tier = getPlanTier(user?.plan);
-    const required = tool.requiredPlan || 'Free';
-
-    if (required === 'Free') return false;
-    
-    if (required === 'Plus') {
-        return tier === 'Free';
-    }
-    
-    if (required === 'Max') {
-        return tier === 'Free' || tier === 'Plus';
-    }
-
+  const isToolLocked = (_tool: Tool) => {
+    // In free plan users can use all features across the PaperX toolbox within their 5 operations quota
     return false;
   };
 
@@ -4536,12 +5523,17 @@ const App: React.FC = () => {
     }
 
     const tier = getPlanTier(user?.plan);
-    if (tier === 'Free' && user) {
-        if (user.projectsUsed >= (user.maxProjects || 10)) {
+    const opsUsed = Math.max(
+      Number(user?.projectsUsed || 0),
+      Number(guestTrialsUsed || 0),
+      Array.isArray(storedFiles) ? storedFiles.length : 0
+    );
+    if (tier === 'Free') {
+        if (opsUsed >= 15) {
              addToast({
                  type: 'error',
-                 title: 'Limit Reached (10 Operations Total)',
-                 message: 'You have used all 10 operations included with the Basic Plan (10 operations only, not per day). Upgrade to Plus or Max for unlimited access!'
+                 title: 'Basic Plan Limit Reached',
+                 message: `Your 15 free feature operations have been used (${opsUsed}/15). Upgrade to Pro or Max Plan to continue.`
              });
              navigate('/upgrade');
              return;
@@ -4561,7 +5553,12 @@ const App: React.FC = () => {
     }
 
     if (toolId === 'private-folder') {
-        alert("Enter PIN to access Private Folder");
+        addToast({
+            type: 'info',
+            title: 'Private Folder',
+            message: 'Access your protected documents in Private Folder.'
+        });
+        navigate('/documents');
         setIsMobileMenuOpen(false);
         return;
     }
@@ -4571,7 +5568,7 @@ const App: React.FC = () => {
   };
 
   const handleInitiatePayment = (
-      plan: 'Plus Plan' | 'Max Plan', 
+      plan: 'Pro Plan' | 'Pro Plan' | 'Max Plan', 
       amount?: string, 
       cycle: 'month' | 'half-year' | 'year' = 'month', 
       resubmitId?: string, 
@@ -4584,11 +5581,12 @@ const App: React.FC = () => {
           navigate('/dashboard');
       }
 
-      setPaymentPlan(plan);
+      const resolvedPlan = plan;
+      setPaymentPlan(resolvedPlan);
       setPaymentCycle(cycle);
-      const defaultAmt = plan === 'Max Plan' 
-        ? (cycle === 'half-year' ? '500' : cycle === 'year' ? '1000' : '100')
-        : (cycle === 'half-year' ? '250' : cycle === 'year' ? '500' : '50');
+      const defaultAmt = resolvedPlan === 'Max Plan' 
+        ? (cycle === 'half-year' ? '245' : cycle === 'year' ? '490' : '49')
+        : (cycle === 'half-year' ? '145' : cycle === 'year' ? '290' : '29');
       
       const purchasedTier = getUserPurchasedTier(user);
       const isExpired = isPlanExpired(user);
@@ -4599,16 +5597,13 @@ const App: React.FC = () => {
       let finalOldAmt = 0;
 
       // Membership Upgrade & Refund Rules:
-      // 1. "if users buy any plan and they wanted upgrade he can but if they refunded then full money required"
-      // 2. "if not refunded then past membership plan will discount correctly from new membership plan"
-      // 3. Discount applies when upgrading to any higher value membership from an active, non-refunded plan!
       const userActiveCredit = (() => {
           if (!user || user?.isRefunded || isExpired || purchasedTier === 'Free' || user.plan === 'Basic Plan' || user.subscriptionStatus === 'free') return 0;
           if (purchasedTier === 'Max') {
               return getPlanCreditValue('Max Plan', user.billingCycle as BillingCycleType);
           }
-          if (purchasedTier === 'Plus') {
-              return getPlanCreditValue('Plus Plan', user.billingCycle as BillingCycleType);
+          if (purchasedTier === 'Pro') {
+              return getPlanCreditValue('Pro Plan', user.billingCycle as BillingCycleType);
           }
           return 0;
       })();
@@ -4636,7 +5631,7 @@ const App: React.FC = () => {
   };
 
   const handleSwitchPlanMode = async (
-      targetPlan: 'Basic Plan' | 'Plus Plan' | 'Max Plan',
+      targetPlan: 'Basic Plan' | 'Pro Plan' | 'Pro Plan' | 'Max Plan',
       targetCycle?: 'month' | 'half-year' | 'year'
   ) => {
       if (!user) {
@@ -4646,31 +5641,32 @@ const App: React.FC = () => {
       const purchasedTier = getUserPurchasedTier(user);
       const userCycle = (user.billingCycle as BillingCycleType) || 'month';
       const isExpired = isPlanExpired(user);
+      const normalizedTargetPlan = targetPlan;
 
       // Check cycle restriction FIRST: if target cycle is not covered by the user's active membership,
       // they cannot use or switch to plans in that cycle directly and must upgrade.
-      if (targetCycle && targetPlan !== 'Basic Plan' && !isBillingCycleCovered(userCycle, targetCycle)) {
-          handleInitiatePayment(targetPlan, undefined, targetCycle);
+      if (targetCycle && normalizedTargetPlan !== 'Basic Plan' && !isBillingCycleCovered(userCycle, targetCycle)) {
+          handleInitiatePayment(normalizedTargetPlan, undefined, targetCycle);
           return;
       }
 
       // If user wants Max Plan but doesn't own Max, redirect to upgrade flow
-      if (targetPlan === 'Max Plan' && (purchasedTier !== 'Max' || isExpired)) {
+      if (normalizedTargetPlan === 'Max Plan' && (purchasedTier !== 'Max' || isExpired)) {
           handleInitiatePayment('Max Plan', undefined, targetCycle || userCycle);
           return;
       }
 
-      // If user wants Plus Plan but only has Free, redirect to upgrade flow
-      if (targetPlan === 'Plus Plan' && (purchasedTier === 'Free' || isExpired)) {
-          handleInitiatePayment('Plus Plan', undefined, targetCycle || userCycle);
+      // If user wants Pro Plan but only has Free, redirect to upgrade flow
+      if (normalizedTargetPlan === 'Pro Plan' && (purchasedTier === 'Free' || isExpired)) {
+          handleInitiatePayment('Pro Plan', undefined, targetCycle || userCycle);
           return;
       }
 
-      // Within covered cycle: Max Plan includes Plus Plan and Basic Plan for free
-      if (targetPlan === 'Plus Plan' && purchasedTier === 'Max' && !isExpired) {
+      // Within covered cycle: Max Plan includes Pro Plan and Basic Plan for free
+      if (normalizedTargetPlan === 'Pro Plan' && purchasedTier === 'Max' && !isExpired) {
           const updatedUserData: Partial<User> = {
-              plan: 'Plus Plan',
-              activePlanMode: 'Plus Plan',
+              plan: 'Pro Plan',
+              activePlanMode: 'Pro Plan',
               purchasedPlan: 'Max Plan',
               isPro: true,
               updatedAt: new Date().toISOString()
@@ -4681,14 +5677,14 @@ const App: React.FC = () => {
           setUser(prev => prev ? { ...prev, ...updatedUserData } : prev);
           addToast({
               type: 'success',
-              title: 'Active Mode: Plus Plan',
-              message: 'Max Plan includes Plus Plan for free. You can switch between Plus and Max anytime!'
+              title: 'Active Mode: Pro Plan',
+              message: 'Max Plan includes Pro Plan for free. You can switch between Pro and Max anytime!'
           });
           return;
       }
 
-      // If user is in Plus mode and wants to switch back to Max Plan (when they own Max)
-      if (targetPlan === 'Max Plan' && purchasedTier === 'Max' && !isExpired) {
+      // If user is in Pro mode and wants to switch back to Max Plan (when they own Max)
+      if (normalizedTargetPlan === 'Max Plan' && purchasedTier === 'Max' && !isExpired) {
           const updatedUserData: Partial<User> = {
               plan: 'Max Plan',
               activePlanMode: 'Max Plan',
@@ -4709,10 +5705,10 @@ const App: React.FC = () => {
       }
 
       const updatedUserData: Partial<User> = {
-          plan: targetPlan,
-          activePlanMode: targetPlan,
-          purchasedPlan: user.purchasedPlan || (purchasedTier === 'Max' ? 'Max Plan' : purchasedTier === 'Plus' ? 'Plus Plan' : 'Basic Plan'),
-          isPro: targetPlan !== 'Basic Plan',
+          plan: normalizedTargetPlan,
+          activePlanMode: normalizedTargetPlan,
+          purchasedPlan: user.purchasedPlan || (purchasedTier === 'Max' ? 'Max Plan' : purchasedTier === 'Plus' || purchasedTier === 'Pro' ? 'Pro Plan' : 'Basic Plan'),
+          isPro: normalizedTargetPlan !== 'Basic Plan',
           updatedAt: new Date().toISOString()
       };
 
@@ -4793,6 +5789,20 @@ const App: React.FC = () => {
 
   const handleFilesSelected = (newFiles: File[]) => {
     const tier = user ? getPlanTier(user.plan) : 'Free';
+    const opsUsed = Math.max(
+      Number(user?.projectsUsed || 0),
+      Number(guestTrialsUsed || 0),
+      Array.isArray(storedFiles) ? storedFiles.length : 0
+    );
+    if (tier === 'Free' && opsUsed >= 15) {
+        addToast({
+            type: 'error',
+            title: 'Basic Plan Limit Reached',
+            message: `Your 15 free feature operations have been used (${opsUsed}/15). Upgrade to Pro or Max Plan to continue.`
+        });
+        navigate('/upgrade');
+        return;
+    }
     const MAX_FILE_SIZE_BYTES = tier === 'Free' ? 50 * 1024 * 1024 : 500 * 1024 * 1024;
     const oversized = newFiles.some(f => f.size > MAX_FILE_SIZE_BYTES);
     if (oversized) {
@@ -4800,7 +5810,7 @@ const App: React.FC = () => {
             addToast({
                 type: 'error',
                 title: 'Free Tier Limit (50MB)',
-                message: 'Free tier includes top-tier quality up to 50MB per file. Upgrade to Plus or Max for files up to 500MB!'
+                message: 'Free tier includes top-tier quality up to 50MB per file. Upgrade to Pro or Max for files up to 500MB!'
             });
             navigate('/upgrade');
         } else {
@@ -4880,48 +5890,65 @@ const App: React.FC = () => {
         return;
     }
 
-    if (!user) {
-        addToast({
-            type: 'error',
-            title: 'Sign In Required',
-            message: 'Please sign up or log in for free to process your documents!'
-        });
-        navigate('/signup');
-        return;
-    }
-
     if (files.some(f => f.status === 'uploading')) {
-        alert("Please wait for files to finish uploading.");
+        addToast({
+            type: 'warning',
+            title: 'Uploading in Progress',
+            message: 'Please wait for your files to finish uploading before processing.'
+        });
         return;
     }
     
-    const readyFiles = files.filter(f => f.status === 'ready');
+    const readyFiles = files.filter(f => f.status === 'ready' || f.status === 'error');
     if (readyFiles.length === 0) {
-        alert("No ready files to process.");
+        addToast({
+            type: 'warning',
+            title: 'No Files Selected',
+            message: 'Please choose or upload a file to process.'
+        });
         return;
     }
 
     const tier = user ? getPlanTier(user.plan) : 'Free';
-    if (user && tier === 'Free') {
-        if ((user.projectsUsed || 0) >= (user.maxProjects || 10)) {
-            addToast({
-                type: 'error',
-                title: 'Limit Reached (10 Operations Total)',
-                message: 'You have used all 10 operations included with the Basic Plan (10 operations only, not per day). Upgrade to Plus or Max for unlimited access!'
-            });
-            navigate('/upgrade');
-            return;
-        }
+    const opsUsed = Math.max(
+      Number(user?.projectsUsed || 0),
+      Number(guestTrialsUsed || 0),
+      Array.isArray(storedFiles) ? storedFiles.length : 0
+    );
+    const maxOps = tier === 'Free' ? 15 : (tier === 'Pro' ? 100 : 1000);
 
-        if (readyFiles.length > 1 && activeToolId !== 'merge-pdf') {
-            addToast({
-                type: 'error',
-                title: 'Batch Processing Locked',
-                message: 'Batch processing multiple files simultaneously is available on Plus and Max plans.'
-            });
-            navigate('/upgrade');
-            return;
-        }
+    // 1. Quota check before processing
+    if (tier === 'Free' && opsUsed >= 15) {
+        addToast({
+            type: 'error',
+            title: 'Basic Plan Limit Reached',
+            message: `Your 15 free feature operations have been used (${opsUsed}/15). Upgrade to Pro or Max Plan to continue.`
+        });
+        navigate('/upgrade');
+        return;
+    }
+
+    if (tier === 'Free' && readyFiles.length > 1 && activeToolId !== 'merge-pdf') {
+        addToast({
+            type: 'error',
+            title: 'Batch Processing Locked',
+            message: 'Batch processing multiple files simultaneously is available on Pro and Max plans.'
+        });
+        navigate('/upgrade');
+        return;
+    }
+
+    // 2. Server-side quota validation
+    const totalSizeMb = readyFiles.reduce((acc, f) => acc + (f.size / (1024 * 1024)), 0);
+    const verification = await UsageService.verifyOperationAllowed(activeToolId, readyFiles.length, totalSizeMb, user);
+    if (!verification.allowed) {
+        addToast({
+            type: 'error',
+            title: verification.isLimitReached ? 'Free Limit Reached' : 'Processing Disallowed',
+            message: verification.message || 'Operation not allowed on your current plan.'
+        });
+        navigate('/upgrade');
+        return;
     }
 
     const MAX_FILE_SIZE_BYTES = tier === 'Free' ? 50 * 1024 * 1024 : 500 * 1024 * 1024;
@@ -4942,10 +5969,21 @@ const App: React.FC = () => {
       ? user.pdfAutoCompress 
       : (localStorage.getItem('pref_pdfAutoCompress') !== 'false');
 
+    const imgOpts = (window as any).__imageToPdfOptions || {};
+    const imgToImgOpts = (window as any).__pdfToImageOptions || {};
+
     let processOptions: any = {
-      pdfQuality: userPdfQuality,
-      pageSize: userPageSize,
+      pdfQuality: imgToImgOpts.resolution || userPdfQuality,
+      pageSize: imgOpts.pageSize || userPageSize,
+      orientation: imgOpts.orientation || 'portrait',
+      margin: imgOpts.margin || 'small',
+      rotations: imgOpts.rotations || {},
       pdfAutoCompress: userAutoCompress,
+      docxMergeOptions: docxMergeOptions,
+      imageFormat: imgToImgOpts.imageFormat,
+      pageRange: imgToImgOpts.pageRange,
+      pageMode: imgToImgOpts.pageMode,
+      toolId: activeToolId,
     };
 
     if (activeToolId === 'protect-pdf') {
@@ -4957,11 +5995,12 @@ const App: React.FC = () => {
     setIsProcessing(true);
     setProcessingStatus('Initializing...');
     setProcessingProgress(0);
+    setFiles(prev => prev.map(f => (f.status === 'ready' || f.status === 'error') ? { ...f, status: 'processing', progress: 10 } : f));
     
     try {
         const filesToProcess: File[] = [];
         files.forEach((f, index) => {
-            if (f.status === 'ready' && rawFiles[index]) {
+            if ((f.status === 'ready' || f.status === 'error' || f.status === 'processing') && rawFiles[index]) {
                 filesToProcess.push(rawFiles[index]);
             }
         });
@@ -4979,12 +6018,19 @@ const App: React.FC = () => {
         );
         playCompletionChime();
         
+        // Only record usage AFTER successful processing!
+        const opId = `op_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+        const usageRes = await UsageService.recordOperationSuccess(activeToolId, opId, filesToProcess.length, user);
+        
         if (user) {
-            recordFeatureUsage(user);
+            setUser(prev => prev ? ({
+                ...prev,
+                projectsUsed: usageRes.operationsUsed,
+                featureUsageCount: (prev.featureUsageCount || 0) + 1,
+                maxProjects: maxOps
+            }) : null);
         } else {
-            const newUsage = (guestTrialsUsed || 0) + 1;
-            localStorage.setItem('paperx_guest_trials_used', newUsage.toString());
-            setGuestTrialsUsed(newUsage);
+            setGuestTrialsUsed(usageRes.operationsUsed);
         }
 
         const activeTool = TOOLS.find(t => t.id === activeToolId);
@@ -5010,25 +6056,47 @@ const App: React.FC = () => {
             }
             const newItemId = item.id || Math.random().toString();
             if (dataUrl) {
-                LocalFileStore.save(newItemId, dataUrl);
+                await LocalFileStore.save(newItemId, dataUrl);
             }
             const uniqueName = generateUniqueFileName(item.filename, storedFiles, toolDisplayName);
+            const itemExt = item.filename.split('.').pop()?.toLowerCase() || '';
+            let itemDocType = 'PDF';
+            if (['jpg', 'jpeg', 'png', 'webp', 'svg', 'gif', 'bmp'].includes(itemExt)) itemDocType = 'IMAGE';
+            else if (['xlsx', 'xls'].includes(itemExt)) itemDocType = 'EXCEL';
+            else if (['docx', 'doc'].includes(itemExt)) itemDocType = 'DOCX';
+            else if (['pptx', 'ppt'].includes(itemExt)) itemDocType = 'PPTX';
+            else if (['csv', 'tsv'].includes(itemExt)) itemDocType = 'CSV';
+            else if (['md', 'markdown'].includes(itemExt)) itemDocType = 'MARKDOWN';
+            else if (['html', 'htm'].includes(itemExt)) itemDocType = 'HTML';
+            else if (item.filename.endsWith('.zip')) itemDocType = 'ZIP';
+            else if (['txt', 'text', 'json', 'xml'].includes(itemExt)) itemDocType = 'TEXT';
+            else if (item.type) itemDocType = item.type;
+
             return {
                 id: newItemId,
                 name: uniqueName,
                 date: new Date().toLocaleDateString(),
                 timestamp: Date.now(),
                 size: item.size >= 1024 * 1024 ? `${(item.size / 1024 / 1024).toFixed(2)} MB` : `${(item.size / 1024).toFixed(1)} KB`,
-                type: item.filename.endsWith('.zip') ? 'ZIP' : item.type || 'PDF',
-                action: toolDisplayName
+                type: itemDocType,
+                action: toolDisplayName,
+                dataUrl: dataUrl || undefined
             };
         }));
 
         if (newStoredItems.length > 0) {
-            setStoredFiles(prev => [...newStoredItems, ...prev]);
+            newStoredItems.forEach(item => {
+              if (item.dataUrl) {
+                saveLocalFileBinary(item.id, item.dataUrl).catch(() => {});
+              }
+            });
+            setStoredFiles(prev => {
+              const ids = new Set(newStoredItems.map(i => i.id));
+              return [...newStoredItems, ...prev.filter(p => !ids.has(p.id))];
+            });
             try {
                 window.dispatchEvent(new CustomEvent('paperx-stored-files-updated', { 
-                    detail: [...newStoredItems, ...storedFiles] 
+                    detail: newStoredItems 
                 }));
             } catch (_) {}
             const activeUid = user?.uid || (user as any)?.id || auth.currentUser?.uid;
@@ -5050,9 +6118,21 @@ const App: React.FC = () => {
             const newFileId = `doc_${Date.now()}_${Math.random().toString(36).substring(2,7)}`;
             if (singleDataUrl) {
                 LocalFileStore.save(newFileId, singleDataUrl);
+                saveLocalFileBinary(newFileId, singleDataUrl).catch(() => {});
             }
             
             const uniqueSingleName = generateUniqueFileName(result.filename, storedFiles, toolDisplayName);
+            const singleExt = result.filename.split('.').pop()?.toLowerCase() || '';
+            let singleDocType = 'PDF';
+            if (['jpg', 'jpeg', 'png', 'webp', 'svg', 'gif', 'bmp'].includes(singleExt)) singleDocType = 'IMAGE';
+            else if (['xlsx', 'xls'].includes(singleExt)) singleDocType = 'EXCEL';
+            else if (['docx', 'doc'].includes(singleExt)) singleDocType = 'DOCX';
+            else if (['pptx', 'ppt'].includes(singleExt)) singleDocType = 'PPTX';
+            else if (['csv', 'tsv'].includes(singleExt)) singleDocType = 'CSV';
+            else if (['md', 'markdown'].includes(singleExt)) singleDocType = 'MARKDOWN';
+            else if (['html', 'htm'].includes(singleExt)) singleDocType = 'HTML';
+            else if (result.filename.endsWith('.zip')) singleDocType = 'ZIP';
+            else if (['txt', 'text', 'json', 'xml'].includes(singleExt)) singleDocType = 'TEXT';
             
             const newStoredDocument: StoredDocument = {
                 id: newFileId,
@@ -5060,15 +6140,15 @@ const App: React.FC = () => {
                 date: new Date().toLocaleDateString(),
                 timestamp: Date.now(),
                 size: formattedFileSize,
-                type: result.filename.endsWith('.zip') ? 'ZIP' : 'PDF',
+                type: singleDocType,
                 action: toolDisplayName,
                 dataUrl: singleDataUrl || undefined,
-                tags: [toolDisplayName, result.filename.endsWith('.zip') ? 'ZIP' : 'PDF']
+                tags: [toolDisplayName, singleDocType]
             };
-            setStoredFiles(prev => [newStoredDocument, ...prev]);
+            setStoredFiles(prev => [newStoredDocument, ...prev.filter(p => p.id !== newFileId)]);
             try {
                 window.dispatchEvent(new CustomEvent('paperx-stored-files-updated', { 
-                    detail: [newStoredDocument, ...storedFiles] 
+                    detail: newStoredDocument 
                 }));
             } catch (_) {}
 
@@ -5094,7 +6174,7 @@ const App: React.FC = () => {
         }
         
         setFiles(prev => prev.map(f => 
-            f.status === 'ready' ? { ...f, progress: 100 } : f
+            (f.status === 'processing' || f.status === 'ready') ? { ...f, status: 'ready', progress: 100 } : f
         ));
         setProcessingStatus('Completed');
 
@@ -5132,7 +6212,7 @@ const App: React.FC = () => {
     } catch (error: any) {
         console.error(error);
         setProcessingStatus('Error');
-        setFiles(prev => prev.map(f => f.status === 'ready' ? { ...f, status: 'error' } : f));
+        setFiles(prev => prev.map(f => (f.status === 'processing' || f.status === 'ready') ? { ...f, status: 'error', progress: 0 } : f));
         addToast({
             type: 'error',
             title: 'Processing Failed',
@@ -5146,77 +6226,6 @@ const App: React.FC = () => {
     }
   };
 
-   const QuickActions = () => (
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 sm:gap-4 mb-6 sm:mb-8">
-           {/* Upload Action */}
-           <motion.button
-               whileHover={{ y: -4, scale: 1.02 }}
-               whileTap={{ scale: 0.98 }}
-               onClick={() => document.getElementById('quick-upload-trigger')?.click()}
-               className="flex flex-col items-center justify-center p-5 sm:p-6 md:p-7 rounded-3xl bg-black dark:bg-white text-white dark:text-black shadow-xl shadow-black/10 dark:shadow-white/5 border border-black dark:border-white hover:shadow-2xl transition-all duration-300 group relative overflow-hidden min-w-0 cursor-pointer"
-           >
-               <div className="w-12 h-12 sm:w-14 sm:h-14 rounded-2xl bg-white/15 dark:bg-black/10 flex items-center justify-center mb-3 group-hover:scale-110 group-hover:bg-white dark:group-hover:bg-black group-hover:text-black dark:group-hover:text-white transition-all duration-300 backdrop-blur-md z-10 shrink-0 shadow-sm">
-                   <motion.div
-                       whileHover={{ scale: 1.15, rotate: [0, -10, 10, -5, 5, 0] }}
-                       transition={{ type: "spring", stiffness: 300, damping: 10 }}
-                   >
-                       <Upload size={22} className="sm:w-6 sm:h-6" strokeWidth={2} />
-                   </motion.div>
-               </div>
-               <span className="font-heading font-black text-xs sm:text-sm tracking-tight z-10 truncate max-w-full text-white dark:text-black">{t('upload')}</span>
-           </motion.button>
-
-           {/* Other Actions */}
-           {[
-               { id: 'compress-pdf', label: t('tools.compress') || 'Compress', icon: Minimize2 },
-               { id: 'merge-pdf', label: t('tools.merge') || 'Merge', icon: Combine },
-               { id: 'pdf-to-word', label: t('tools.convert') || 'Convert', icon: ArrowRightLeft },
-           ].map((action, i) => (
-               <motion.button
-                   key={action.id}
-                   initial={{ opacity: 0, y: 15 }}
-                   animate={{ opacity: 1, y: 0 }}
-                   transition={{ delay: i * 0.08 }}
-                   whileHover={{ y: -4, scale: 1.02 }}
-                   whileTap={{ scale: 0.98 }}
-                   onClick={() => handleToolClick(action.id)}
-                   className="flex flex-col items-center justify-center p-5 sm:p-6 md:p-7 rounded-3xl bg-white/40 dark:bg-gray-900/40 backdrop-blur-2xl border border-white/60 dark:border-gray-800/60 hover:border-white/80 dark:hover:border-gray-700 shadow-[0_8px_32px_rgba(0,0,0,0.04)] hover:shadow-2xl transition-all duration-300 group relative overflow-hidden min-w-0 cursor-pointer"
-               >
-                   {action.id === 'pdf-to-word' && (
-                       <div className="absolute top-3.5 right-3.5 flex items-center gap-1 z-10">
-                           <span className="px-2 py-0.5 rounded-full bg-black text-white dark:bg-white dark:text-black text-[9px] font-black tracking-wider uppercase shadow-xs">
-                               PLUS
-                           </span>
-                       </div>
-                   )}
-                   <div className="w-12 h-12 sm:w-14 sm:h-14 rounded-2xl bg-white dark:bg-gray-800 text-gray-900 dark:text-white group-hover:bg-black dark:group-hover:bg-white group-hover:text-white dark:group-hover:text-black shadow-sm group-hover:shadow-lg group-hover:shadow-black/20 transition-all duration-300 flex items-center justify-center mb-3 shrink-0">
-                       <motion.div
-                           whileHover={{ scale: 1.15, rotate: [0, -10, 10, -5, 5, 0] }}
-                           transition={{ type: "spring", stiffness: 300, damping: 10 }}
-                       >
-                           <action.icon size={22} className="sm:w-6 sm:h-6" strokeWidth={1.75} />
-                       </motion.div>
-                   </div>
-                   <span className="font-heading font-black text-xs sm:text-sm text-gray-900 dark:text-white tracking-tight z-10 truncate max-w-full group-hover:text-black dark:group-hover:text-white transition-colors">{action.label}</span>
-               </motion.button>
-           ))}
-           
-           {/* Hidden File Input for the Upload button */}
-           <input 
-                id="quick-upload-trigger"
-                type="file" 
-                className="hidden" 
-                multiple
-                onChange={(e) => {
-                    if (e.target.files?.length) {
-                        handleFilesSelected(Array.from(e.target.files));
-                        handleToolClick('create-pdf'); // Or generic viewer
-                    }
-                }} 
-            />
-      </div>
-  );
-
   const renderContent = () => {
 
 
@@ -5229,7 +6238,7 @@ const App: React.FC = () => {
             <motion.div 
               animate={{ scale: [1, 1.05, 1] }}
               transition={{ repeat: Infinity, duration: 3, ease: "easeInOut" }}
-              className="relative w-24 h-24 rounded-3xl bg-gradient-to-b from-orange-500/20 to-amber-500/5 border border-orange-500/30 shadow-2xl shadow-orange-500/20 flex items-center justify-center text-orange-400 backdrop-blur-xl"
+              className="relative w-24 h-24 rounded-3xl bg-gradient-to-b from-orange-500/20 to-amber-500/5 border border-orange-500/30 shadow-2xl shadow-orange-500/20 flex items-center justify-center text-orange-400 "
             >
               <motion.div
                 animate={{ rotate: [0, 10, -10, 0] }}
@@ -5275,40 +6284,6 @@ const App: React.FC = () => {
       );
     }
 
-    // 2. Blocked User Account Lockout
-    if (user && (user.status === 'DISABLED' || (user as any).isBlocked) && !isAdminOpen) {
-      return (
-        <div className="fixed inset-0 z-[100] bg-stone-950 text-stone-100 flex flex-col items-center justify-center p-6 text-center">
-          <div className="w-16 h-16 rounded-2xl bg-red-950/30 flex items-center justify-center text-red-400 mb-6 border border-red-900/50">
-            <Lock size={32} />
-          </div>
-          <span className="px-3 py-1 rounded-full bg-red-950/50 border border-red-900/50 text-red-400 font-semibold text-xs tracking-widest uppercase mb-4">
-            Account Suspended
-          </span>
-          <h1 className="text-3xl font-bold text-white mb-4">
-            Access to PaperX Has Been Suspended
-          </h1>
-          <p className="text-stone-400 max-w-sm mb-8 leading-relaxed">
-            {user.blockReason || "Your user account has been disabled by the PaperX Administrator. If you believe this is an error or wish to clear pending payment holds, please contact live support."}
-          </p>
-          <div className="flex items-center gap-4">
-            <button
-              type="button"
-              onClick={async () => {
-                try {
-                  await logoutUser();
-                } catch (error: any) {
-                  alert("Sign out failed. Please try again.");
-                }
-              }}
-              className="px-6 py-2 bg-stone-900 border border-stone-800 hover:bg-stone-800 hover:border-stone-600 hover:text-white text-stone-300 font-medium rounded-xl transition-all duration-200"
-            >
-              Sign Out
-            </button>
-          </div>
-        </div>
-      );
-    }
 
     if (cleanPathForRouting.startsWith('/verify-receipt/')) {
       const verificationId = cleanPathForRouting.split('/verify-receipt/')[1] || '';
@@ -5330,57 +6305,62 @@ const App: React.FC = () => {
     const urlParams = new URLSearchParams(window.location.search);
     const isResetPassword = urlParams.get('mode') === 'resetPassword';
 
-    let currentUnauthView = (
-      <LandingView 
-        onOpenDownload={() => handleDirectAppDownload()} 
-        appSettings={appSettings} 
-      />
-    );
-
     if (cleanPathForRouting === '/forgot-password' || cleanPathForRouting === '/reset-password' || isResetPassword) {
-      currentUnauthView = <AuthPage key="reset" mode="reset" onAuthSuccess={() => handleAuthSuccess()} onNavigate={navigate} />;
-    } else if (cleanPathForRouting === '/login') {
-      currentUnauthView = <AuthPage key="login" mode="login" onAuthSuccess={() => handleAuthSuccess()} onNavigate={navigate} />;
-    } else if (cleanPathForRouting === '/signup') {
-      currentUnauthView = <AuthPage key="signup" mode="signup" onAuthSuccess={() => handleAuthSuccess()} onNavigate={navigate} />;
-    } else {
-      const matchedTool = findToolFromPath(cleanPathForRouting);
-      if (matchedTool) {
-        currentUnauthView = (
-          <GuestToolView 
-            tool={matchedTool}
-            activeToolId={matchedTool.id}
-            files={files}
-            rawFiles={rawFiles}
-            onFilesSelected={handleFilesSelected}
-            onRemoveFile={handleRemoveFile}
-            onCancelFile={handleCancelFile}
-            onCancelBatch={handleCancelBatch}
-            onGenericFileProcess={handleGenericFileProcess}
-            onProcessedFile={handleProcessedFile}
-            isProcessing={isProcessing}
-            processingStatus={processingStatus}
-            processingProgress={processingProgress}
-            socket={socket}
-            guestTrialsUsed={guestTrialsUsed}
-            onNavigate={navigate}
-            onOpenScanner={() => setIsCameraScannerOpen(true)}
-            appSettings={appSettings}
+      return (
+        <>
+          <AuthPage key="reset" mode="reset" onAuthSuccess={(u) => handleAuthSuccess(u)} onNavigate={navigate} />
+          <DeviceLimitModal
+            isOpen={deviceLimitModalOpen}
+            onClose={() => setDeviceLimitModalOpen(false)}
           />
-        );
-      }
+        </>
+      );
+    }
+    
+    if (cleanPathForRouting === '/login') {
+      return (
+        <>
+          <AuthPage key="login" mode="login" onAuthSuccess={(u) => handleAuthSuccess(u)} onNavigate={navigate} />
+          <DeviceLimitModal
+            isOpen={deviceLimitModalOpen}
+            onClose={() => setDeviceLimitModalOpen(false)}
+          />
+        </>
+      );
+    }
+    
+    if (cleanPathForRouting === '/signup') {
+      return (
+        <>
+          <AuthPage key="signup" mode="signup" onAuthSuccess={(u) => handleAuthSuccess(u)} onNavigate={navigate} />
+          <DeviceLimitModal
+            isOpen={deviceLimitModalOpen}
+            onClose={() => setDeviceLimitModalOpen(false)}
+          />
+        </>
+      );
     }
 
-    return (
-      <>
-        {currentUnauthView}
-        <DeviceLimitModal
-          isOpen={deviceLimitModalOpen}
-          onClose={() => setDeviceLimitModalOpen(false)}
-        />
-      </>
-    );
+    if (cleanPathForRouting === '/' || cleanPathForRouting === '') {
+      return (
+        <div className="flex flex-col min-h-screen relative">
+          <div className="flex-1">
+            <LandingView 
+              onOpenDownload={() => handleDirectAppDownload()} 
+              appSettings={appSettings} 
+            />
+          </div>
+          <DeviceLimitModal
+            isOpen={deviceLimitModalOpen}
+            onClose={() => setDeviceLimitModalOpen(false)}
+          />
+        </div>
+      );
+    }
+    // For any tool path (e.g. /jpg-to-pdf) or in-app view, directly render the full app workspace without any dummy landing views
   }
+
+
 
   const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
   const fiveYearsMs = 5 * 365.25 * 24 * 60 * 60 * 1000;
@@ -5388,11 +6368,14 @@ const App: React.FC = () => {
   const getDocTimeHelper = (f: StoredDocument): number => getStoredDocTimestamp(f);
 
   const recentDocsCount = storedFiles.filter(f => getDocTimeHelper(f) >= (nowTime - thirtyDaysMs)).length;
-  const myDocsCount = storedFiles.filter(f => getDocTimeHelper(f) < (nowTime - thirtyDaysMs) && getDocTimeHelper(f) >= (nowTime - fiveYearsMs)).length;
+  const myDocsCount = storedFiles.filter(f => {
+    const ts = getDocTimeHelper(f);
+    return ts < (nowTime - thirtyDaysMs) && ts >= (nowTime - fiveYearsMs);
+  }).length;
 
   return (
-    <div className="flex flex-col h-[100dvh] w-full bg-gray-50 text-gray-900 font-sans selection:bg-black selection:text-white relative overflow-hidden">
-      <div className="flex flex-1 overflow-hidden">
+    <div className="flex flex-col h-[100dvh] w-full bg-gray-50 dark:bg-gray-950 text-gray-900 dark:text-gray-100 font-sans selection:bg-black selection:text-white relative overflow-hidden">
+      <div className="flex flex-1 overflow-hidden transition-all duration-300">
       {/* Ensure no-scrollbar works globally within this component's shadow scope effectively */}
       <style>{`
         .no-scrollbar::-webkit-scrollbar {
@@ -5418,7 +6401,7 @@ const App: React.FC = () => {
 
       {/* Urgent Admin Notification Modal */}
       {activeUrgentNotification && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 ">
           <motion.div
             initial={{ opacity: 0, scale: 0.95, y: 20 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
@@ -5558,9 +6541,15 @@ const App: React.FC = () => {
 
                       if (dataUrl) {
                           LocalFileStore.save(newFileId, dataUrl);
+                          saveLocalFileBinary(newFileId, dataUrl).catch(() => {});
                       }
 
-                      setStoredFiles(prev => [newStoredDoc, ...prev]);
+                      setStoredFiles(prev => [newStoredDoc, ...prev.filter(p => p.id !== newFileId)]);
+                      try {
+                          window.dispatchEvent(new CustomEvent('paperx-stored-files-updated', { 
+                              detail: newStoredDoc 
+                          }));
+                      } catch (_) {}
 
                       const activeUid = user?.uid || (user as any)?.id || auth.currentUser?.uid;
                       if (activeUid) {
@@ -5595,468 +6584,522 @@ const App: React.FC = () => {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            transition={{ duration: 0.28, ease: [0.16, 1, 0.3, 1] }}
-            className="fixed inset-0 bg-black/15 dark:bg-black/35 z-40 lg:hidden backdrop-blur-xs transition-opacity" 
+            transition={{ duration: 0.25, ease: 'easeOut' }}
+            className="fixed inset-0 bg-black/50 z-40 lg:hidden cursor-pointer" 
             onClick={() => setIsMobileMenuOpen(false)} 
           />
         )}
       </AnimatePresence>
 
       {/* Sidebar - Desktop & Mobile Drawer */}
-      <aside className={`fixed lg:static inset-y-0 left-0 z-50 w-64 sm:w-[280px] lg:w-64 ios-glass-drawer flex flex-col transition-transform duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] rounded-r-3xl lg:rounded-none overflow-hidden ${isMobileMenuOpen ? 'translate-x-0 shadow-2xl' : '-translate-x-full lg:translate-x-0'}`}>
+      {!['settings', 'preferences', 'billing', 'personal'].includes(activeView) && (
+      <aside className={`fixed lg:static inset-y-0 left-0 z-50 w-64 sm:w-[280px] lg:w-64 bg-white dark:bg-stone-950 border-r border-stone-200 dark:border-stone-800 flex flex-col transition-transform duration-300 ease-out will-change-transform transform-gpu rounded-r-3xl lg:rounded-none overflow-hidden ${isMobileMenuOpen ? 'translate-x-0 shadow-xl pointer-events-auto' : '-translate-x-full lg:translate-x-0 pointer-events-none lg:pointer-events-auto'}`}>
          {/* Logo Area */}
-         <div className="h-12 flex items-center justify-center px-4 border-b border-black/[0.06] dark:border-white/[0.08] relative shrink-0">
+         <div className="h-12 flex items-center justify-center px-4 border-b border-stone-200 dark:border-stone-800 relative shrink-0">
              <div className="flex items-center justify-center cursor-pointer text-gray-900 dark:text-white" onClick={(e) => handleNavigation('dashboard', e)}>
-                 <BrandLogo className="text-xl sm:text-2xl" />
+                 <BrandLogo size="md" className="h-5 sm:h-5.5" />
              </div>
          </div>
 
          {/* Navigation */}
          <div className="flex-1 overflow-y-auto py-5 px-3.5 space-y-2 no-scrollbar">
-             <button 
-                onClick={(e) => handleNavigation('dashboard', e)}
-                className={`w-full flex items-center gap-3.5 px-3.5 py-3 rounded-2xl text-[15px] sm:text-base font-bold tracking-tight transition-all duration-200 active:scale-[0.98] ${activeView === 'dashboard' ? 'ios-nav-pill-active' : 'text-gray-800 dark:text-gray-200 hover:bg-black/[0.06] dark:hover:bg-white/[0.10] hover:text-gray-950 dark:hover:text-white'}`}
-             >
-                 <Layout size={21} className={activeView === 'dashboard' ? 'text-white dark:text-black shrink-0' : 'text-gray-600 dark:text-gray-400 shrink-0'} />
-                 {t('dashboard')}
-             </button>
-             <button 
-                onClick={(e) => handleNavigation('documents', e)}
-                className={`w-full flex items-center justify-between px-3.5 py-3 rounded-2xl text-[15px] sm:text-base font-bold tracking-tight transition-all duration-200 active:scale-[0.98] ${activeView === 'documents' ? 'ios-nav-pill-active' : 'text-gray-800 dark:text-gray-200 hover:bg-black/[0.06] dark:hover:bg-white/[0.10] hover:text-gray-950 dark:hover:text-white'}`}
-             >
-                 <div className="flex items-center gap-3.5">
-                     <Folder size={21} className={activeView === 'documents' ? 'text-white dark:text-black shrink-0' : 'text-gray-600 dark:text-gray-400 shrink-0'} />
-                     <span>{t('documents')}</span>
-                 </div>
-                 {myDocsCount > 0 && (
-                     <span className={`text-xs font-bold px-2.5 py-0.5 rounded-full ${activeView === 'documents' ? 'bg-white/25 text-white dark:bg-black/20 dark:text-black' : 'bg-black/[0.08] dark:bg-white/[0.14] text-gray-700 dark:text-gray-300'}`}>
-                         {myDocsCount}
-                     </span>
-                 )}
-             </button>
-             <button 
-                onClick={(e) => handleNavigation('recent', e)}
-                className={`w-full flex items-center justify-between px-3.5 py-3 rounded-2xl text-[15px] sm:text-base font-bold tracking-tight transition-all duration-200 active:scale-[0.98] ${activeView === 'recent' ? 'ios-nav-pill-active' : 'text-gray-800 dark:text-gray-200 hover:bg-black/[0.06] dark:hover:bg-white/[0.10] hover:text-gray-950 dark:hover:text-white'}`}
-             >
-                 <div className="flex items-center gap-3.5">
-                     <History size={21} className={activeView === 'recent' ? 'text-white dark:text-black shrink-0' : 'text-gray-600 dark:text-gray-400 shrink-0'} />
-                     <span>{t('recent')}</span>
-                 </div>
-                 {recentDocsCount > 0 && (
-                     <span className={`text-xs font-bold px-2.5 py-0.5 rounded-full ${activeView === 'recent' ? 'bg-amber-400 text-black dark:bg-amber-300 dark:text-black' : 'bg-amber-100/90 dark:bg-amber-950/60 text-amber-900 dark:text-amber-300 border border-amber-300/40 dark:border-amber-700/30'}`}>
-                         {recentDocsCount}
-                     </span>
-                 )}
-             </button>
+             {(() => {
+                 const isSettingsActive = (activeView === 'settings' || activeView === 'preferences') || (isProfileOpen && profileInitialTab === 'preferences');
+                 const isBillingActive = activeView === 'billing' || (isProfileOpen && profileInitialTab === 'billing');
+                 const isPaymentsActive = activeView === 'payment-history' || activeView === 'payments';
+                 const isSupportActive = activeView === 'support';
+                 const isDownloadActive = activeView === 'download';
+                 const isDocumentsActive = activeView === 'documents';
+                 const isRecentActive = activeView === 'recent';
+                 // Dashboard is active if in dashboard, tool, upload, or by default if no other tab matches
+                 const isDashboardActive = !isDocumentsActive && !isRecentActive && !isSettingsActive && !isBillingActive && !isPaymentsActive && !isSupportActive && !isDownloadActive;
 
-             <div className="pt-4 pb-1">
-                  <p className="px-3.5 text-xs font-black text-gray-500 dark:text-gray-400 uppercase tracking-wider">Settings & Payments</p>
-             </div>
-             <button 
-                onClick={(e) => handleNavigation('settings', e)} 
-                className={`w-full flex items-center gap-3.5 px-3.5 py-3 rounded-2xl text-[15px] sm:text-base font-bold tracking-tight transition-all duration-200 active:scale-[0.98] ${isProfileOpen && profileInitialTab === 'preferences' ? 'ios-nav-pill-active' : 'text-gray-800 dark:text-gray-200 hover:bg-black/[0.06] dark:hover:bg-white/[0.10] hover:text-gray-950 dark:hover:text-white'} cursor-pointer`}
-             >
-                 <Settings size={21} className={isProfileOpen && profileInitialTab === 'preferences' ? 'text-white dark:text-black shrink-0' : 'text-gray-600 dark:text-gray-400 shrink-0'} />
-                 {t('settings')}
-             </button>
-             <button 
-                onClick={(e) => handleNavigation('billing', e)} 
-                className={`w-full flex items-center gap-3.5 px-3.5 py-3 rounded-2xl text-[15px] sm:text-base font-bold tracking-tight transition-all duration-200 active:scale-[0.98] ${isProfileOpen && profileInitialTab === 'billing' ? 'ios-nav-pill-active' : 'text-gray-800 dark:text-gray-200 hover:bg-black/[0.06] dark:hover:bg-white/[0.10] hover:text-gray-950 dark:hover:text-white'} cursor-pointer`}
-             >
-                 <CreditCard size={21} className={isProfileOpen && profileInitialTab === 'billing' ? 'text-white dark:text-black shrink-0' : 'text-gray-600 dark:text-gray-400 shrink-0'} />
-                 {t('billing')}
-             </button>
-             <button 
-                onClick={(e) => handleNavigation('payment-history', e)} 
-                className={`w-full flex items-center gap-3.5 px-3.5 py-3 rounded-2xl text-[15px] sm:text-base font-bold tracking-tight transition-all duration-200 active:scale-[0.98] ${(activeView === 'payment-history' || activeView === 'payments') ? 'ios-nav-pill-active' : 'text-gray-800 dark:text-gray-200 hover:bg-black/[0.06] dark:hover:bg-white/[0.10] hover:text-gray-950 dark:hover:text-white'} cursor-pointer`}
-             >
-                 <Receipt size={21} className={(activeView === 'payment-history' || activeView === 'payments') ? 'text-white dark:text-black shrink-0' : 'text-gray-600 dark:text-gray-400 shrink-0'} />
-                 Payment History
-             </button>
-             <button 
-                onClick={(e) => handleNavigation('support', e)} 
-                className={`w-full flex items-center gap-3.5 px-3.5 py-3 rounded-2xl text-[15px] sm:text-base font-bold tracking-tight transition-all duration-200 active:scale-[0.98] ${activeView === 'support' ? 'ios-nav-pill-active' : 'text-gray-800 dark:text-gray-200 hover:bg-black/[0.06] dark:hover:bg-white/[0.10] hover:text-gray-950 dark:hover:text-white'}`}
-             >
-                 <LifeBuoy size={21} className={activeView === 'support' ? 'text-white dark:text-black shrink-0' : 'text-gray-600 dark:text-gray-400 shrink-0'} />
-                 {t('support')}
-             </button>
-             
-             <div className="pt-3 pb-1">
-                 <p className="px-3.5 text-xs font-black text-gray-500 dark:text-gray-400 uppercase tracking-wider">App</p>
-             </div>
-             <button 
-                onClick={(e) => {
-                    setIsMobileMenuOpen(false);
-                    handleDirectAppDownload(e);
-                }}
-                className="w-full flex items-center gap-3.5 px-3.5 py-3 rounded-2xl text-[15px] sm:text-base font-bold tracking-tight text-gray-800 dark:text-gray-200 hover:bg-black/[0.06] dark:hover:bg-white/[0.10] hover:text-gray-950 dark:hover:text-white transition-all active:scale-[0.98] cursor-pointer"
-             >
-                 <Download size={21} className="text-gray-600 dark:text-gray-400 shrink-0" />
-                 Download App
-             </button>
+                 return (
+                     <>
+                         <motion.button 
+                            whileTap={{ scale: 0.95 }}
+                            whileHover={{ scale: 1.01 }}
+                            onClick={(e) => handleNavigation('dashboard', e)}
+                            className={`relative w-full flex items-center gap-3.5 px-3.5 py-3 rounded-2xl text-[15px] sm:text-base font-bold tracking-tight transition-all duration-200 cursor-pointer select-none overflow-hidden ${isDashboardActive ? 'bg-gray-950 text-white dark:bg-white dark:text-black shadow-md' : 'text-gray-800 dark:text-gray-200 hover:bg-black/[0.05] dark:hover:bg-white/[0.08]'}`}
+                         >
+                            <div className="relative z-10 flex items-center gap-3.5">
+                                <Layout size={21} className={isDashboardActive ? 'text-white dark:text-black shrink-0' : 'text-gray-600 dark:text-gray-400 shrink-0'} />
+                                <span>{t('dashboard')}</span>
+                            </div>
+                         </motion.button>
+
+                         <motion.button 
+                            whileTap={{ scale: 0.95 }}
+                            whileHover={{ scale: 1.01 }}
+                            onClick={(e) => handleNavigation('documents', e)}
+                            className={`relative w-full flex items-center justify-between px-3.5 py-3 rounded-2xl text-[15px] sm:text-base font-bold tracking-tight transition-all duration-200 cursor-pointer select-none overflow-hidden ${isDocumentsActive ? 'bg-gray-950 text-white dark:bg-white dark:text-black shadow-md' : 'text-gray-800 dark:text-gray-200 hover:bg-black/[0.05] dark:hover:bg-white/[0.08]'}`}
+                         >
+                            <div className="relative z-10 flex items-center gap-3.5">
+                                <Folder size={21} className={isDocumentsActive ? 'text-white dark:text-black shrink-0' : 'text-gray-600 dark:text-gray-400 shrink-0'} />
+                                <span>{t('documents')}</span>
+                            </div>
+                            {myDocsCount > 0 && (
+                                <span className={`relative z-10 text-xs font-bold px-2.5 py-0.5 rounded-full ${isDocumentsActive ? 'bg-white/20 text-white dark:bg-black/20 dark:text-black' : 'bg-black/[0.08] dark:bg-white/[0.14] text-gray-700 dark:text-gray-300'}`}>
+                                    {myDocsCount}
+                                </span>
+                            )}
+                         </motion.button>
+
+                         <motion.button 
+                            whileTap={{ scale: 0.95 }}
+                            whileHover={{ scale: 1.01 }}
+                            onClick={(e) => handleNavigation('recent', e)}
+                            className={`relative w-full flex items-center justify-between px-3.5 py-3 rounded-2xl text-[15px] sm:text-base font-bold tracking-tight transition-all duration-200 cursor-pointer select-none overflow-hidden ${isRecentActive ? 'bg-gray-950 text-white dark:bg-white dark:text-black shadow-md' : 'text-gray-800 dark:text-gray-200 hover:bg-black/[0.05] dark:hover:bg-white/[0.08]'}`}
+                         >
+                            <div className="relative z-10 flex items-center gap-3.5">
+                                <History size={21} className={isRecentActive ? 'text-white dark:text-black shrink-0' : 'text-gray-600 dark:text-gray-400 shrink-0'} />
+                                <span>{t('recent')}</span>
+                            </div>
+                            {recentDocsCount > 0 && (
+                                <span className={`relative z-10 text-xs font-bold px-2.5 py-0.5 rounded-full ${isRecentActive ? 'bg-amber-400 text-black dark:bg-amber-300 dark:text-black' : 'bg-amber-100/90 dark:bg-amber-950/60 text-amber-900 dark:text-amber-300 border border-amber-300/40 dark:border-amber-700/30'}`}>
+                                    {recentDocsCount}
+                                </span>
+                            )}
+                         </motion.button>
+
+                         {/* Feature Shortcuts Categories Section */}
+                         <div className="pt-3 pb-1 px-3.5">
+                             <p className="text-[11px] font-black text-stone-500 dark:text-stone-400 uppercase tracking-wider">
+                               {t('featureShortcuts', 'Feature Shortcuts')}
+                             </p>
+                         </div>
+
+                         <div className="space-y-1">
+                           {FEATURE_SHORTCUT_CATEGORIES.map((cat) => {
+                             const categoryTools = TOOLS.filter(t => t.category === cat.id);
+                             const isExpanded = expandedShortcutCategory === cat.id;
+                             const CatIcon = cat.icon;
+
+                             return (
+                               <div key={cat.id} className="rounded-2xl overflow-hidden transition-all duration-200">
+                                 {/* Category Header Button */}
+                                 <motion.button
+                                   whileTap={{ scale: 0.98 }}
+                                   onClick={() => setExpandedShortcutCategory(isExpanded ? null : cat.id)}
+                                   className={`w-full flex items-center justify-between px-3 py-2.5 rounded-2xl text-xs sm:text-sm font-bold tracking-tight transition-all duration-200 cursor-pointer select-none ${
+                                     isExpanded 
+                                       ? 'bg-stone-100 dark:bg-stone-900 text-black dark:text-white shadow-xs' 
+                                       : 'text-stone-700 dark:text-stone-300 hover:bg-black/[0.04] dark:hover:bg-white/[0.06]'
+                                   }`}
+                                 >
+                                   <div className="flex items-center gap-2.5 min-w-0">
+                                     <div className={`p-1.5 rounded-xl shrink-0 ${cat.badgeColor}`}>
+                                       <CatIcon size={16} className={cat.iconColor} />
+                                     </div>
+                                     <span className="truncate">{cat.name}</span>
+                                   </div>
+
+                                   <div className="flex items-center shrink-0">
+                                     {isExpanded ? (
+                                       <ChevronDown size={14} className="text-stone-500" />
+                                     ) : (
+                                       <ChevronRight size={14} className="text-stone-400" />
+                                     )}
+                                   </div>
+                                 </motion.button>
+
+                                 {/* Expanded Tool Shortcuts List */}
+                                 <AnimatePresence>
+                                   {isExpanded && (
+                                     <motion.div
+                                       initial={{ opacity: 0, height: 0 }}
+                                       animate={{ opacity: 1, height: 'auto' }}
+                                       exit={{ opacity: 0, height: 0 }}
+                                       transition={{ duration: 0.2, ease: 'easeOut' }}
+                                       className="pl-2.5 pr-1 py-1 space-y-0.5 border-l-2 border-stone-200 dark:border-stone-800 ml-3.5 my-1"
+                                     >
+                                       <div className="px-2 py-1 mb-1 text-[10px] font-bold text-stone-400 uppercase tracking-wider">
+                                         <span>Shortcuts</span>
+                                       </div>
+
+                                       {categoryTools.map((tool) => {
+                                         const isToolActive = activeToolId === tool.id && activeView === 'tool';
+                                         return (
+                                           <motion.button
+                                             key={tool.id}
+                                             whileTap={{ scale: 0.96 }}
+                                             whileHover={{ x: 3 }}
+                                             onClick={(e) => openToolShortcut(tool.id, e)}
+                                             className={`w-full flex items-center justify-between px-2 py-1.5 rounded-xl text-xs font-semibold transition-all duration-150 cursor-pointer select-none ${
+                                               isToolActive
+                                                 ? 'bg-black text-white dark:bg-white dark:text-black font-bold shadow-xs'
+                                                 : 'text-stone-700 dark:text-stone-300 hover:bg-stone-200/60 dark:hover:bg-stone-800/70'
+                                             }`}
+                                           >
+                                             <div className="flex items-center gap-2 min-w-0">
+                                               <div className="w-4 h-4 flex items-center justify-center shrink-0">
+                                                 <AnimatedToolIcon toolId={tool.id} fallbackIcon={tool.icon || FileText} size={16} className="w-4 h-4" />
+                                               </div>
+                                               <span className="truncate">{tool.name}</span>
+                                             </div>
+                                           </motion.button>
+                                         );
+                                       })}
+                                     </motion.div>
+                                   )}
+                                 </AnimatePresence>
+                               </div>
+                             );
+                           })}
+                         </div>
+
+                         <div className="pt-4 pb-1">
+                              <p className="px-3.5 text-xs font-black text-gray-500 dark:text-gray-400 uppercase tracking-wider">{t('settingsAndPayments', 'Settings & Payments')}</p>
+                         </div>
+
+                         <motion.button 
+                            whileTap={{ scale: 0.95 }}
+                            whileHover={{ scale: 1.01 }}
+                            onClick={(e) => handleNavigation('settings', e)} 
+                            className={`relative w-full flex items-center gap-3.5 px-3.5 py-3 rounded-2xl text-[15px] sm:text-base font-bold tracking-tight transition-all duration-200 cursor-pointer select-none overflow-hidden ${isSettingsActive ? 'bg-gray-950 text-white dark:bg-white dark:text-black shadow-md' : 'text-gray-800 dark:text-gray-200 hover:bg-black/[0.05] dark:hover:bg-white/[0.08]'}`}
+                         >
+                            <div className="relative z-10 flex items-center gap-3.5">
+                                <Settings size={21} className={isSettingsActive ? 'text-white dark:text-black shrink-0' : 'text-gray-600 dark:text-gray-400 shrink-0'} />
+                                <span>{t('settings')}</span>
+                            </div>
+                         </motion.button>
+
+                         <motion.button 
+                            whileTap={{ scale: 0.95 }}
+                            whileHover={{ scale: 1.01 }}
+                            onClick={(e) => handleNavigation('billing', e)} 
+                            className={`relative w-full flex items-center gap-3.5 px-3.5 py-3 rounded-2xl text-[15px] sm:text-base font-bold tracking-tight transition-all duration-200 cursor-pointer select-none overflow-hidden ${isBillingActive ? 'bg-gray-950 text-white dark:bg-white dark:text-black shadow-md' : 'text-gray-800 dark:text-gray-200 hover:bg-black/[0.05] dark:hover:bg-white/[0.08]'}`}
+                         >
+                            <div className="relative z-10 flex items-center gap-3.5">
+                                <CreditCard size={21} className={isBillingActive ? 'text-white dark:text-black shrink-0' : 'text-gray-600 dark:text-gray-400 shrink-0'} />
+                                <span>{t('billing')}</span>
+                            </div>
+                         </motion.button>
+
+                         <motion.button 
+                            whileTap={{ scale: 0.95 }}
+                            whileHover={{ scale: 1.01 }}
+                            onClick={(e) => handleNavigation('payment-history', e)} 
+                            className={`relative w-full flex items-center gap-3.5 px-3.5 py-3 rounded-2xl text-[15px] sm:text-base font-bold tracking-tight transition-all duration-200 cursor-pointer select-none overflow-hidden ${isPaymentsActive ? 'bg-gray-950 text-white dark:bg-white dark:text-black shadow-md' : 'text-gray-800 dark:text-gray-200 hover:bg-black/[0.05] dark:hover:bg-white/[0.08]'}`}
+                         >
+                            <div className="relative z-10 flex items-center gap-3.5">
+                                <Receipt size={21} className={isPaymentsActive ? 'text-white dark:text-black shrink-0' : 'text-gray-600 dark:text-gray-400 shrink-0'} />
+                                <span>{t('paymentHistory', 'Payment History')}</span>
+                            </div>
+                         </motion.button>
+
+                          <button 
+                             onClick={(e) => handleNavigation('support', e)}
+                             className={`relative w-full flex items-center gap-3.5 px-3.5 py-3 rounded-2xl text-[15px] sm:text-base font-bold tracking-tight transition-all duration-200 cursor-pointer select-none overflow-hidden active:scale-[0.98] ${isSupportActive ? 'bg-gray-950 text-white dark:bg-white dark:text-black shadow-md' : 'text-gray-800 dark:text-gray-200 hover:bg-black/[0.05] dark:hover:bg-white/[0.08]'}`}
+                          >
+                             <div className="relative z-10 flex items-center gap-3.5">
+                                 <Headset size={21} className={isSupportActive ? 'text-white dark:text-black shrink-0' : 'text-gray-600 dark:text-gray-400 shrink-0'} />
+                                 <span>{t('support')}</span>
+                             </div>
+                          </button>
+                         
+                         <div className="pt-3 pb-1">
+                             <p className="px-3.5 text-xs font-black text-gray-500 dark:text-gray-400 uppercase tracking-wider">App</p>
+                         </div>
+
+                          <button 
+                             onClick={(e) => {
+                                 handleNavigation('download', e);
+                             }}
+                             className={`relative w-full flex items-center gap-3.5 px-3.5 py-3 rounded-2xl text-[15px] sm:text-base font-bold tracking-tight transition-all duration-150 active:scale-[0.98] transform-gpu cursor-pointer select-none overflow-hidden ${isDownloadActive ? 'bg-gray-950 text-white dark:bg-white dark:text-black shadow-md' : 'text-gray-800 dark:text-gray-200 hover:bg-black/[0.05] dark:hover:bg-white/[0.08]'}`}
+                          >
+                             <div className="relative z-10 flex items-center gap-3.5">
+                                 <Download size={21} className={isDownloadActive ? 'text-white dark:text-black shrink-0' : 'text-gray-600 dark:text-gray-400 shrink-0'} />
+                                 <span>{t('downloadApp', 'Download App')}</span>
+                             </div>
+                          </button>
+                     </>
+                 );
+             })()}
          </div>
-
+         
          {/* User Profile Snippet - iOS Liquid Capsule */}
          <div className="p-1.5 border-t border-black/[0.04] dark:border-white/[0.05] shrink-0">
-             <div 
-                className={`flex items-center gap-3 p-2 rounded-2xl cursor-pointer transition-all duration-200 active:scale-[0.98] ${
-                    user.plan === 'Max Plan' 
-                        ? 'bg-amber-500/15 dark:bg-amber-400/15 border border-amber-500/30 hover:border-amber-500/45 shadow-xs' 
-                        : user.plan === 'Plus Plan'
-                        ? 'bg-blue-500/15 dark:bg-blue-400/15 border border-blue-500/30 hover:border-blue-500/45 shadow-xs'
-                        : 'bg-black/[0.05] dark:bg-white/[0.07] border border-black/[0.08] dark:border-white/[0.12] hover:bg-black/[0.08] dark:hover:bg-white/[0.12]'
-                }`}
-                onClick={(e) => {
-                    e.stopPropagation();
-                    setIsMobileMenuOpen(false);
-                    setProfileInitialTab('menu');
-                    setIsProfileOpen(true);
-                }}
-             >
-                 <img src={user.avatarUrl} alt={user.name} className="w-9 h-9 rounded-full ring-2 ring-white/80 dark:ring-white/20 shadow-sm object-cover shrink-0" />
-                 <div className="flex-1 min-w-0">
-                     <p className="text-sm font-bold tracking-tight text-gray-900 dark:text-gray-100 truncate">{user.name}</p>
-                     <p className="text-[10px] text-gray-500 dark:text-gray-400 truncate font-bold mt-0.5 uppercase tracking-wider">{user.plan}</p>
-                 </div>
-             </div>
+             {(() => {
+                 const planStr = `${String(activeUserPlan || '')} ${String(user?.plan || '')}`.toLowerCase();
+                 const isMax = planStr.includes('max');
+                 const isPlus = !isMax && (planStr.includes('plus') || planStr.includes('pro'));
+
+                 return (
+                     <div 
+                        className={`flex items-center gap-3 p-2 rounded-2xl cursor-pointer transition-all duration-300 ease-out active:scale-[0.98] ${
+                            isMax 
+                                ? 'bg-gradient-to-r from-white via-amber-50/95 to-amber-100/85 dark:from-[#231b0e] dark:via-amber-950/60 dark:to-[#1a140a] border border-amber-300/90 dark:border-amber-400/50 shadow-xs shadow-amber-500/15 hover:border-amber-400 dark:hover:border-amber-300' 
+                                : isPlus
+                                ? 'bg-gradient-to-r from-white via-purple-50/90 to-purple-100/80 dark:from-[#1b1528] dark:via-purple-950/60 dark:to-[#171222] border border-purple-200/90 dark:border-purple-500/40 shadow-xs shadow-purple-500/15 hover:border-purple-300 dark:hover:border-purple-400'
+                                : 'bg-black/[0.04] dark:bg-white/[0.07] border border-black/[0.08] dark:border-white/[0.12] hover:bg-black/[0.07] dark:hover:bg-white/[0.10]'
+                        }`}
+                        onClick={(e) => {
+                            handleNavigation('settings', e);
+                        }}
+                     >
+                         <img 
+                            src={user?.avatarUrl || `https://ui-avatars.com/api/?name=${encodeURIComponent(user?.name || 'PaperX')}&background=random`} 
+                            alt={user?.name || 'PaperX'} 
+                            className={`w-9 h-9 rounded-full object-cover shrink-0 transition-all duration-300 ${
+                                isMax
+                                    ? 'ring-2 ring-amber-400 dark:ring-amber-400 shadow-xs shadow-amber-500/25'
+                                    : isPlus
+                                    ? 'ring-2 ring-purple-400 dark:ring-purple-400 shadow-xs shadow-purple-500/25'
+                                    : 'ring-2 ring-white/80 dark:ring-white/20 shadow-xs'
+                            }`} 
+                         />
+                         <div className="flex-1 min-w-0">
+                             <div className="flex items-center justify-between gap-1">
+                                 <p className="text-sm font-bold tracking-tight text-gray-900 dark:text-gray-100 truncate">{user?.name || 'Paper X'}</p>
+                             </div>
+                             {isMax ? (
+                                 <span className="inline-flex items-center text-[10px] font-extrabold uppercase tracking-wider text-amber-900 dark:text-amber-200 bg-amber-200/60 dark:bg-amber-950/70 px-1.5 py-0.5 rounded-md border border-amber-400/50 dark:border-amber-500/40 mt-0.5">
+                                     Max Plan
+                                 </span>
+                             ) : isPlus ? (
+                                 <span className="inline-flex items-center text-[10px] font-extrabold uppercase tracking-wider text-purple-900 dark:text-purple-200 bg-purple-100/90 dark:bg-purple-950/70 px-1.5 py-0.5 rounded-md border border-purple-300/80 dark:border-purple-600/40 mt-0.5">
+                                     Pro Plan
+                                 </span>
+                             ) : (
+                                 <span className="inline-flex items-center text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-md mt-0.5 text-gray-600 dark:text-gray-400 bg-black/[0.05] dark:bg-white/[0.08] border border-black/[0.06] dark:border-white/[0.10]">
+                                     Basic Plan
+                                 </span>
+                             )}
+                         </div>
+                     </div>
+                 );
+             })()}
          </div>
       </aside>
+      )}
 
       {/* Main Content Area */}
       <main className="flex-1 flex flex-col h-full overflow-hidden relative bg-transparent">
         
         {/* Mobile Header - Overlaying Content */}
-        <div className={`lg:hidden absolute top-0 left-0 w-full h-12 flex items-center justify-between px-4 ios-glass-header z-30 transition-opacity duration-200 ${isMobileMenuOpen ? 'pointer-events-none opacity-40' : 'opacity-100'}`}>
-            <div className="flex items-center gap-3 text-gray-900 dark:text-white">
-                 <button onClick={() => setIsMobileMenuOpen(true)} className="p-2 -ml-2 text-gray-600 dark:text-gray-400 hover:bg-black/5 dark:hover:bg-white/5 rounded-full transition-colors">
-                     <Menu size={24} />
-                 </button>
-                 <div className="flex items-center gap-2">
-                    <BrandLogo className="text-xl block" />
-                 </div>
-            </div>
-            <div className="flex items-center gap-2">
-                <button 
-                    onClick={() => setIsCameraScannerOpen(true)}
-                    className="p-2 text-gray-600 hover:bg-black/5 rounded-full transition-colors"
-                >
-                    <ScanLine size={22} />
-                </button>
-                <motion.img 
-                    whileHover={{ scale: 1.1 }}
-                    whileTap={{ scale: 0.9 }}
-                    src={user.avatarUrl} 
-                    onClick={(e) => {
-                        e.stopPropagation();
-                        setProfileInitialTab('menu');
-                        setIsProfileOpen(true);
-                    }}
-                    className="w-9 h-9 rounded-full border-2 border-white shadow-sm cursor-pointer" 
-                    alt="Profile"
-                />
-            </div>
-        </div>
+        {!['settings', 'preferences', 'billing', 'personal'].includes(activeView) && (
+          <div className="lg:hidden absolute top-0 left-0 w-full h-12 flex items-center justify-between px-4 bg-white/80 dark:bg-gray-950/80 backdrop-blur-md border-b border-stone-200/60 dark:border-stone-800/60 z-30">
+              <div className="flex items-center gap-3 text-gray-900 dark:text-white">
+                   <button 
+                      type="button"
+                      onClick={() => setIsMobileMenuOpen(true)} 
+                      className="p-2 -ml-2 text-gray-800 dark:text-gray-100 hover:text-black dark:hover:text-white active:scale-95 transition-transform duration-100 rounded-xl cursor-pointer flex items-center justify-center select-none focus:outline-none"
+                      title="Open App Drawer"
+                      aria-label="Open App Drawer"
+                   >
+                       <Menu size={24} />
+                   </button>
+                   <div 
+                      className="flex items-center gap-2 cursor-pointer active:scale-95 transition-transform" 
+                      onClick={(e) => handleNavigation('dashboard', e)}
+                   >
+                      <BrandLogo size="sm" className="h-4.5 sm:h-5" />
+                   </div>
+              </div>
+              <div className="flex items-center gap-2">
+                  <button 
+                      onClick={() => setIsCameraScannerOpen(true)}
+                      className="p-2 text-gray-600 hover:bg-black/5 rounded-full transition-colors"
+                  >
+                      <ScanLine size={22} />
+                  </button>
+                  <motion.img 
+                      whileHover={{ scale: 1.1 }}
+                      whileTap={{ scale: 0.9 }}
+                      src={user?.avatarUrl || `https://ui-avatars.com/api/?name=${encodeURIComponent(user?.name || 'PaperX')}&background=059669&color=fff`} 
+                      onClick={(e) => {
+                          handleNavigation('settings', e);
+                      }}
+                      className="w-9 h-9 rounded-full border-2 border-white dark:border-stone-800 shadow-sm cursor-pointer object-cover" 
+                      alt="Profile"
+                  />
+              </div>
+          </div>
+        )}
 
         {/* View Content - Added no-scrollbar */}
-        <div id="main-scroll-container" className="flex-1 overflow-y-auto overflow-x-hidden relative no-scrollbar w-full max-w-full pt-12 lg:pt-0">
-          <AnimatePresence mode="wait">
-             {activeView === 'dashboard' && (
-                 <motion.div
-                    key="dashboard"
-                    initial={{ opacity: 0, x: 10 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    exit={{ opacity: 0, x: -10 }}
-                    transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
-                 >
-                    <DashboardView 
-      searchQuery={searchQuery}
-      setSearchQuery={setSearchQuery}
-      user={user}
-      handleDirectAppDownload={handleDirectAppDownload}
-      setIsCameraScannerOpen={setIsCameraScannerOpen}
-      setProfileInitialTab={setProfileInitialTab}
-      setIsProfileOpen={setIsProfileOpen}
-      handleToolClick={handleToolClick}
-      isToolLocked={isToolLocked}
-      navigate={navigate}
-      storedFiles={storedFiles}
-      handleDownloadStoredFile={handleDownloadStoredFile}
-      handleShareStoredFile={handleShareStoredFile}
-      t={t}
-      getGreeting={getGreeting}
-      QuickActions={QuickActions}
- />
-                 </motion.div>
-             )}
-             
-             {activeView === 'documents' && (
-                 <motion.div
-                    key="documents"
-                    initial={{ opacity: 0, x: 10 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    exit={{ opacity: 0, x: -10 }}
-                    transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
-                    className="p-6 md:p-10"
-                 >
-                    <DocumentsView 
-                        files={storedFiles} 
-                        onDownload={handleDownloadStoredFile} 
-                        onDelete={handleDeleteStoredFile} 
-                        onOpen={handleOpenFilePreview} 
-                        onShare={handleShareStoredFile}
-                        onNavigateToRecent={() => navigate('/recent')}
-                    />
-                 </motion.div>
-             )}
-             
-             {activeView === 'recent' && (
-                 <motion.div
-                    key="recent"
-                    initial={{ opacity: 0, x: 10 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    exit={{ opacity: 0, x: -10 }}
-                    transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
-                    className="p-6 md:p-10"
-                 >
-                    <DocumentsView 
-                        filter="recent" 
-                        files={storedFiles} 
-                        onDownload={handleDownloadStoredFile} 
-                        onDelete={handleDeleteStoredFile} 
-                        onOpen={handleOpenFilePreview} 
-                        onShare={handleShareStoredFile}
-                        onNavigateToDocuments={() => navigate('/documents')}
-                    />
-                 </motion.div>
-             )}
-             
-             {activeView === 'upgrade' && (
-                 <motion.div
-                    key="upgrade"
-                    initial={{ opacity: 0, x: 10 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    exit={{ opacity: 0, x: -10 }}
-                    transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
-                    className="p-6 md:p-10"
-                 >
-                    <UpgradeView 
-                        onUpgrade={handleInitiatePayment} 
-                        onSwitchPlan={handleSwitchPlanMode}
-                        user={user}
-                        currentPlan={user?.plan} 
-                        isExpired={isPlanExpired(user)} 
-                        orders={appOrders}
-                    />
-                 </motion.div>
-             )}
-             
-             {activeView === 'whats-new' && (
-                 <motion.div
-                    key="whats-new"
-                    initial={{ opacity: 0, x: 10 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    exit={{ opacity: 0, x: -10 }}
-                    transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
-                    className="p-6 md:p-10"
-                 >
-                    <WhatsNewView />
-                 </motion.div>
-             )}
-             
-             {activeView === 'download' && (
-                 <motion.div
-                    key="download"
-                    initial={{ opacity: 0, x: 10 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    exit={{ opacity: 0, x: -10 }}
-                    transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
-                 >
-                    <DownloadAppView navigate={navigate} />
-                 </motion.div>
-             )}
-             
-             {activeView === 'support' && (
-                 <motion.div
-                    key="support"
-                    initial={{ opacity: 0, x: 10 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    exit={{ opacity: 0, x: -10 }}
-                    transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
-                    className="p-6 md:p-10"
-                 >
-                    <SupportView onStartChat={() => setIsSupportChatOpen(true)} />
-                 </motion.div>
-             )}
+        <div id="main-scroll-container" className={`flex-1 overflow-y-auto overflow-x-hidden relative no-scrollbar w-full max-w-full lg:pt-0 ${['settings', 'preferences', 'billing', 'personal'].includes(activeView) ? 'pt-0' : 'pt-12'}`}>
+           <div
+             key={activeView === 'payments' ? 'payment-history' : (activeView === 'tool' ? `tool-${activeToolId}` : activeView)}
+             className="w-full h-full animate-gpu-blur-in"
+           >
+              {(activeView === 'dashboard' || !['documents', 'recent', 'upgrade', 'whats-new', 'download', 'support', 'payment-history', 'payments', 'tool', 'settings', 'preferences', 'billing', 'personal'].includes(activeView)) && (
+                 <DashboardView 
+                   searchQuery={searchQuery}
+                   setSearchQuery={setSearchQuery}
+                   user={user}
+                   handleDirectAppDownload={handleDirectAppDownload}
+                   setIsCameraScannerOpen={setIsCameraScannerOpen}
+                   setProfileInitialTab={setProfileInitialTab}
+                   setIsProfileOpen={setIsProfileOpen}
+                   handleToolClick={handleToolClick}
+                   isToolLocked={isToolLocked}
+                   navigate={navigate}
+                   storedFiles={storedFiles}
+                   handleDownloadStoredFile={handleDownloadStoredFile}
+                   handleShareStoredFile={handleShareStoredFile}
+                   t={t}
+                   getGreeting={getGreeting}
+                   handleFilesSelected={handleFilesSelected}
+                   guestTrialsUsed={guestTrialsUsed}
+                 />
+              )}
 
-             {(activeView === 'payment-history' || activeView === 'payments') && (
-                 <motion.div
-                    key="payment-history"
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    exit={{ opacity: 0 }}
-                    transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
-                    className="w-full min-w-full overflow-x-hidden p-2 sm:p-6 md:p-8 flex justify-center"
-                 >
-                    <PaymentHistoryView 
-                       user={user}
-                       onUpgrade={(plan, amount, cycle, upgradeFromId, oldAmount) => handleInitiatePayment(plan, amount ? String(amount) : undefined, cycle, undefined, upgradeFromId, oldAmount)}
-                       onResubmitPayment={(order) => handleInitiatePayment(order.plan as any, String(order.amount), order.billingCycle as any, order.orderId || order.id)}
-                       onOpenBilling={() => {
-                           setProfileInitialTab('billing');
-                           setIsProfileOpen(true);
-                       }}
-                       onOpenSupport={() => setIsSupportChatOpen(true)}
-                        onRefundDowngrade={() => {
-                            setUser(prev => prev ? ({
-                                ...prev,
-                                plan: 'Basic Plan',
-                                purchasedPlan: 'Basic Plan',
-                                activePlanMode: 'Basic Plan',
-                                isPro: false,
-                                isRefunded: true,
-                                membershipTier: 'free',
-                                billingCycle: 'month',
-                                planExpiresAt: prev.basicPlanExpiresAt || undefined,
-                                maxProjects: 5
-                            }) : null);
-                            if (user?.uid) {
-                                updateUserInFirestore(user.uid, {
-                                    plan: 'Basic Plan',
-                                    purchasedPlan: 'Basic Plan',
-                                    activePlanMode: 'Basic Plan',
-                                    isPro: false,
-                                    isRefunded: true,
-                                    membershipTier: 'free',
-                                    billingCycle: 'month',
-                                    planExpiresAt: (user.basicPlanExpiresAt || null) as any,
-                                    maxProjects: 5,
-                                    updatedAt: new Date().toISOString()
-                                });
-                            }
-                        }}
+              {['settings', 'preferences', 'billing', 'personal'].includes(activeView) && (
+                 <div className="w-full h-full flex flex-col">
+                    <ProfilePanel 
+                      isOpen={true} 
+                      inline={true}
+                      onClose={() => handleNavigation('dashboard')} 
+                      user={user}
+                      onLogout={handleLogout}
+                      onUpgrade={handleInitiatePayment}
+                      onSwitchPlan={handleSwitchPlanMode}
+                      initialTab={activeView === 'settings' ? 'preferences' : (activeView as any)}
+                      onSupportClick={() => handleNavigation('support')}
+                      onOpenAdmin={() => setIsAdminOpen(true)}
+                    />
+                 </div>
+              )}
+              
+              {activeView === 'documents' && (
+                  <div className="p-6 md:p-10">
+                     <DocumentsView 
+                         files={storedFiles} 
+                         onDownload={handleDownloadStoredFile} 
+                         onDelete={handleDeleteStoredFile} 
+                         onOpen={handleOpenFilePreview} 
+                         onShare={handleShareStoredFile}
+                         onNavigateToRecent={() => navigate('/recent')}
                      />
-                 </motion.div>
-             )}
-             
-             {/* Tool View */}
-             {activeView === 'tool' && activeToolId && (
-                 <motion.div 
-                    key={`tool-${activeToolId}`}
-                    initial={{ opacity: 0, scale: 0.98 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    exit={{ opacity: 0, scale: 0.98 }}
-                    transition={{ duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
-                    className="h-full flex flex-col"
-                 >
-                      <div className="border-b border-white/20 bg-white/10 backdrop-blur-2xl px-6 py-4 flex items-center gap-4 z-10 shadow-[0_8px_32px_rgba(0,0,0,0.05)]">
-                          <button 
-                            onClick={() => { navigate('/dashboard'); }}
-                            className="p-2 hover:bg-gray-100 rounded-full transition-colors"
-                          >
-                              <ArrowLeft size={20} />
-                          </button>
-                          <div>
-                              <h2 className="text-lg font-heading font-black tracking-tighter flex items-center gap-2">
-                                 {TOOLS.find(t => t.id === activeToolId)?.name}
-                              </h2>
-                          </div>
-                      </div>
-                      
-                      {/* New Features List */}
-                      <div className="mt-8 flex flex-wrap gap-4 text-sm text-stone-600 font-medium px-8">
-                          <div className="flex items-center gap-2">
-                              <div className="w-2 h-2 rounded-full bg-emerald-500" />
-                              Fast PDF Conversion
-                          </div>
-                          <div className="flex items-center gap-2">
-                              <div className="w-2 h-2 rounded-full bg-emerald-500" />
-                              Secure & Private
-                          </div>
-                          <div className="flex items-center gap-2">
-                              <div className="w-2 h-2 rounded-full bg-emerald-500" />
-                              Professional Tools
-                          </div>
-                      </div>
-                      
-                      {/* Render specific workspace based on tool type */}
-                      <div className="flex-1 overflow-y-auto p-6 md:p-8 bg-gray-50/30">
-                          <AnimatePresence mode="wait">
-                            <motion.div
-                                key={activeToolId || 'empty'}
-                                initial={{ opacity: 0, scale: 0.98, y: 10 }}
-                                animate={{ opacity: 1, scale: 1, y: 0 }}
-                                exit={{ opacity: 0, scale: 0.98, y: -10 }}
-                                transition={{ duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
-                                className="w-full h-full"
-                            >
-                                {activeToolId === 'voice-to-pdf' ? (
-                                    <VoiceWorkspace onComplete={handleProcessedFile} />
-                                ) : [
-                                    'create-document',
-                                    'create-pdf',
-                                    'text-to-pdf',
-                                    'resume-builder',
-                                    'letter-templates',
-                                    'invoice-creator',
-                                    'certificate-creator',
-                                    'form-creator',
-                                    'summarize-pdf',
-                                    'rewrite-pdf',
-                                    'translate-pdf'
-                                ].includes(activeToolId || '') ? (
-                                    <TextWorkspace toolId={activeToolId} socket={socket} docId="demo-doc" onComplete={handleProcessedFile} />
-                                ) : (
-                                    // Generic File Upload Workspace for other tools
-                                    <div className="max-w-4xl mx-auto space-y-8">
-                                        {(activeToolId === 'camera-scanner' || activeToolId === 'batch-scanner' || activeToolId === 'scan-pdf' || activeToolId === 'auto-edge-detect') && (
-                                            <div className="bg-gradient-to-r from-amber-500/10 via-yellow-500/10 to-orange-500/10 border border-yellow-500/20 rounded-3xl p-6 flex flex-col sm:flex-row items-center justify-between gap-4">
-                                                <div className="flex items-center gap-4">
-                                                    <div className="w-12 h-12 rounded-2xl bg-yellow-500/20 text-yellow-600 dark:text-yellow-400 flex items-center justify-center shrink-0">
-                                                        <ScanLine size={24} />
-                                                    </div>
-                                                    <div>
-                                                        <h3 className="font-bold text-base text-gray-900 dark:text-white">Live Scanner & Auto Edge Detection</h3>
-                                                        <p className="text-xs text-gray-500 dark:text-gray-400">Scan pages in real-time with camera or import saved photos to deskew and auto-crop.</p>
-                                                    </div>
-                                                </div>
-                                                <Button 
-                                                    onClick={() => setIsCameraScannerOpen(true)}
-                                                    className="bg-yellow-400 hover:bg-yellow-300 text-black font-black text-xs px-5 py-3 rounded-2xl shadow-lg shrink-0"
-                                                >
-                                                    <ScanLine size={16} className="mr-2" /> Open Scanner
-                                                </Button>
-                                            </div>
-                                        )}
-                                        <FileUpload 
-                                            files={files}
-                                            onFilesSelected={handleFilesSelected}
-                                            onRemoveFile={handleRemoveFile}
-                                            onCancelFile={handleCancelFile}
-                                            onCancelBatch={handleCancelBatch}
-                                            toolId={activeToolId}
-                                        />
-                                        
-                                        {files.length > 0 && (
-                                            <div className="flex justify-end pt-4">
-                                                <Button 
-                                                    size="sm" 
-                                                    onClick={handleGenericFileProcess}
-                                                    isLoading={isProcessing}
-                                                    disabled={files.some(f => f.status === 'uploading' || f.status === 'cancelled')}
-                                                    className="shadow-xl shadow-black/10 font-semibold"
-                                                >
-                                                    {isProcessing ? processingStatus : `Process ${files.filter(f => f.status !== 'cancelled').length} Files`} <ArrowRight size={18} className="ml-3" />
-                                                </Button>
-                                            </div>
-                                        )}
-                                    </div>
-                                )}
-                            </motion.div>
-                          </AnimatePresence>
-                      </div>
-                 </motion.div>
-             )}
-          </AnimatePresence>
+                  </div>
+              )}
+              
+              {activeView === 'recent' && (
+                  <div className="p-6 md:p-10">
+                     <DocumentsView 
+                         filter="recent" 
+                         files={storedFiles} 
+                         onDownload={handleDownloadStoredFile} 
+                         onDelete={handleDeleteStoredFile} 
+                         onOpen={handleOpenFilePreview} 
+                         onShare={handleShareStoredFile}
+                         onNavigateToDocuments={() => navigate('/documents')}
+                     />
+                  </div>
+              )}
+              
+              {activeView === 'upgrade' && (
+                  <div className="p-6 md:p-10">
+                     <UpgradeView 
+                         onUpgrade={handleInitiatePayment} 
+                         onSwitchPlan={handleSwitchPlanMode}
+                         user={user}
+                         currentPlan={activeUserPlan} 
+                         isExpired={isPlanExpired(user)} 
+                         orders={appOrders}
+                     />
+                  </div>
+              )}
+              
+              {activeView === 'whats-new' && (
+                  <div className="p-6 md:p-10">
+                     <WhatsNewView />
+                  </div>
+              )}
+              
+              {activeView === 'download' && (
+                  <div className="w-full flex justify-center items-center">
+                     <DownloadAppView navigate={navigate} />
+                  </div>
+              )}
+              
+              {activeView === 'support' && (
+                  <div className="p-6 md:p-10 pb-5 md:pb-7">
+                     <SupportView onStartChat={() => setIsSupportChatOpen(true)} />
+                  </div>
+              )}
+
+              {(activeView === 'payment-history' || activeView === 'payments') && (
+                  <div className="w-full min-w-full overflow-x-hidden p-2 sm:p-6 md:p-8 flex justify-center">
+                     <PaymentHistoryView 
+                        user={user}
+                        onUpgrade={(plan, amount, cycle, upgradeFromId, oldAmount) => handleInitiatePayment(plan, amount ? String(amount) : undefined, cycle, undefined, upgradeFromId, oldAmount)}
+                        onResubmitPayment={(order) => handleInitiatePayment(order.plan as any, String(order.amount), order.billingCycle as any, order.orderId || order.id)}
+                        onOpenBilling={() => {
+                            setProfileInitialTab('billing');
+                            setIsProfileOpen(true);
+                        }}
+                        onOpenSupport={() => setIsSupportChatOpen(true)}
+                         onRefundDowngrade={() => {
+                             setUser(prev => prev ? ({
+                                 ...prev,
+                                 plan: 'Basic Plan',
+                                 purchasedPlan: 'Basic Plan',
+                                 activePlanMode: 'Basic Plan',
+                                 isPro: false,
+                                 isRefunded: true,
+                                 membershipTier: 'free',
+                                 billingCycle: 'month',
+                                 planExpiresAt: prev.basicPlanExpiresAt || undefined,
+                                 maxProjects: 5
+                             }) : null);
+                             if (user?.uid) {
+                                 updateUserInFirestore(user.uid, {
+                                     plan: 'Basic Plan',
+                                     purchasedPlan: 'Basic Plan',
+                                     activePlanMode: 'Basic Plan',
+                                     isPro: false,
+                                     isRefunded: true,
+                                     membershipTier: 'free',
+                                     billingCycle: 'month',
+                                     planExpiresAt: (user.basicPlanExpiresAt || null) as any,
+                                     maxProjects: 5,
+                                     updatedAt: new Date().toISOString()
+                                 });
+                             }
+                         }}
+                      />
+                  </div>
+              )}
+              
+              {/* Tool View */}
+              {activeView === 'tool' && activeToolId && (
+                  <div className="h-full flex flex-col">
+                       <div className="border-b border-white/20 bg-white/10 px-6 py-4 flex items-center gap-4 z-10 shadow-[0_8px_32px_rgba(0,0,0,0.05)]">
+                           <button 
+                             onClick={() => { navigate('/dashboard'); }}
+                             className="p-2 hover:bg-gray-100 rounded-full transition-colors"
+                           >
+                               <ArrowLeft size={20} />
+                           </button>
+                           <div className="flex items-center gap-3">
+                               <AnimatedToolIcon toolId={activeToolId} size={32} className="w-8 h-8 shrink-0" />
+                               <h2 className="text-lg font-heading font-black tracking-tighter flex items-center gap-2">
+                                   {TOOLS.find(t => t.id === activeToolId) ? translateTool(TOOLS.find(t => t.id === activeToolId)!, currentLanguage).name : activeToolId}
+                               </h2>
+                           </div>
+                       </div>
+                       
+                       {/* Render specific workspace based on tool type */}
+                       <div className="flex-1 overflow-y-auto p-6 md:p-8 bg-gray-50/30">
+                           <AnimatePresence mode="wait">
+                             <motion.div
+                                 key={activeToolId || 'empty'}
+                                 initial={{ opacity: 0, scale: 0.98, y: 10 }}
+                                 animate={{ opacity: 1, scale: 1, y: 0 }}
+                                 exit={{ opacity: 0, scale: 0.98, y: -10 }}
+                                 transition={{ duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
+                                 className="w-full h-full"
+                             >
+                                {renderToolWorkspaceContent()}
+                             </motion.div>
+                           </AnimatePresence>
+                       </div>
+                  </div>
+              )}
+           </div>
         </div>
       </main>
     </div>
@@ -6066,9 +7109,9 @@ const App: React.FC = () => {
       isOpen={isProfileOpen && !isPaymentOpen} 
       onClose={() => {
           setIsProfileOpen(false);
-          // Fix: Navigate back to dashboard if we are on a profile route to reset hash
-          // This ensures clicking 'Preferences' again works correctly
-          if (window.location.hash.includes('settings') || window.location.hash.includes('billing') || window.location.hash.includes('preferences') || window.location.hash.includes('personal')) {
+          setActiveView(prev => (['preferences', 'settings', 'billing', 'personal'].includes(prev) ? 'dashboard' : prev));
+          const currentPath = getNormalizedPath();
+          if (['settings', 'billing', 'preferences', 'personal'].some(p => currentPath.includes(p)) || window.location.hash.includes('settings') || window.location.hash.includes('billing') || window.location.hash.includes('preferences') || window.location.hash.includes('personal')) {
               navigate('/dashboard');
           }
       }} 
@@ -6083,9 +7126,85 @@ const App: React.FC = () => {
 
     {/* Admin Panel Modal for Authorized Admins */}
     {isAdminOpen && (
-      <div className="fixed inset-0 z-50 overflow-y-auto bg-black/80 backdrop-blur-md flex items-center justify-center p-2 sm:p-4">
+      <div className="fixed inset-0 z-50 overflow-y-auto bg-black/80 flex items-center justify-center p-2 sm:p-4">
         <div className="w-full max-w-7xl h-[92vh] bg-stone-950 border border-stone-800 rounded-3xl overflow-hidden shadow-2xl relative flex flex-col">
           <AdminPanel onClose={() => setIsAdminOpen(false)} />
+        </div>
+      </div>
+    )}
+
+    {/* Quick Feature Shortcuts Launcher Modal */}
+    {shortcutModalCategory && (
+      <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-md flex items-center justify-center p-4 animate-in fade-in duration-200">
+        <div className="bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-800 rounded-3xl max-w-3xl w-full max-h-[85vh] flex flex-col shadow-2xl overflow-hidden">
+          {/* Modal Header */}
+          <div className="p-5 border-b border-stone-200 dark:border-stone-800 flex items-center justify-between shrink-0">
+            {(() => {
+              const catDef = FEATURE_SHORTCUT_CATEGORIES.find(c => c.id === shortcutModalCategory) || FEATURE_SHORTCUT_CATEGORIES[0];
+              const CatIcon = catDef.icon;
+              const catTools = TOOLS.filter(t => t.category === shortcutModalCategory);
+
+              return (
+                <div className="flex items-center gap-3">
+                  <div className={`p-2.5 rounded-2xl ${catDef.badgeColor}`}>
+                    <CatIcon size={22} className={catDef.iconColor} />
+                  </div>
+                  <div>
+                    <h3 className="text-xl font-black text-stone-900 dark:text-white tracking-tight flex items-center gap-2">
+                      {catDef.name}
+                      <span className="text-xs font-bold px-2.5 py-0.5 rounded-full bg-stone-100 dark:bg-stone-800 text-stone-600 dark:text-stone-300">
+                        {catTools.length} Features
+                      </span>
+                    </h3>
+                    <p className="text-xs text-stone-500 dark:text-stone-400 font-medium">
+                      Select any feature shortcut below to launch the workspace immediately.
+                    </p>
+                  </div>
+                </div>
+              );
+            })()}
+
+            <button
+              type="button"
+              onClick={() => setShortcutModalCategory(null)}
+              className="p-2 rounded-xl text-stone-400 hover:text-stone-900 dark:hover:text-white hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors cursor-pointer"
+            >
+              <X size={20} />
+            </button>
+          </div>
+
+          {/* Feature Grid */}
+          <div className="p-6 overflow-y-auto no-scrollbar grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3.5 flex-1">
+            {TOOLS.filter(t => t.category === shortcutModalCategory).map((tool) => (
+              <motion.div
+                key={tool.id}
+                whileHover={{ scale: 1.02, y: -2 }}
+                whileTap={{ scale: 0.98 }}
+                onClick={(e) => openToolShortcut(tool.id, e)}
+                className="p-4 bg-stone-50 dark:bg-stone-800/60 hover:bg-stone-100 dark:hover:bg-stone-800 border border-stone-200/80 dark:border-stone-700/80 rounded-2xl cursor-pointer transition-all flex flex-col justify-between group shadow-2xs hover:shadow-md"
+              >
+                <div>
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="w-10 h-10 flex items-center justify-center rounded-xl bg-white dark:bg-stone-900 shadow-2xs border border-stone-200/60 dark:border-stone-700/60">
+                      <AnimatedToolIcon toolId={tool.id} fallbackIcon={tool.icon || FileText} size={28} className="w-7 h-7" />
+                    </div>
+                  </div>
+
+                  <h4 className="text-sm font-bold text-stone-900 dark:text-white tracking-tight mb-1 group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors">
+                    {tool.name}
+                  </h4>
+                  <p className="text-xs text-stone-500 dark:text-stone-400 line-clamp-2 font-medium leading-relaxed">
+                    {tool.description}
+                  </p>
+                </div>
+
+                <div className="mt-3 pt-3 border-t border-stone-200/50 dark:border-stone-700/50 flex items-center justify-between text-xs font-bold text-indigo-600 dark:text-indigo-400">
+                  <span>Launch Feature</span>
+                  <ArrowRight size={14} className="group-hover:translate-x-1 transition-transform" />
+                </div>
+              </motion.div>
+            ))}
+          </div>
         </div>
       </div>
     )}
@@ -6121,6 +7240,9 @@ const App: React.FC = () => {
         )}
       </AnimatePresence>
       
+      {/* 1-Hour Violation App Suspension Overlay */}
+      <AppBanOverlay user={user} onLogout={handleLogout} />
+
       {/* Professional Support Chat Overlay */}
       <SupportChat 
         isOpen={isSupportChatOpen} 
@@ -6130,28 +7252,31 @@ const App: React.FC = () => {
       />
 
       {/* Floating Support Quick Button (Only displayed when there is a current chat support session going on) */}
-      <AnimatePresence>
+      <AnimatePresence mode="wait">
         {user && !isSupportChatOpen && hasOngoingSupportChat && (
           <motion.button
             key="floating-ongoing-support-btn"
             id="floating-ongoing-support-btn"
-            initial={{ scale: 0, opacity: 0, y: 20 }}
+            initial={{ scale: 0.85, opacity: 0, y: 12 }}
             animate={{ scale: 1, opacity: 1, y: 0 }}
-            exit={{ scale: 0, opacity: 0, y: 20 }}
-            whileHover={{ scale: 1.06 }}
-            whileTap={{ scale: 0.94 }}
+            exit={{ scale: 0.88, opacity: 0, y: 10 }}
+            transition={{ type: 'spring', damping: 26, stiffness: 280, mass: 0.7 }}
+            whileHover={{ scale: 1.04 }}
+            whileTap={{ scale: 0.95 }}
             onClick={() => setIsSupportChatOpen(true)}
-            className="fixed bottom-6 right-6 z-40 flex items-center gap-2.5 px-4 py-3 bg-stone-900 dark:bg-white text-white dark:text-stone-900 rounded-full shadow-2xl hover:shadow-black/20 border border-stone-800 dark:border-stone-200 transition-all font-medium text-xs tracking-tight cursor-pointer"
+            className="fixed bottom-6 right-6 z-40 flex items-center justify-center gap-2.5 p-3.5 sm:px-4 sm:py-3 bg-gradient-to-b from-[#1e1f23] via-[#151618] to-[#0c0d0f] dark:from-white dark:via-stone-50 dark:to-stone-100 text-white dark:text-stone-950 rounded-full shadow-[0_16px_36px_-6px_rgba(0,0,0,0.5),0_6px_16px_rgba(16,185,129,0.25),inset_0_1.5px_1px_rgba(255,255,255,0.3)] dark:shadow-[0_16px_36px_-6px_rgba(0,0,0,0.18),0_6px_16px_rgba(16,185,129,0.2),inset_0_1.5px_1px_rgba(255,255,255,0.95)] border-t-2 border-t-white/35 dark:border-t-white border-b-[3.5px] border-b-black dark:border-b-stone-350 border-x border-white/10 dark:border-stone-200 font-heading font-black text-xs tracking-tight cursor-pointer select-none group will-change-transform"
             aria-label="Open Ongoing Live Support Chat"
           >
-            <div className="relative">
-              <Headset size={16} className="text-emerald-400 dark:text-emerald-600" />
+            <div className="relative flex items-center justify-center">
+              <Headset size={18} className="text-emerald-400 dark:text-emerald-600 drop-shadow-[0_1px_2px_rgba(0,0,0,0.4)] dark:drop-shadow-none group-hover:scale-105 transition-transform duration-200" />
               {hasUnreadSupport && (
-                <span className="absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full bg-red-500 ring-2 ring-white dark:ring-stone-950 animate-pulse" />
+                <span className="absolute -top-1.5 -right-1.5 w-2.5 h-2.5 rounded-full bg-rose-500 ring-2 ring-white dark:ring-stone-950 shadow-sm" />
               )}
             </div>
-            <span className="hidden sm:inline font-bold">Support in Progress</span>
-            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+            <span className="hidden sm:inline font-black text-xs tracking-tight">Support in Progress</span>
+            <span className="relative flex h-2 w-2">
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
+            </span>
           </motion.button>
         )}
       </AnimatePresence>

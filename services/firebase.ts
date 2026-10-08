@@ -15,7 +15,10 @@ import {
   browserLocalPersistence,
   browserSessionPersistence,
   indexedDBLocalPersistence,
-  User as FirebaseUser
+  User as FirebaseUser,
+  TotpMultiFactorGenerator,
+  multiFactor,
+  MultiFactorResolver
 } from 'firebase/auth';
 import {
   initializeFirestore,
@@ -38,7 +41,7 @@ import {
 import firebaseConfig from '../firebase-applet-config.json';
 import { User, UserSession } from '../types';
 import { UAParser } from 'ua-parser-js';
-
+import { checkPermanentSuspendedStatus } from '../src/utils/profanityFilter';
 // Standard Firebase Web Client Config
 const firebaseAppConfig = {
   apiKey: firebaseConfig.apiKey,
@@ -58,16 +61,8 @@ try {
 // Initialize Firebase App
 const app = !getApps().length ? initializeApp(firebaseAppConfig) : getApp();
 
-// Initialize Auth
+// Initialize Auth cleanly
 export const auth = getAuth(app);
-
-// Apply initial session persistence setting (Auto-Restore Session preference)
-try {
-  if (typeof window !== 'undefined') {
-    const isAutoRestore = localStorage.getItem('pref_autoRestoreSession') !== 'false';
-    setPersistence(auth, isAutoRestore ? browserLocalPersistence : browserSessionPersistence).catch(() => {});
-  }
-} catch (_) {}
 
 // Initialize Firestore with long-polling resilience across Node.js & browser environments
 const dbId = firebaseConfig.firestoreDatabaseId && firebaseConfig.firestoreDatabaseId !== '(default)'
@@ -91,6 +86,52 @@ export const db = firestoreInstance;
 // Providers
 export const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: 'select_account' });
+
+// Dedicated Google Drive Provider with least-privilege picker scopes
+export const driveGoogleProvider = new GoogleAuthProvider();
+driveGoogleProvider.addScope('https://www.googleapis.com/auth/drive.file');
+driveGoogleProvider.addScope('https://www.googleapis.com/auth/drive.metadata.readonly');
+driveGoogleProvider.setCustomParameters({ prompt: 'select_account' });
+
+// In-memory token cache for Google Drive access (never persisted to localStorage/sessionStorage)
+let cachedGoogleDriveToken: string | null = null;
+
+export const getCachedGoogleDriveToken = (): string | null => cachedGoogleDriveToken;
+export const setCachedGoogleDriveToken = (token: string | null) => {
+  cachedGoogleDriveToken = token;
+};
+
+export const getOrRequestGoogleDriveToken = async (): Promise<string> => {
+  if (cachedGoogleDriveToken) {
+    try {
+      const testRes = await fetch('https://www.googleapis.com/drive/v3/about?fields=user', {
+        headers: { Authorization: `Bearer ${cachedGoogleDriveToken}` }
+      });
+      if (testRes.ok) {
+        return cachedGoogleDriveToken;
+      }
+    } catch (_) {}
+  }
+
+  try {
+    const result = await signInWithPopup(auth, driveGoogleProvider);
+    const credential = GoogleAuthProvider.credentialFromResult(result);
+    if (!credential?.accessToken) {
+      throw new Error('Failed to retrieve access token from Google Drive authorization.');
+    }
+    cachedGoogleDriveToken = credential.accessToken;
+    return cachedGoogleDriveToken;
+  } catch (err: any) {
+    if (
+      err?.code === 'auth/popup-closed-by-user' ||
+      err?.code === 'auth/cancelled-popup-request' ||
+      err?.message?.includes('closed')
+    ) {
+      throw new Error('Google Drive authorization was cancelled.');
+    }
+    throw err;
+  }
+};
 
 /**
  * Strict and helpful email format validator.
@@ -160,6 +201,10 @@ export const getAuthErrorMessage = (error: any, provider?: 'email' | 'google'): 
     return 'Device limit exceeded! You can only be logged into a maximum of 5 devices simultaneously. Please log out from another device to continue.';
   }
 
+  if (msg.includes('ACCOUNT_PERMANENTLY_DELETED')) {
+    return 'This account was permanently deleted in accordance with your GDPR Right to Erasure request after the 10-day period expired.';
+  }
+
   if (
     msg.includes('Pending promise was never set') ||
     msg.includes('INTERNAL ASSERTION FAILED') ||
@@ -181,8 +226,7 @@ export const getAuthErrorMessage = (error: any, provider?: 'email' | 'google'): 
     return `This sign-in provider is not enabled in Firebase project "${firebaseConfig.projectId}". Please enable Email/Password or Google in Firebase Console > Authentication > Sign-in method.`;
   }
   if (code === 'auth/unauthorized-domain' || msg.includes('unauthorized-domain')) {
-    const currentDomain = typeof window !== 'undefined' ? window.location.hostname : 'this domain';
-    return `This domain ("${currentDomain}") is not in the authorized domains list for project "${firebaseConfig.projectId}". Please add "${currentDomain}" in Firebase Console > Authentication > Settings > Authorized Domains.`;
+    return `This app domain is not in the authorized domains list for project "${firebaseConfig.projectId}". Please add this domain in Firebase Console > Authentication > Settings > Authorized Domains.`;
   }
 
   switch (code) {
@@ -208,6 +252,8 @@ export const getAuthErrorMessage = (error: any, provider?: 'email' | 'google'): 
       return 'This user account has been disabled.';
     case 'auth/internal-error':
       return 'An internal authentication error occurred. Please ensure Apple and Google providers are correctly configured in Firebase Console.';
+    case 'auth/argument-error':
+      return 'Please check your inputs and try again.';
     default:
       return error.message || 'Authentication failed. Please try again.';
   }
@@ -222,7 +268,7 @@ export const getAuthErrorMessage = (error: any, provider?: 'email' | 'google'): 
 export const checkAndHandlePlanExpiry = (user: User): { isExpired: boolean; user: User } => {
   if (!user) return { isExpired: false, user };
 
-  const isPaidPlan = user.plan === 'Plus Plan' || user.plan === 'Max Plan' || 
+  const isPaidPlan = user.plan === 'Pro Plan' || user.plan === 'Max Plan' || 
     (typeof user.plan === 'string' && (user.plan.toLowerCase().includes('plus') || user.plan.toLowerCase().includes('max') || user.plan.toLowerCase().includes('pro')));
   
   if (!isPaidPlan) {
@@ -238,7 +284,7 @@ export const checkAndHandlePlanExpiry = (user: User): { isExpired: boolean; user
     // Membership has expired!
     const expiredUser: User = {
       ...user,
-      previousPlan: (user.plan as any) || 'Plus Plan',
+      previousPlan: (user.plan as any) || 'Pro Plan',
       plan: 'Basic Plan',
       subscriptionStatus: 'expired',
       isPro: false,
@@ -307,89 +353,166 @@ export const syncUserProfile = async (
     maxProjects: 5
   };
 
-  // Try retrieving cached profile first for speed
+  let existing: User | null = null;
   try {
-    const cachedSnap = await getDocFromCache(userRef);
-    if (cachedSnap.exists()) {
-      const existing = cachedSnap.data() as User;
-      
-      let bestAvatarUrl = avatarUrl;
-      if (existing.avatarUrl && !existing.avatarUrl.includes('ui-avatars.com')) {
-          bestAvatarUrl = existing.avatarUrl;
-      }
-      if (firebaseUser.photoURL) {
-          bestAvatarUrl = firebaseUser.photoURL;
-      }
-
-      const cachedProfile: User = {
-        ...initialProfile,
-        ...existing,
-        id: firebaseUser.uid,
-        uid: firebaseUser.uid,
-        email: firebaseUser.email || existing.email || initialProfile.email,
-        name: existing.name || fallbackName,
-        avatarUrl: bestAvatarUrl,
-        plan: existing.plan || 'Basic Plan',
-        planExpiresAt: existing.planExpiresAt,
-        billingCycle: existing.billingCycle,
-        subscriptionStatus: existing.subscriptionStatus || 'free',
-        previousPlan: existing.previousPlan,
-        isPro: existing.isPro || false,
-        memberSince: existing.memberSince || memberSinceDate,
-        projectsUsed: typeof existing.projectsUsed === 'number' ? existing.projectsUsed : 0,
-        maxProjects: typeof existing.maxProjects === 'number' ? existing.maxProjects : 5
-      };
-
-      const { user: checkedProfile } = checkAndHandlePlanExpiry(cachedProfile);
-      return checkedProfile;
+    const snap = await getDoc(userRef);
+    if (snap.exists()) {
+      existing = snap.data() as User;
     }
   } catch (_) {
-    // Cache miss, proceed
+    try {
+      const cachedSnap = await getDocFromCache(userRef);
+      if (cachedSnap.exists()) {
+        existing = cachedSnap.data() as User;
+      }
+    } catch (_) {}
   }
 
-  // Asynchronously ensure document exists in Firestore without delaying authentication/UI
-  (async () => {
-    try {
-      const snap = await getDoc(userRef);
-      if (snap.exists()) {
-        const existing = snap.data() as User;
-        
-        let bestAvatarUrl = avatarUrl;
-        if (existing.avatarUrl && !existing.avatarUrl.includes('ui-avatars.com')) {
-            bestAvatarUrl = existing.avatarUrl;
-        }
-        if (firebaseUser.photoURL) {
-            bestAvatarUrl = firebaseUser.photoURL;
-        }
+  // Handle 10-day GDPR data erasure policy
+  if (existing?.dataErasureRequested) {
+    const now = Date.now();
+    const scheduledTime = existing.dataErasureScheduledUntil
+      ? new Date(existing.dataErasureScheduledUntil).getTime()
+      : (existing.dataErasureScheduledAt ? new Date(existing.dataErasureScheduledAt).getTime() + 10 * 24 * 60 * 60 * 1000 : 0);
 
-        const merged: User = {
-          ...initialProfile,
-          ...existing,
-          avatarUrl: bestAvatarUrl,
-          forceLogout: false,
-          forceReLogin: false,
-          updatedAt: new Date().toISOString()
-        };
-
-        const { user: checkedMerged } = checkAndHandlePlanExpiry(merged);
-
-        await setDoc(userRef, checkedMerged, { merge: true });
-      } else {
-        await setDoc(userRef, {
-          ...initialProfile,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString()
-        }, { merge: true });
+    if (scheduledTime > 0 && now >= scheduledTime) {
+      // 10 DAYS EXPIRED: Permanently purge account!
+      console.log('10 days passed since erasure request. Purging account permanently...');
+      try {
+        const docsSnap = await getDocs(collection(db, 'users', firebaseUser.uid, 'documents'));
+        await Promise.all(docsSnap.docs.map(d => deleteDoc(doc(db, 'users', firebaseUser.uid, 'documents', d.id))));
+      } catch (e) {
+        console.warn('Document purge error:', e);
       }
-    } catch (err) {
-      console.warn('Background Firestore profile sync:', err);
-      setDoc(userRef, {
-        ...initialProfile,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
-      }, { merge: true }).catch(e => console.warn('Background setDoc notice:', e));
+      try {
+        const sessSnap = await getDocs(collection(db, 'users', firebaseUser.uid, 'sessions'));
+        await Promise.all(sessSnap.docs.map(s => deleteDoc(doc(db, 'users', firebaseUser.uid, 'sessions', s.id))));
+      } catch (e) {
+        console.warn('Session purge error:', e);
+      }
+      try {
+        await deleteDoc(userRef);
+      } catch (e) {
+        console.warn('User doc purge error:', e);
+      }
+      await auth.signOut();
+      throw new Error('ACCOUNT_PERMANENTLY_DELETED');
+    } else {
+      // User logged in BEFORE 10 days: automatically cancel data erasure and preserve everything!
+      console.log('User logged in before 10-day deadline. Cancelling data erasure request and restoring account...');
+      existing.dataErasureRequested = false;
+      existing.dataErasureScheduledAt = undefined;
+      existing.dataErasureScheduledUntil = undefined;
+      existing.dataErasureCancelledAt = new Date().toISOString();
+
+      try {
+        await setDoc(userRef, {
+          dataErasureRequested: false,
+          dataErasureScheduledAt: null,
+          dataErasureScheduledUntil: null,
+          dataErasureCancelledAt: new Date().toISOString()
+        }, { merge: true });
+      } catch (err) {
+        console.warn('Failed to persist erasure cancellation to Firestore:', err);
+      }
+
+      try {
+        sessionStorage.setItem('paperx_erasure_restored_notice', 'true');
+      } catch (_) {}
     }
-  })();
+  }
+
+  if (existing) {
+    let bestAvatarUrl = avatarUrl;
+    if (existing.avatarUrl && !existing.avatarUrl.includes('ui-avatars.com')) {
+      bestAvatarUrl = existing.avatarUrl;
+    }
+    if (firebaseUser.photoURL) {
+      bestAvatarUrl = firebaseUser.photoURL;
+    }
+
+    const userIsPermanentlySuspended = Boolean(
+      existing.isPermanentSuspended ||
+      (existing.status === 'DISABLED') ||
+      Boolean((existing as any).isBlocked) ||
+      checkPermanentSuspendedStatus(firebaseUser.email || firebaseUser.uid)
+    );
+
+    const mergedProfile: User = {
+      ...initialProfile,
+      ...existing,
+      id: firebaseUser.uid,
+      uid: firebaseUser.uid,
+      email: firebaseUser.email || existing.email || initialProfile.email,
+      name: existing.name || fallbackName,
+      avatarUrl: bestAvatarUrl,
+      plan: existing.plan || 'Basic Plan',
+      planExpiresAt: existing.planExpiresAt,
+      billingCycle: existing.billingCycle,
+      subscriptionStatus: existing.subscriptionStatus || 'free',
+      previousPlan: existing.previousPlan,
+      isPro: existing.isPro || false,
+      memberSince: existing.memberSince || memberSinceDate,
+      projectsUsed: typeof existing.projectsUsed === 'number' ? existing.projectsUsed : 0,
+      maxProjects: typeof existing.maxProjects === 'number' ? existing.maxProjects : 5,
+      dataErasureRequested: existing.dataErasureRequested ?? false,
+      dataErasureScheduledAt: existing.dataErasureScheduledAt,
+      dataErasureScheduledUntil: existing.dataErasureScheduledUntil,
+      isPermanentSuspended: userIsPermanentlySuspended,
+      permanentSuspensionReason: userIsPermanentlySuspended 
+        ? (existing.permanentSuspensionReason || localStorage.getItem('paperx_permanent_banned_reason') || 'Giving hate and slangs to PaperX after receiving 3 warnings. Strictly prohibited by PaperX App Rules.')
+        : undefined,
+      isBlocked: userIsPermanentlySuspended || Boolean(existing.isBlocked),
+      status: userIsPermanentlySuspended ? 'DISABLED' : (existing.status || 'ACTIVE'),
+      blockReason: existing.blockReason || (userIsPermanentlySuspended ? 'Account permanently suspended' : undefined),
+      forceLogout: false,
+      forceReLogin: false,
+      updatedAt: new Date().toISOString()
+    };
+
+    if (userIsPermanentlySuspended && typeof window !== 'undefined') {
+      try {
+        if (firebaseUser.email) {
+          localStorage.setItem(`paperx_permanent_banned_${firebaseUser.email.toLowerCase()}`, 'true');
+          localStorage.setItem('paperx_permanent_banned_email', firebaseUser.email);
+        }
+        if (firebaseUser.uid) {
+          localStorage.setItem(`paperx_permanent_banned_${firebaseUser.uid}`, 'true');
+        }
+      } catch (_) {}
+    }
+
+    const { user: checkedProfile } = checkAndHandlePlanExpiry(mergedProfile);
+
+    // Clear legacy ban keys from localStorage
+    if (typeof window !== 'undefined') {
+      try {
+        localStorage.removeItem('paperx_user_ban_until');
+        localStorage.removeItem('paperx_user_ban_reason');
+        window.dispatchEvent(new Event('paperx_ban_updated'));
+      } catch (_) {}
+    }
+    
+    // Background sync to keep Firestore updated
+    setDoc(userRef, checkedProfile, { merge: true }).catch(e => console.warn('Background setDoc notice:', e));
+    return checkedProfile;
+  }
+
+  // If new user, check if this email/uid is on banned list
+  const isNewUserBanned = checkPermanentSuspendedStatus(firebaseUser.email || firebaseUser.uid);
+  if (isNewUserBanned) {
+    initialProfile.isPermanentSuspended = true;
+    initialProfile.status = 'DISABLED';
+    initialProfile.isBlocked = true;
+    initialProfile.permanentSuspensionReason = localStorage.getItem('paperx_permanent_banned_reason') || 'Giving hate and slangs to PaperX after receiving 3 warnings. Strictly prohibited by PaperX App Rules.';
+  }
+
+  // If new user, create document
+  await setDoc(userRef, {
+    ...initialProfile,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  }, { merge: true });
 
   return initialProfile;
 };
@@ -426,11 +549,15 @@ type AuthListener = (user: User | null) => void;
 const authListeners: AuthListener[] = [];
 
 export const onPaperXAuthStateChanged = (listener: AuthListener): (() => void) => {
-  authListeners.push(listener);
+  if (typeof listener === 'function') {
+    authListeners.push(listener);
+  }
   return () => {
-    const index = authListeners.indexOf(listener);
-    if (index !== -1) {
-      authListeners.splice(index, 1);
+    if (Array.isArray(authListeners)) {
+      const index = authListeners.indexOf(listener);
+      if (index !== -1) {
+        authListeners.splice(index, 1);
+      }
     }
   };
 };
@@ -510,6 +637,27 @@ export const checkDeviceLimit = async (uid: string) => {
         }
       }
 
+      // Save the actual active sessions to show dynamically in the limit modal!
+      try {
+        const limitSessions = activeDocs.map(docSnap => {
+          const d = docSnap.data();
+          return {
+            id: docSnap.id,
+            deviceName: d.deviceName || 'Unknown Device',
+            deviceType: d.deviceType || 'desktop',
+            browser: d.browser || 'Web Browser',
+            os: d.os || 'OS',
+            lastActive: d.lastActive || new Date().toISOString(),
+            loginTime: d.loginTime || new Date().toISOString(),
+            timeZone: d.timeZone || 'UTC',
+            location: d.location || '',
+            ipAddress: d.ipAddress || '',
+            isCurrentSession: false
+          };
+        });
+        localStorage.setItem('paperx_temp_device_limit_sessions', JSON.stringify(limitSessions));
+      } catch (_) {}
+
       dispatchPaperXAuthChange(null);
       await signOut(auth).catch(() => {});
       throw new Error('DEVICE_LIMIT_EXCEEDED');
@@ -523,8 +671,16 @@ export const registerWithEmail = async (
   firstName: string,
   lastName: string
 ): Promise<User> => {
+  if (typeof window !== 'undefined') {
+    try {
+      sessionStorage.setItem('paperx_is_new_login', 'true');
+      (window as any).__paperx_is_new_login = true;
+    } catch (_) {}
+  }
+
+  // 1. Attempt Client Firebase Auth
   try {
-    const userCredential = await createUserWithEmailAndPassword(auth, email, pass);
+    const userCredential = await createUserWithEmailAndPassword(auth, email.trim(), pass);
     const fullName = `${firstName} ${lastName}`.trim() || email.split('@')[0];
     
     // Update auth profile in background without blocking signup completion
@@ -533,22 +689,26 @@ export const registerWithEmail = async (
       photoURL: `https://ui-avatars.com/api/?name=${encodeURIComponent(fullName)}&background=random`
     }).catch(e => console.warn('Background profile update notice:', e));
 
-        const profile = await syncUserProfile(userCredential.user, { firstName, lastName });
+    const profile = await syncUserProfile(userCredential.user, { firstName, lastName });
     dispatchPaperXAuthChange(profile);
     return profile;
   } catch (firebaseErr: any) {
     const code = firebaseErr?.code || '';
     const msg = firebaseErr?.message || '';
 
-    // If Firebase project has not enabled Email/Password in Console or Identity Toolkit is restricted,
-    // seamlessly use high-availability server fallback so user account is created and usable immediately.
+    // If it's a known user-level validation error, throw directly so user sees the exact advice
     if (
-      code === 'auth/operation-not-allowed' || 
-      msg.includes('operation-not-allowed') ||
-      code.includes('api-key-not-valid') ||
-      msg.includes('api-key-not-valid')
+      code === 'auth/email-already-in-use' ||
+      code === 'auth/weak-password' ||
+      code === 'auth/invalid-email'
     ) {
-      console.info('[PaperX Auth] Seamlessly completing registration via resilient server fallback...');
+      throw firebaseErr;
+    }
+
+    // For any project configuration, argument, restriction, or permission error,
+    // seamlessly use high-availability server registration fallback so the account is created instantly.
+    console.info('[PaperX Auth] Seamlessly completing registration via resilient server fallback...', { code, msg });
+    try {
       const response = await fetch('/api/auth/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -565,12 +725,15 @@ export const registerWithEmail = async (
         throw new Error(data.error || 'Failed to create account. Please try again.');
       }
 
-                  await checkDeviceLimit(data.user.uid);
+      await checkDeviceLimit(data.user.uid || data.user.id);
       dispatchPaperXAuthChange(data.user);
       return data.user;
+    } catch (serverErr: any) {
+      if (serverErr?.message && !serverErr.message.includes('fetch')) {
+        throw serverErr;
+      }
+      throw firebaseErr;
     }
-
-    throw firebaseErr;
   }
 };
 
@@ -578,22 +741,57 @@ export const registerWithEmail = async (
  * Real Email & Password Login
  */
 export const loginWithEmail = async (email: string, pass: string): Promise<User> => {
+  if (typeof window !== 'undefined') {
+    try {
+      sessionStorage.setItem('paperx_is_new_login', 'true');
+      (window as any).__paperx_is_new_login = true;
+    } catch (_) {}
+  }
   try {
-    const userCredential = await signInWithEmailAndPassword(auth, email, pass);
-        const profile = await syncUserProfile(userCredential.user);
+    const userCredential = await signInWithEmailAndPassword(auth, email.trim(), pass);
+    const profile = await syncUserProfile(userCredential.user);
     dispatchPaperXAuthChange(profile);
+    triggerLoginAlert(profile.uid || profile.id, profile.email || '');
     return profile;
   } catch (firebaseErr: any) {
     const code = firebaseErr?.code || '';
     const msg = firebaseErr?.message || '';
 
+    if (code === 'auth/multi-factor-auth-required') {
+      throw firebaseErr;
+    }
+
     if (
-      code === 'auth/operation-not-allowed' || 
-      msg.includes('operation-not-allowed') ||
-      code.includes('api-key-not-valid') ||
-      msg.includes('api-key-not-valid')
+      code === 'auth/wrong-password' ||
+      code === 'auth/user-not-found' ||
+      code === 'auth/invalid-credential' ||
+      code === 'auth/too-many-requests'
     ) {
-      console.info('[PaperX Auth] Seamlessly logging in via resilient server fallback...');
+      // Check server fallback in case the account was registered via server fallback
+      try {
+        const response = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            email: email.trim(),
+            password: pass
+          })
+        });
+
+        const data = await response.json();
+        if (response.ok && data.user) {
+          await checkDeviceLimit(data.user.uid || data.user.id);
+          dispatchPaperXAuthChange(data.user);
+          triggerLoginAlert(data.user.uid || data.user.id, data.user.email || '');
+          return data.user;
+        }
+      } catch (_) {}
+
+      throw firebaseErr;
+    }
+
+    console.info('[PaperX Auth] Seamlessly logging in via resilient server fallback...', { code, msg });
+    try {
       const response = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -610,12 +808,45 @@ export const loginWithEmail = async (email: string, pass: string): Promise<User>
 
       await checkDeviceLimit(data.user.uid || data.user.id);
       dispatchPaperXAuthChange(data.user);
+      triggerLoginAlert(data.user.uid || data.user.id, data.user.email || '');
       return data.user;
+    } catch (serverErr: any) {
+      if (serverErr?.message && !serverErr.message.includes('fetch')) {
+        throw serverErr;
+      }
+      throw firebaseErr;
     }
-
-    throw firebaseErr;
   }
 };
+
+/**
+ * Official Firebase Identity Platform MFA / TOTP Helpers
+ */
+export async function generateTotpSecretForEnrollment() {
+  if (!auth.currentUser) throw new Error('No authenticated user');
+  const session = await multiFactor(auth.currentUser).getSession();
+  const totpSecret = await TotpMultiFactorGenerator.generateSecret(session);
+  return {
+    secret: totpSecret.secretKey,
+    qrCodeUrl: totpSecret.generateQrCodeUrl(auth.currentUser.email || 'user@paperx.app', 'PaperX'),
+    totpSecretObj: totpSecret
+  };
+}
+
+export async function enrollTotpFactor(totpSecretObj: any, code: string) {
+  if (!auth.currentUser) throw new Error('No authenticated user');
+  const assertion = TotpMultiFactorGenerator.assertionForEnrollment(totpSecretObj, code);
+  await multiFactor(auth.currentUser).enroll(assertion, 'PaperX Authenticator');
+}
+
+export async function unenrollTotpFactor() {
+  if (!auth.currentUser) throw new Error('No authenticated user');
+  const enrolled = multiFactor(auth.currentUser).enrolledFactors;
+  const totp = enrolled.find(f => f.factorId === TotpMultiFactorGenerator.FACTOR_ID);
+  if (totp) {
+    await multiFactor(auth.currentUser).unenroll(totp);
+  }
+}
 
 /**
  * Real Google Sign In
@@ -628,10 +859,17 @@ export const loginWithGoogle = async (): Promise<User | null> => {
   }
 
   isGoogleLoginInProgress = true;
+  if (typeof window !== 'undefined') {
+    try {
+      sessionStorage.setItem('paperx_is_new_login', 'true');
+      (window as any).__paperx_is_new_login = true;
+    } catch (_) {}
+  }
   try {
     const userCredential = await signInWithPopup(auth, googleProvider);
     const profile = await syncUserProfile(userCredential.user);
     dispatchPaperXAuthChange(profile);
+    triggerLoginAlert(profile.uid || profile.id, profile.email || '');
     return profile;
   } catch (err: any) {
     const msg = err?.message || '';
@@ -803,10 +1041,33 @@ export const logoutUser = async (): Promise<void> => {
     }).catch(e => {
       console.warn('logoutUser: background session cleanup failed (benign):', e);
     });
+    try {
+      localStorage.removeItem(`paperx_login_time_${deviceId}`);
+      if (currentUid) {
+        localStorage.removeItem(`paperx_login_time_${currentUid}_${deviceId}`);
+      }
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && key.startsWith('paperx_login_time_')) {
+          localStorage.removeItem(key);
+          i--;
+        }
+      }
+      sessionStorage.removeItem('paperx_is_new_login');
+      delete (window as any).__paperx_is_new_login;
+    } catch (_) {}
   }
   
   console.log("logoutUser: clearing local session and dispatching null auth change...");
+  cachedGoogleDriveToken = null;
   clearLocalSession();
+  if (typeof window !== 'undefined') {
+    try {
+      localStorage.removeItem('paperx_user_ban_until');
+      localStorage.removeItem('paperx_user_ban_reason');
+      window.dispatchEvent(new Event('paperx_ban_updated'));
+    } catch (_) {}
+  }
   dispatchPaperXAuthChange(null);
   
   try {
@@ -825,10 +1086,10 @@ export const logoutUser = async (): Promise<void> => {
 export const updateUserInFirestore = async (uid: string, data: Partial<User>): Promise<void> => {
   try {
     const userRef = doc(db, 'users', uid);
-    await updateDoc(userRef, {
+    await setDoc(userRef, {
       ...data,
       updatedAt: new Date().toISOString()
-    });
+    }, { merge: true });
   } catch (err) {
     console.warn('Firestore update notice (offline/unavailable):', err);
   }
@@ -845,7 +1106,7 @@ export const updateUserInFirestore = async (uid: string, data: Partial<User>): P
   const current = getLocalSession();
   if (current && (current.uid === uid || current.id === uid)) {
     const updated = { ...current, ...data };
-    dispatchPaperXAuthChange(updated);
+    saveLocalSession(updated);
   }
 };
 
@@ -916,8 +1177,48 @@ export const subscribeToUserDocuments = (uid: string, callback: (docs: any[]) =>
   }
 };
 
+export const saveLocalFileBinary = async (id: string, dataUrl: string): Promise<void> => {
+  if (!id || !dataUrl || typeof window === 'undefined') return;
+
+  // 1. Direct localStorage key for fast retrieval if reasonably sized (< 2MB)
+  try {
+    if (dataUrl.length < 2000000) {
+      localStorage.setItem('paperx_file_' + id, dataUrl);
+    }
+  } catch (_) {}
+
+  // 2. IndexedDB store for zero-limit binary persistence
+  if (typeof window !== 'undefined' && window.indexedDB) {
+    return new Promise((resolve) => {
+      try {
+        const request = indexedDB.open('paperx_local_db', 2);
+        request.onupgradeneeded = () => {
+          const db = request.result;
+          if (!db.objectStoreNames.contains('paperx_files')) {
+            db.createObjectStore('paperx_files', { keyPath: 'id' });
+          }
+        };
+        request.onsuccess = () => {
+          const db = request.result;
+          if (db.objectStoreNames.contains('paperx_files')) {
+            const tx = db.transaction('paperx_files', 'readwrite');
+            tx.objectStore('paperx_files').put({ id, dataUrl, updatedAt: Date.now() });
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => resolve();
+          } else {
+            resolve();
+          }
+        };
+        request.onerror = () => resolve();
+      } catch (_) {
+        resolve();
+      }
+    });
+  }
+};
+
 /**
- * Add / Update a document in Firestore with real-time sync and 30-day recent & 5-year preservation
+ * Add / Update a document in Firestore with real-time sync, chunked binary storage (expanding beyond 1MB limit), and 5-year preservation
  */
 export const addDocumentToFirestore = async (uid: string, docData: any): Promise<void> => {
   if (!uid || !docData) return;
@@ -925,6 +1226,13 @@ export const addDocumentToFirestore = async (uid: string, docData: any): Promise
     const docId = docData.id || `doc_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
     const docRef = doc(db, 'users', uid, 'documents', docId);
     const safeDocData = { ...docData };
+
+    const rawDataUrl = typeof safeDocData.dataUrl === 'string' ? safeDocData.dataUrl : '';
+
+    // Immediately preserve binary in local IndexedDB / localStorage for zero-delay offline preview
+    if (rawDataUrl) {
+      saveLocalFileBinary(docId, rawDataUrl).catch(() => {});
+    }
 
     let timestamp = Date.now();
     if (typeof safeDocData.timestamp === 'number' && !isNaN(safeDocData.timestamp) && safeDocData.timestamp > 0) {
@@ -938,9 +1246,33 @@ export const addDocumentToFirestore = async (uid: string, docData: any): Promise
     const expiresAt = safeDocData.expiresAt || new Date(timestamp + fiveYearsMs).toISOString();
     const recentUntil = safeDocData.recentUntil || new Date(timestamp + thirtyDaysMs).toISOString();
 
-    // Firestore has a 1MB limit. Only strip dataUrl if it exceeds ~750KB
-    if (safeDocData.dataUrl && safeDocData.dataUrl.length > 750000) {
-      delete safeDocData.dataUrl;
+    const CHUNK_SIZE = 400000; // ~400KB per chunk safely within Firestore 1MB limits
+    let hasChunks = false;
+    let chunkCount = 0;
+
+    if (rawDataUrl && rawDataUrl.length > 500000) {
+      hasChunks = true;
+      chunkCount = Math.ceil(rawDataUrl.length / CHUNK_SIZE);
+      safeDocData.dataUrl = ''; // Keep parent metadata lightweight
+      safeDocData.hasChunks = true;
+      safeDocData.chunkCount = chunkCount;
+      safeDocData.totalLength = rawDataUrl.length;
+
+      // Save chunks into subcollection users/{uid}/documents/{docId}/chunks
+      const chunkPromises = [];
+      for (let i = 0; i < chunkCount; i++) {
+        const chunkPart = rawDataUrl.substring(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
+        const chunkDocRef = doc(db, 'users', uid, 'documents', docId, 'chunks', `chunk_${i}`);
+        chunkPromises.push(setDoc(chunkDocRef, {
+          index: i,
+          chunk: chunkPart,
+          timestamp: Date.now()
+        }, { merge: true }));
+      }
+      await Promise.all(chunkPromises);
+    } else if (rawDataUrl) {
+      safeDocData.hasChunks = false;
+      safeDocData.chunkCount = 0;
     }
 
     const payload: Record<string, any> = {
@@ -952,6 +1284,8 @@ export const addDocumentToFirestore = async (uid: string, docData: any): Promise
       retentionDaysRecent: 30,
       recentUntil,
       expiresAt,
+      hasChunks: hasChunks || Boolean(safeDocData.hasChunks),
+      chunkCount: chunkCount || safeDocData.chunkCount || 0,
       createdAt: safeDocData.createdAt || new Date(timestamp).toISOString(),
       updatedAt: new Date().toISOString()
     };
@@ -970,12 +1304,51 @@ export const addDocumentToFirestore = async (uid: string, docData: any): Promise
 };
 
 /**
- * Delete a document from Firestore
+ * Fetch full binary dataUrl for a document from Firestore, assembling chunks if necessary
+ */
+export const fetchDocumentBinaryFromFirestore = async (uid: string, docId: string): Promise<string | null> => {
+  if (!uid || !docId) return null;
+  try {
+    const docRef = doc(db, 'users', uid, 'documents', docId);
+    const snap = await getDoc(docRef);
+    if (!snap.exists()) return null;
+
+    const data = snap.data();
+    if (data.dataUrl && typeof data.dataUrl === 'string' && data.dataUrl.length > 0) {
+      return data.dataUrl;
+    }
+
+    if (data.hasChunks && data.chunkCount > 0) {
+      const chunksCol = collection(db, 'users', uid, 'documents', docId, 'chunks');
+      const chunksSnap = await getDocs(chunksCol);
+      if (!chunksSnap.empty) {
+        const sortedDocs = chunksSnap.docs
+          .map(d => d.data())
+          .sort((a, b) => (a.index || 0) - (b.index || 0));
+        const assembled = sortedDocs.map(d => d.chunk || '').join('');
+        return assembled || null;
+      }
+    }
+    return null;
+  } catch (err) {
+    console.warn('Firestore fetch document binary notice:', err);
+    return null;
+  }
+};
+
+/**
+ * Delete a document and its binary chunks from Firestore
  */
 export const deleteDocumentFromFirestore = async (uid: string, docId: string): Promise<void> => {
   if (!uid || !docId) return;
   try {
     const docRef = doc(db, 'users', uid, 'documents', docId);
+    const chunksCol = collection(db, 'users', uid, 'documents', docId, 'chunks');
+    const chunksSnap = await getDocs(chunksCol);
+    if (!chunksSnap.empty) {
+      const deletePromises = chunksSnap.docs.map(d => deleteDoc(d.ref));
+      await Promise.all(deletePromises);
+    }
     await deleteDoc(docRef);
   } catch (err) {
     console.warn('Firestore delete document notice (offline/unavailable):', err);
@@ -1019,31 +1392,19 @@ export const getDeviceId = (): string => {
   return deviceId;
 };
 
-export const getDeviceName = async (): Promise<{ name: string, type: 'mobile' | 'desktop' | 'tablet', browser: string, os: string }> => {
+export const getDeviceInfoSync = (): { name: string, type: 'mobile' | 'laptop' | 'desktop' | 'tablet', browser: string, os: string } => {
   if (typeof window === 'undefined') {
-    return { name: 'Unknown Device', type: 'desktop', browser: 'Browser', os: 'OS' };
+    return { name: 'Current Device', type: 'desktop', browser: 'Browser', os: 'OS' };
   }
   
-  const parser = new UAParser();
-  const result = parser.getResult();
-  
-  let deviceName = '';
-  
-  // 1. Try to get high entropy Client Hints (Modern Chrome/Android)
-  const nav = navigator as any;
-  if (nav.userAgentData && nav.userAgentData.getHighEntropyValues) {
-    try {
-      const hints = await nav.userAgentData.getHighEntropyValues(['model', 'make']);
-      if (hints.make && hints.model) {
-         deviceName = `${hints.make} ${hints.model}`;
-      } else if (hints.model) {
-         deviceName = hints.model;
-      }
-    } catch (e) {}
-  }
-
-  // 2. Fallback to UAParser for specific vendor/model
-  if (!deviceName) {
+  try {
+    const parser = new UAParser();
+    const result = parser.getResult();
+    const ua = navigator.userAgent;
+    
+    let deviceName = '';
+    
+    // 1. Vendor and Model from UAParser
     if (result.device.vendor && result.device.model) {
       deviceName = `${result.device.vendor} ${result.device.model}`;
     } else if (result.device.model) {
@@ -1051,54 +1412,331 @@ export const getDeviceName = async (): Promise<{ name: string, type: 'mobile' | 
     } else if (result.device.vendor) {
       deviceName = `${result.device.vendor} Device`;
     }
+
+    const osName = result.os.name || '';
+    const osVersion = result.os.version || '';
+    
+    let type: 'mobile' | 'laptop' | 'desktop' | 'tablet' = 'desktop';
+
+    // 2. Identify Tablets
+    const isIPad = /ipad/i.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    const isAndroidTablet = /android/i.test(ua) && !/mobile/i.test(ua);
+    const isGenericTablet = result.device.type === 'tablet' || /(tablet|playbook|silk|kindle)/i.test(ua);
+
+    if (isIPad || isAndroidTablet || isGenericTablet) {
+      type = 'tablet';
+      if (!deviceName) {
+        deviceName = isIPad ? 'Apple iPad' : 'Tablet Device';
+      }
+    } 
+    // 3. Identify Mobile Smartphones
+    else if (result.device.type === 'mobile' || /iphone|ipod|android.*mobile|windows phone|blackberry/i.test(ua)) {
+      type = 'mobile';
+      if (!deviceName) {
+        if (/iphone/i.test(ua)) deviceName = 'Apple iPhone';
+        else deviceName = 'Smartphone';
+      }
+    } 
+    // 4. Identify Laptops vs Desktops
+    else {
+      if (/CrOS/i.test(ua)) {
+        type = 'laptop';
+        if (!deviceName) deviceName = 'Chromebook';
+      } else if (osName === 'macOS' || osName === 'Mac OS' || /Macintosh/i.test(ua)) {
+        const isLikelyLaptop = window.screen.width <= 1800 || (window.devicePixelRatio >= 2 && window.screen.width <= 2000) || ('ontouchstart' in window);
+        type = isLikelyLaptop ? 'laptop' : 'desktop';
+        if (!deviceName) {
+          deviceName = isLikelyLaptop ? 'Apple MacBook' : 'Apple Mac Desktop';
+        }
+      } else if (osName === 'Windows' || /Windows/i.test(ua)) {
+        const isTouch = navigator.maxTouchPoints > 0;
+        const isLaptopScreen = window.screen.width <= 1920 && (window.screen.height <= 1200 || isTouch);
+        type = isLaptopScreen ? 'laptop' : 'desktop';
+        if (!deviceName) {
+          const winVer = osVersion || (ua.includes('Windows NT 10.0') ? '10/11' : '');
+          deviceName = isLaptopScreen ? `Windows ${winVer} Laptop` : `Windows ${winVer} PC`;
+        }
+      } else if (osName === 'Linux' || /Linux/i.test(ua)) {
+        const isLaptopScreen = window.screen.width <= 1600 || navigator.maxTouchPoints > 0;
+        type = isLaptopScreen ? 'laptop' : 'desktop';
+        if (!deviceName) {
+          deviceName = isLaptopScreen ? 'Linux Laptop' : 'Linux Workstation';
+        }
+      } else {
+        type = 'desktop';
+        if (!deviceName) deviceName = 'Computer';
+      }
+    }
+
+    // 5. Browser details
+    let browserName = result.browser.name || 'Web Browser';
+    if (result.browser.version) {
+      const majorVer = result.browser.version.split('.')[0];
+      browserName = `${browserName} ${majorVer}`;
+    }
+    
+    let sanitizedOsName = osName;
+    if (/android/i.test(sanitizedOsName)) {
+      sanitizedOsName = 'Mobile OS';
+    }
+    const formattedOs = sanitizedOsName ? (osVersion ? `${sanitizedOsName} ${osVersion}` : sanitizedOsName) : 'OS';
+
+    let cleanName = deviceName.replace(/android/gi, '').replace(/^[()\s\-_]+|[()\s\-_]+$/g, '').trim();
+    if (!cleanName) {
+      cleanName = type === 'mobile' ? 'Smartphone' : type === 'tablet' ? 'Tablet' : 'Current Device';
+    }
+
+    return {
+      name: cleanName,
+      type,
+      browser: browserName.replace(/android/gi, 'Mobile').trim(),
+      os: formattedOs
+    };
+  } catch (_) {
+    return {
+      name: 'Current Device',
+      type: 'desktop',
+      browser: 'Web Browser',
+      os: 'OS'
+    };
+  }
+};
+
+export const getDeviceName = async (): Promise<{ name: string, type: 'mobile' | 'laptop' | 'desktop' | 'tablet', browser: string, os: string }> => {
+  const syncInfo = getDeviceInfoSync();
+  if (typeof window === 'undefined') {
+    return syncInfo;
+  }
+  
+  let deviceName = syncInfo.name;
+  let deviceType = syncInfo.type;
+
+  // Modern Client Hints for model / make if available
+  const nav = navigator as any;
+  if (nav.userAgentData && nav.userAgentData.getHighEntropyValues) {
+    try {
+      const hints = await nav.userAgentData.getHighEntropyValues(['model', 'platform', 'platformVersion', 'formFactors']);
+      
+      if (hints.formFactors && Array.isArray(hints.formFactors) && hints.formFactors.length > 0) {
+        if (hints.formFactors.includes('mobile')) deviceType = 'mobile';
+        else if (hints.formFactors.includes('tablet')) deviceType = 'tablet';
+        else if (hints.formFactors.includes('desktop') && deviceType !== 'laptop') deviceType = 'desktop';
+      }
+
+      if (hints.model && hints.model.trim()) {
+        deviceName = hints.model.trim();
+      }
+
+      if (hints.platform === 'Windows' && hints.platformVersion) {
+        const major = parseInt(hints.platformVersion.split('.')[0], 10);
+        if (major >= 13) {
+          deviceName = deviceName.replace(/Windows( 10)?/, 'Windows 11');
+        }
+      }
+    } catch (_) {}
   }
 
-  // 3. Fallback to general OS/Device if unknown
-  if (!deviceName || deviceName.trim() === '') {
-    if (result.os.name === 'iOS') deviceName = 'Apple iOS Device';
-    else if (result.os.name === 'Mac OS') deviceName = 'Apple Mac';
-    else if (result.os.name === 'Windows') deviceName = 'Windows PC';
-    else if (result.os.name === 'Android') deviceName = 'Android Device';
-    else if (result.os.name === 'Linux') deviceName = 'Linux PC';
-    else deviceName = 'Generic Device';
+  // Battery API check to accurately differentiate Laptop vs Desktop when on PC/Mac
+  if (deviceType === 'desktop' || deviceType === 'laptop') {
+    try {
+      if (typeof (navigator as any).getBattery === 'function') {
+        const battery = await (navigator as any).getBattery();
+        if (battery) {
+          deviceType = 'laptop';
+          if (syncInfo.os.includes('Mac') || syncInfo.os.includes('macOS')) {
+            deviceName = 'Apple MacBook';
+          } else if (syncInfo.os.includes('Windows')) {
+            deviceName = deviceName.includes('Laptop') ? deviceName : deviceName.replace(/PC$/, 'Laptop');
+          }
+        }
+      }
+    } catch (_) {}
   }
 
-  let type: 'mobile' | 'desktop' | 'tablet' = 'desktop';
-  if (result.device.type === 'mobile' || result.device.type === 'tablet') {
-    type = result.device.type;
+  let finalName = (deviceName || syncInfo.name).replace(/android/gi, '').replace(/^[()\s\-_]+|[()\s\-_]+$/g, '').trim();
+  if (!finalName) {
+    finalName = deviceType === 'mobile' ? 'Smartphone' : deviceType === 'tablet' ? 'Tablet' : deviceType === 'laptop' ? 'Laptop' : 'Current Device';
   }
-
-  const browserName = result.browser.name ? result.browser.name : 'Web Browser';
-  const osName = result.os.name ? result.os.name : 'OS';
 
   return {
-    name: deviceName,
-    type,
-    browser: browserName,
-    os: osName
+    ...syncInfo,
+    name: finalName,
+    type: deviceType,
+    browser: syncInfo.browser.replace(/android/gi, 'Mobile').trim(),
+    os: syncInfo.os.replace(/android/gi, 'Mobile OS').trim()
   };
 };
 
-export const recordUserSession = async (userId: string) => {
+interface GeoLocationInfo {
+  ipAddress?: string;
+  location?: string;
+  timeZone?: string;
+}
+
+export const fetchClientGeoLocation = async (): Promise<GeoLocationInfo> => {
+  if (typeof window === 'undefined') return {};
+
+  const localTz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  const tzName = localTz.split('/').pop()?.replace(/_/g, ' ') || 'Local';
+  const defaultGeo: GeoLocationInfo = {
+    timeZone: localTz,
+    location: tzName !== 'UTC' ? `${tzName} Region` : 'Unknown Location'
+  };
+
+  // Try ipapi.co (HTTPS) first with AbortController 3s timeout
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 3000);
+    const res = await fetch('https://ipapi.co/json/', { signal: controller.signal });
+    clearTimeout(timeoutId);
+    if (res && res.ok) {
+      const data = await res.json();
+      if (data) {
+        return {
+          ipAddress: data.ip || undefined,
+          location: data.city && data.country_name ? `${data.city}, ${data.country_name}` : data.city || data.country_name || undefined,
+          timeZone: data.timezone || localTz
+        };
+      }
+    }
+  } catch (_) {}
+
+  // Fallback to ip-api.com
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 3000);
+    const res = await fetch('https://demo.ip-api.com/json/', { signal: controller.signal });
+    clearTimeout(timeoutId);
+    if (res && res.ok) {
+      const data = await res.json();
+      if (data && (data.status === 'success' || data.city)) {
+        return {
+          ipAddress: data.query || undefined,
+          location: data.city && data.country ? `${data.city}, ${data.country}` : data.city || data.country || undefined,
+          timeZone: data.timezone || localTz
+        };
+      }
+    }
+  } catch (_) {}
+
+  return defaultGeo;
+};
+
+export const recordUserSession = async (userId: string, isNewLogin: boolean = false) => {
   if (!userId || typeof window === 'undefined') return;
   const deviceId = getDeviceId();
+  
+  // Prevent background/inactive tabs from updating lastActive timestamps
+  if (!isNewLogin && typeof document !== 'undefined' && document.visibilityState !== 'visible') {
+    return;
+  }
   
   try {
     const deviceInfo = await getDeviceName();
     const now = new Date().toISOString();
+    const loginKey = `paperx_login_time_${userId}_${deviceId}`;
+    
+    // Check if new login is requested via param OR via sessionStorage flag OR global flag
+    let isNewLoginSession = isNewLogin;
+    try {
+      if (
+        sessionStorage.getItem('paperx_is_new_login') === 'true' ||
+        (typeof window !== 'undefined' && (window as any).__paperx_is_new_login)
+      ) {
+        isNewLoginSession = true;
+        sessionStorage.removeItem('paperx_is_new_login');
+        if (typeof window !== 'undefined') {
+          delete (window as any).__paperx_is_new_login;
+        }
+      }
+    } catch (_) {}
+
     const sessionRef = doc(db, 'users', userId, 'sessions', deviceId);
 
-    // Using setDoc with { merge: true } creates or updates without requiring getDoc server roundtrip
-    await setDoc(sessionRef, {
-      id: deviceId,
-      userId,
-      deviceName: deviceInfo.name,
-      deviceType: deviceInfo.type,
-      browser: deviceInfo.browser,
-      os: deviceInfo.os,
-      lastActive: now,
-      loginTime: now
-    }, { merge: true });
+    // Resolve client geolocation data
+    let geo: GeoLocationInfo = {};
+    try {
+      geo = await fetchClientGeoLocation();
+    } catch (_) {}
+
+    const clientTimeZone = geo.timeZone || (typeof window !== 'undefined' ? (Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC') : 'UTC');
+
+    if (isNewLoginSession) {
+      // Direct login action: strictly force-overwrite to current time in both localStorage & Firestore
+      localStorage.setItem(loginKey, now);
+      try {
+        localStorage.removeItem(`paperx_login_time_${deviceId}`);
+      } catch (_) {}
+
+      await setDoc(sessionRef, {
+        id: deviceId,
+        userId,
+        deviceName: deviceInfo.name,
+        deviceType: deviceInfo.type,
+        browser: deviceInfo.browser,
+        os: deviceInfo.os,
+        lastActive: now,
+        loginTime: now,
+        timeZone: clientTimeZone,
+        ipAddress: geo.ipAddress || '',
+        location: geo.location || '',
+        revoked: false
+      }, { merge: true });
+    } else {
+      // Check existing session document in Firestore
+      let preservedLoginTime = null;
+      try {
+        const snap = await getDoc(sessionRef);
+        if (snap.exists()) {
+          const data = snap.data();
+          if (data && data.loginTime) {
+            // Reset loginTime if the session has been inactive for more than 30 minutes (standard session timeout)
+            const lastActiveTime = data.lastActive ? new Date(data.lastActive).getTime() : 0;
+            const thirtyMinsMs = 30 * 60 * 1000;
+            if (lastActiveTime && (new Date(now).getTime() - lastActiveTime > thirtyMinsMs)) {
+              preservedLoginTime = now;
+            } else {
+              preservedLoginTime = data.loginTime;
+            }
+          }
+        }
+      } catch (_) {}
+
+      if (!preservedLoginTime) {
+        // Fallback to local storage if firestore was empty/offline
+        preservedLoginTime = localStorage.getItem(loginKey);
+        if (!preservedLoginTime) {
+          const legacyKey = `paperx_login_time_${deviceId}`;
+          const legacyTime = localStorage.getItem(legacyKey);
+          if (legacyTime) {
+            preservedLoginTime = legacyTime;
+            localStorage.setItem(loginKey, legacyTime);
+            localStorage.removeItem(legacyKey);
+          }
+        }
+        if (!preservedLoginTime) {
+          preservedLoginTime = now;
+        }
+      }
+
+      // Synchronize back to local storage
+      localStorage.setItem(loginKey, preservedLoginTime);
+
+      await setDoc(sessionRef, {
+        id: deviceId,
+        userId,
+        deviceName: deviceInfo.name,
+        deviceType: deviceInfo.type,
+        browser: deviceInfo.browser,
+        os: deviceInfo.os,
+        lastActive: now,
+        loginTime: preservedLoginTime,
+        timeZone: clientTimeZone,
+        ipAddress: geo.ipAddress || '',
+        location: geo.location || '',
+        revoked: false
+      }, { merge: true });
+    }
   } catch (e: any) {
     // Silently ignore offline network/cache errors so app execution is never interrupted
     console.warn("Session recording offline notice:", e?.message || e);
@@ -1108,21 +1746,91 @@ export const recordUserSession = async (userId: string) => {
 export const subscribeToUserSessions = (userId: string, callback: (sessions: UserSession[]) => void) => {
   if (!userId) return () => {};
   const sessionsRef = collection(db, 'users', userId, 'sessions');
-  return onSnapshot(sessionsRef, (snapshot) => {
-    const rawSessions = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id }) as UserSession);
-    const sessions = rawSessions.filter(s => s.revoked !== true);
-    const deviceId = getDeviceId();
-    const formattedSessions = sessions.map(s => ({
+  const deviceId = getDeviceId();
+  
+  // Ensure the current session is registered/updated in Firestore
+  recordUserSession(userId).catch(() => {});
+
+  // Build the guaranteed current device session object
+  const initialDeviceInfo = getDeviceInfoSync();
+  const loginKey = `paperx_login_time_${userId}_${deviceId}`;
+  
+  let preservedLoginTime = null;
+  let isNewLoginSessionSync = false;
+  try {
+    if (
+      typeof window !== 'undefined' &&
+      (sessionStorage.getItem('paperx_is_new_login') === 'true' || (window as any).__paperx_is_new_login)
+    ) {
+      isNewLoginSessionSync = true;
+    }
+  } catch (_) {}
+
+  if (typeof window !== 'undefined') {
+    if (isNewLoginSessionSync) {
+      preservedLoginTime = new Date().toISOString();
+    } else {
+      preservedLoginTime = localStorage.getItem(loginKey);
+      if (!preservedLoginTime) {
+        // Legacy key fallback/migration during subscription too
+        preservedLoginTime = localStorage.getItem(`paperx_login_time_${deviceId}`);
+      }
+    }
+  }
+  
+  if (!preservedLoginTime) {
+    preservedLoginTime = new Date().toISOString();
+  }
+
+  const clientTimeZone = typeof window !== 'undefined' ? (Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC') : 'UTC';
+  const currentFallbackSession: UserSession = {
+    id: deviceId,
+    userId,
+    deviceName: initialDeviceInfo.name,
+    deviceType: initialDeviceInfo.type,
+    browser: initialDeviceInfo.browser,
+    os: initialDeviceInfo.os,
+    lastActive: new Date().toISOString(),
+    loginTime: preservedLoginTime,
+    timeZone: clientTimeZone,
+    isCurrentSession: true
+  };
+
+  let hasEmittedFromFirestore = false;
+
+  const unsubscribe = onSnapshot(sessionsRef, (snapshot) => {
+    hasEmittedFromFirestore = true;
+    const rawSessions = snapshot.docs.map(d => ({ ...d.data(), id: d.id }) as UserSession);
+    const validSessions = rawSessions.filter(s => s.revoked !== true);
+    
+    let formattedSessions: UserSession[] = validSessions.map(s => ({
       ...s,
       isCurrentSession: s.id === deviceId
     }));
+
+    // If the current device session has not yet propagated into Firestore docs, include it immediately
+    const hasCurrent = formattedSessions.some(s => s.isCurrentSession);
+    if (!hasCurrent) {
+      formattedSessions = [currentFallbackSession, ...formattedSessions];
+      recordUserSession(userId).catch(() => {});
+    }
+
     formattedSessions.sort((a, b) => {
       if (a.isCurrentSession) return -1;
       if (b.isCurrentSession) return 1;
-      return new Date(b.lastActive).getTime() - new Date(a.lastActive).getTime();
+      return new Date(b.lastActive || 0).getTime() - new Date(a.lastActive || 0).getTime();
     });
+
     callback(formattedSessions);
+  }, (err) => {
+    console.warn("Session subscription notice:", err?.message || err);
+    // If offline or permission error, ensure current device is still displayed
+    if (!hasEmittedFromFirestore) {
+      callback([currentFallbackSession]);
+    }
   });
+
+  return unsubscribe;
 };
 
 
@@ -1131,16 +1839,22 @@ export const monitorCurrentSession = (userId: string, onRevoked: () => void) => 
   const deviceId = getDeviceId();
   const sessionRef = doc(db, 'users', userId, 'sessions', deviceId);
   
-  let isInitial = true;
+  let hadExisted = false;
   return onSnapshot(sessionRef, (snapshot) => {
-    const data = snapshot.data();
-    // Trigger revocation if:
-    // 1. The session document is deleted
-    // 2. The session document explicitly has a 'revoked' flag set to true
-    if (!isInitial && (!snapshot.exists() || data?.revoked === true)) {
+    if (snapshot.exists()) {
+      hadExisted = true;
+      const data = snapshot.data();
+      // Only revoke if explicitly marked as revoked by user on another device
+      if (data?.revoked === true) {
+        onRevoked();
+      }
+    } else if (hadExisted) {
+      // Only revoke if the document genuinely existed during this session and was deleted
       onRevoked();
     }
-    isInitial = false;
+  }, (err) => {
+    // Non-fatal permission/offline notice: never force logout on connection drops
+    console.warn("Session monitor notice (non-fatal):", err?.message || err);
   });
 };
 
@@ -1198,5 +1912,53 @@ export const removeUserSession = async (userId: string, sessionId: string) => {
     await deleteDoc(doc(db, 'users', userId, 'sessions', sessionId));
   } catch (e) {
     console.error("Failed to remove session", e);
+  }
+};
+
+export const triggerLoginAlert = async (uid: string, email: string) => {
+  const deviceId = getDeviceId();
+  const deviceInfo = await getDeviceName();
+  const deviceName = `${deviceInfo.name} (${deviceInfo.browser} on ${deviceInfo.os})`;
+  
+  const userAgent = typeof navigator !== 'undefined' ? navigator.userAgent : 'Unknown';
+  const platform = typeof navigator !== 'undefined' ? navigator.platform : 'Unknown';
+
+  const date = new Date().toLocaleDateString('en-US', {
+    dateStyle: 'medium'
+  });
+  
+  try {
+    // Check if the user has multiple active sessions (1+ other devices active) in Firestore
+    const sessionsRef = collection(db, 'users', uid, 'sessions');
+    const sessionSnap = await getDocs(sessionsRef);
+    const rawSessions = sessionSnap.docs.map(d => ({ ...d.data(), id: d.id }));
+    const activeSessions = rawSessions.filter((s: any) => s.revoked !== true);
+
+    const hasOtherActiveDevice = activeSessions.some((s: any) => s.id !== deviceId);
+
+    if (!hasOtherActiveDevice) {
+      console.log("[LoginAlert] Login is on a single active device, skipping security email alert.");
+      return;
+    }
+
+    const response = await fetch('/api/auth/send-login-alert', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ 
+        uid, 
+        email, 
+        deviceId,
+        deviceName,
+        userAgent,
+        platform,
+        date
+      })
+    });
+    if (!response.ok) {
+      const data = await response.json();
+      console.error("Failed to send login alert", data);
+    }
+  } catch (e) {
+    console.error("Failed to send login alert", e);
   }
 };

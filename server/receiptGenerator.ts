@@ -53,7 +53,7 @@ export async function generateReceiptForOrder(
   const verificationId = crypto.randomBytes(16).toString('hex');
   
   const nowStr = new Date().toISOString();
-  const targetPlan = order.plan || 'Plus Plan';
+  const targetPlan = (order.plan === 'Pro Plan' || order.plan === 'Plus') ? 'Pro Plan' : (order.plan || 'Pro Plan');
   const durationDays = order.durationDays || 30;
 
   // Exact dates

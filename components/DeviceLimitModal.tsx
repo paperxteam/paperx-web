@@ -1,6 +1,7 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { ShieldAlert, Smartphone, Laptop, Tablet, Monitor, AlertCircle, X, LogOut, Lock, Sparkles, ShieldX } from 'lucide-react';
+import { ShieldAlert, AlertCircle, X, LogOut, Lock, Smartphone, Globe, Clock } from 'lucide-react';
+import { AnimatedDeviceIcon, DeviceCategory } from './AnimatedDeviceIcon';
 
 interface DeviceLimitModalProps {
   isOpen: boolean;
@@ -8,27 +9,56 @@ interface DeviceLimitModalProps {
   email?: string;
 }
 
+interface TempSession {
+  id: string;
+  deviceName: string;
+  deviceType: 'mobile' | 'laptop' | 'desktop' | 'tablet';
+  browser: string;
+  os: string;
+  lastActive: string;
+  loginTime: string;
+  timeZone: string;
+  location: string;
+  ipAddress: string;
+}
+
 export const DeviceLimitModal: React.FC<DeviceLimitModalProps> = ({
   isOpen,
   onClose,
   email
 }) => {
+  // Retrieve actual active sessions stored in localStorage at moment of device-limit error
+  const realSessions: TempSession[] = useMemo(() => {
+    try {
+      const raw = localStorage.getItem('paperx_temp_device_limit_sessions');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed;
+        }
+      }
+    } catch (err) {
+      console.warn('Error reading temp device limit sessions:', err);
+    }
+    return [];
+  }, [isOpen]);
+
   if (!isOpen) return null;
 
-  // Device slot representations for 5 active sessions
-  const activeDeviceTypes = [
-    { type: 'Mobile', icon: Smartphone, label: 'Device 1' },
-    { type: 'Laptop', icon: Laptop, label: 'Device 2' },
-    { type: 'Tablet', icon: Tablet, label: 'Device 3' },
-    { type: 'Desktop', icon: Monitor, label: 'Device 4' },
-    { type: 'Mobile', icon: Smartphone, label: 'Device 5' },
+  // Fallback device slots if no real sessions are stored
+  const fallbackDeviceTypes: { type: DeviceCategory; label: string }[] = [
+    { type: 'mobile', label: 'Mobile' },
+    { type: 'laptop', label: 'Laptop' },
+    { type: 'tablet', label: 'Tablet' },
+    { type: 'desktop', label: 'Desktop' },
+    { type: 'mobile', label: 'Mobile' },
   ];
 
   return (
     <AnimatePresence>
       <div 
         id="device-limit-modal-backdrop"
-        className="fixed inset-0 z-[99999] flex items-center justify-center p-4 sm:p-6 overflow-y-auto bg-stone-950/75 backdrop-blur-md"
+        className="fixed inset-0 z-[99999] flex items-center justify-center p-4 sm:p-6 overflow-y-auto bg-stone-950/75 "
       >
         {/* Backdrop click handler */}
         <motion.div
@@ -104,7 +134,7 @@ export const DeviceLimitModal: React.FC<DeviceLimitModalProps> = ({
                 Active Device Slots
               </span>
               <span className="text-red-600 dark:text-red-400 font-black">
-                5 of 5 Occupied
+                {realSessions.length > 0 ? `${realSessions.length} of 5 Occupied` : '5 of 5 Occupied'}
               </span>
             </div>
 
@@ -113,31 +143,57 @@ export const DeviceLimitModal: React.FC<DeviceLimitModalProps> = ({
               <div className="h-full bg-red-500 rounded-full w-full" />
             </div>
 
-            {/* Device Slot Icons Grid */}
-            <div className="grid grid-cols-5 gap-1.5 pt-1">
-              {activeDeviceTypes.map((item, index) => {
-                const IconComponent = item.icon;
-                return (
-                  <motion.div 
-                    key={index}
-                    initial={{ opacity: 0, scale: 0.9 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    transition={{ delay: index * 0.05, duration: 0.2 }}
-                    className="p-2 rounded-xl bg-white dark:bg-stone-900 border border-stone-200/80 dark:border-stone-700/80 flex flex-col items-center justify-center gap-1 shadow-2xs"
+            {/* Device list: If real sessions exist, show detailed list; otherwise, fallback to grid of slot types */}
+            {realSessions.length > 0 ? (
+              <div className="space-y-2 max-h-[200px] overflow-y-auto pr-1">
+                {realSessions.map((session, index) => (
+                  <div 
+                    key={session.id || index}
+                    className="p-2.5 rounded-xl bg-white dark:bg-stone-900 border border-stone-200/80 dark:border-stone-700/80 flex items-center gap-3 shadow-2xs"
                   >
-                    <motion.div
-                      animate={{ y: [0, -2, 0] }}
-                      transition={{ duration: 2, repeat: Infinity, delay: index * 0.2 }}
+                    <div className="w-9 h-9 rounded-lg bg-stone-100 dark:bg-stone-800 flex items-center justify-center text-stone-600 dark:text-stone-300 shrink-0 border border-stone-200/60 dark:border-stone-700/60">
+                      <AnimatedDeviceIcon type={session.deviceType as DeviceCategory} size="sm" animate={true} />
+                    </div>
+                    <div className="flex-1 min-w-0 text-left">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[11px] font-bold truncate text-stone-900 dark:text-white">
+                          {session.deviceName}
+                        </span>
+                        <span className="text-[8px] font-mono font-bold uppercase px-1 py-0.5 rounded bg-stone-100 dark:bg-stone-800 text-stone-500 dark:text-stone-400">
+                          {session.deviceType}
+                        </span>
+                      </div>
+                      <p className="text-[10px] text-stone-500 dark:text-stone-400 truncate flex items-center gap-1">
+                        <Globe size={10} className="shrink-0" />
+                        <span>{session.browser} • {session.os}</span>
+                        {session.location && <span> • {session.location}</span>}
+                      </p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="grid grid-cols-5 gap-1.5 pt-1">
+                {fallbackDeviceTypes.map((item, index) => {
+                  return (
+                    <motion.div 
+                      key={index}
+                      initial={{ opacity: 0, scale: 0.9 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      transition={{ delay: index * 0.05, duration: 0.2 }}
+                      className="p-2 rounded-xl bg-white dark:bg-stone-900 border border-stone-200/80 dark:border-stone-700/80 flex flex-col items-center justify-center gap-1 shadow-2xs"
                     >
-                      <IconComponent size={16} className="text-red-500 dark:text-red-400" />
+                      <div className="text-red-500 dark:text-red-400">
+                        <AnimatedDeviceIcon type={item.type} size="sm" animate={true} />
+                      </div>
+                      <span className="text-[9px] font-bold text-stone-500 dark:text-stone-400">
+                        {item.label}
+                      </span>
                     </motion.div>
-                    <span className="text-[9px] font-bold text-stone-500 dark:text-stone-400">
-                      Slot {index + 1}
-                    </span>
-                  </motion.div>
-                );
-              })}
-            </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
 
           {/* Instructions Box */}

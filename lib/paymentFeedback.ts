@@ -1,4 +1,10 @@
-import confetti from 'canvas-confetti';
+/**
+ * Celebratory popper/confetti is completely disabled per user preference.
+ * No popper will pop on any successful or rejected action.
+ */
+export function triggerPaymentApprovedConfetti() {
+  // Completely disabled - no popper will pop on any successful or rejected action
+}
 
 /**
  * Plays an ultra-luxury fintech approval chime using the native Web Audio API.
@@ -85,44 +91,5 @@ export function playPaymentRejectedAudio() {
     });
   } catch (_) {
     // Fail silently
-  }
-}
-
-/**
- * Fires a celebratory confetti explosion across the screen with staggered velocity.
- */
-export function triggerPaymentApprovedConfetti() {
-  try {
-    // Center luxury fountain burst
-    confetti({
-      particleCount: 75,
-      spread: 80,
-      origin: { y: 0.48 },
-      colors: ['#10B981', '#34D399', '#6EE7B7', '#F59E0B', '#FBBF24', '#38BDF8'],
-      zIndex: 999999,
-      disableForReducedMotion: true
-    });
-
-    // Dual lateral celebratory streams
-    setTimeout(() => {
-      confetti({
-        particleCount: 45,
-        angle: 60,
-        spread: 60,
-        origin: { x: 0.1, y: 0.6 },
-        colors: ['#10B981', '#34D399', '#F59E0B', '#FBBF24'],
-        zIndex: 999999
-      });
-      confetti({
-        particleCount: 45,
-        angle: 120,
-        spread: 60,
-        origin: { x: 0.9, y: 0.6 },
-        colors: ['#10B981', '#34D399', '#F59E0B', '#FBBF24'],
-        zIndex: 999999
-      });
-    }, 220);
-  } catch (_) {
-    // Graceful fallback
   }
 }

@@ -227,7 +227,7 @@ export const CommunicationsView: React.FC<CommunicationsViewProps> = ({
                   >
                     <option value="default">Default Tri-color Gradient</option>
                     <option value="independence_day">🇮🇳 Independence Day (Tri-color)</option>
-                    <option value="festive">🎉 Festive Celebration (Amber Glow)</option>
+                    <option value="festive">Festive Celebration (Amber Glow)</option>
                     <option value="dark_luxury">✨ Dark Luxury Obsidian</option>
                     <option value="emerald">🟢 Emerald Verified Green</option>
                     <option value="alert">⚠️ Urgent Alert (Crimson Amber)</option>
